@@ -1,0 +1,445 @@
+# Postmere server
+
+Built and verified with Rust 1.96 and PostgreSQL 17; the schema supports PostgreSQL 16+. From this directory, build with `cargo build --locked -p postmere-server`.
+This service hosts the workspace API; the desktop client keeps its bearer token
+in Keychain. No account, password, or provider access is enabled by default.
+
+The backend is a Cargo workspace with eight library crates and a small server
+crate that composes their routers and workers. See [the architecture guide](ARCHITECTURE.md)
+for crate ownership, dependency boundaries, and how to add features.
+
+## Configuration
+
+Provide secrets through your deployment secret manager; do not commit them:
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL connection URL. Remote databases require `sslmode=verify-full`; loopback and Unix sockets are allowed for local development. |
+| `POSTMERE_PUBLIC_URL` | Public HTTPS origin; HTTP is accepted only on loopback for development. |
+| `POSTMERE_BIND` | Bind address; default `127.0.0.1:8080`. Containers normally use `0.0.0.0:8080`. |
+| `POSTMERE_CREDENTIAL_KEYS` | JSON object mapping integer key IDs to independent base64-encoded 32-byte keys. |
+| `POSTMERE_ACTIVE_CREDENTIAL_KEY` | Key ID used for new encrypted credentials. |
+| `POSTMERE_RATE_LIMIT_KEY` | Separate base64-encoded 32-byte secret for private rate-limit identities. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Optional Google OAuth web application credentials. |
+| `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` | Optional Microsoft confidential web application credentials. |
+| `MICROSOFT_TENANT` | Microsoft tenant ID/domain; default `common`. |
+| `OPENAI_API_KEY`, `POSTMERE_AI_MODEL` | Optional AI provider configuration; user opt-in is separate. |
+
+Generate independent keys using a cryptographically secure random generator.
+Retain old credential keys during rotation: add a new key ID, make it active,
+then re-encrypt stored envelopes before retiring old keys. Removing a key before
+its data has been migrated makes those credentials unreadable. Back up the
+keyring separately from database backups.
+
+## Database and first owner
+
+The runtime role **must have `NOSUPERUSER NOBYPASSRLS`**. Startup rejects roles
+that bypass row security. Use a separate migration role in production and grant
+the runtime role only schema usage plus required table DML. `FORCE ROW LEVEL
+SECURITY` also protects tables when the development role owns them.
+
+Run `cargo run --locked -p postmere-server -- migrate` with the migration connection, then switch
+to the runtime connection. Create the initial workspace with
+`cargo run --locked -p postmere-server -- bootstrap owner@example.com 'My workspace'` and pipe a
+12–1024-byte password from a protected file or password manager into stdin.
+Interactive plaintext entry is rejected. The command prints the workspace UUID,
+which the desktop sign-in screen requires. It never prints the password.
+
+Run `cargo run --locked -p postmere-server -- serve`. `/health/live` checks the process and
+`/health/ready` checks database connectivity. Deploy behind TLS with request-size
+and connection limits. Bind the service only to trusted ingress. Client IP
+limits use the actual TCP peer; spoofable forwarding headers are ignored.
+
+## Authentication and storage boundaries
+
+`POST /v1/auth/login` accepts `{email,password,workspace_id}` and returns an opaque
+bearer token, expiry, absolute expiry, session/user/workspace IDs and role.
+Send `Authorization: Bearer <token>` on authenticated calls. Tokens last 24 hours;
+`POST /v1/auth/rotate` replaces the old token without extending the 30-day absolute
+session lifetime. Logout revokes the current token; logout-all revokes all of the
+user's sessions. User, workspace, and membership revocation are checked on every
+authenticated request. Native clients should remove locally stored tokens after
+logout or HTTP 401.
+
+Passwords use Argon2id. Session tokens have 256 bits of randomness and only their
+SHA-256 hashes are stored. Login identity and TCP-peer rate limits are shared in
+PostgreSQL and remain effective across instances/restarts. Password hashing is
+concurrency-limited. Authentication failures do not reveal which identity exists.
+
+Provider credentials use versioned AES-256-GCM envelopes with a fresh nonce for
+every write; workspace and resource IDs are authenticated additional data.
+Copying ciphertext to another workspace or account fails authentication.
+Feature tables use transaction-local workspace/user scope and forced RLS. Never
+use `scoped_transaction` with arbitrary user input unless a service job or
+one-time OAuth nonce has independently established the identity.
+
+No provider body, SQL statement, password, bearer token, OAuth code, or credential
+is included in public errors. Configure reverse-proxy logs to omit authorization
+headers and OAuth callback query strings. Data backups and storage volumes should
+be encrypted and access controlled by the deployment.
+
+## Verification
+
+Use an isolated test database and export `POSTMERE_TEST_DATABASE_URL` with a
+non-superuser, NOBYPASSRLS role that can apply migrations. Then run
+`cargo test --workspace --locked`. All crates are also default workspace members,
+so plain `cargo test` includes their unit tests. The integration tests fail when the required database is
+not configured; they do not silently skip security checks. Tests use unique
+fixture identities and exercise actual PostgreSQL RLS, not a mocked database.
+
+Cryptography tests cover tenant/resource binding, envelope tampering, nonce
+uniqueness, and key rotation. Authentication tests cover invalid credentials,
+wrong workspace, concurrent rotation, expiry, logout, logout-all, membership
+revocation, same-workspace cross-user access, missing scope, forbidden writes,
+and rate-limit persistence.
+
+## Collaboration API
+
+Thread sharing is an explicit snapshot of up to 100 cached messages / 10 MiB.
+It does not grant access to the owner's mailbox or provider credentials. Bcc,
+unsubscribe/authentication metadata and attachment bodies are removed from
+shared thread snapshots; file names remain visible. New private replies are
+published only when the owner explicitly refreshes the snapshot. Shared
+templates separately support actual file contents and RTF formatting.
+
+| Route | Behavior |
+| --- | --- |
+| `GET /v1/workspace/members` | Active members of the authenticated workspace. |
+| `POST /v1/workspace/members` | Owner/admin provisions a new user with `{email,initial_password,role}`. Only an owner can create an admin. Existing emails conflict; passwords are never reset. No email is sent. |
+| `DELETE /v1/workspace/members/{id}` | Owner/admin revokes a member and their workspace sessions; owner/self revocation is rejected. |
+| `GET, POST /v1/shared/threads` | List visible shares or create `{account_id,provider_thread_id,members:[{user_id,permission}]}`. Permissions are `view` or `comment`. |
+| `GET, DELETE /v1/shared/threads/{id}` | Read snapshot/discussion/presence or let its owner revoke the share. |
+| `PUT /v1/shared/threads/{id}/members` | Owner replaces recipients using `{members,expected_version}`. |
+| `POST /v1/shared/threads/{id}/refresh` | Owner publishes current cached thread using `{expected_version}`. |
+| `GET, POST /v1/shared/threads/{id}/comments` | Read comments or post `{body}` with comment permission. `?before=<comment UUID>` paginates older comments. |
+| `DELETE /v1/shared/threads/{id}/comments/{comment_id}` | Author or share owner removes a comment. |
+| `PUT /v1/shared/threads/{id}/presence` | `{active:true}` sets 60-second reply presence; `{active:false}` clears it. Refresh while composing, and clear on exit. |
+| `GET, POST /v1/shared/snippets` | List summaries or share `{template}` across the workspace. |
+| `GET, PUT, DELETE /v1/shared/snippets/{id}` | Fetch full template; its owner can update `{template,expected_version}` or remove it. |
+
+Template fields: `title`, `body`, `kind` (`snippet`/`template`), optional
+`body_rtf_base64`, `to`, `cc`, `bcc`, `subject`, and `attachments` containing
+`{filename,mime_type,data_base64}`. Combined file bytes are limited to 20 MiB.
+The list endpoint excludes file bodies; fetch the selected template explicitly.
+Version conflicts return HTTP 409, so reload before replacing a stale share or
+template. Private notes are never included in shared snapshots.
+
+## Unsubscribe API
+
+`GET /v1/mail/messages/{id}/unsubscribe` returns `{one_click_url,reason}` without
+requesting the sender's endpoint. The explicit user action posts
+`{expected_url}` to the same route. The server fetches fresh raw MIME from the fixed Gmail or Microsoft API endpoint,
+cryptographically verifies the signed list headers, checks the exact consent URL, and returns `{accepted,http_status,host,message}`.
+A sender's redirect or non-success status has `accepted:false`; an HTTP 2xx from
+the sender confirms request acceptance, not future delivery. Archive/block
+actions remain separate and must never be presented as unsubscribe success.
+
+The implementation follows [RFC 8058](https://www.rfc-editor.org/rfc/rfc8058.html):
+isolated HTTPS form POST, no cookies or authorization context, no redirects,
+and a cryptographically verified SHA-256 DKIM signature covering the sole
+`List-Unsubscribe` and `List-Unsubscribe-Post` fields. Verification uses
+`mail-auth` with ring cryptography and bounded DNS-over-TLS key lookups through
+Cloudflare. The verifier caps raw messages at 8 MiB, headers at 64 KiB, and
+signatures at eight, with an eight-second DNS/verification deadline. Deployment
+egress must allow the provider APIs and DNS-over-TLS (TCP 853).
+
+Ordinary `Authentication-Results` headers are not accepted as proof: imported
+mail can contain sender-supplied copies. Direct Gmail in the Mac app therefore
+uses browser/email fallbacks; workspace Gmail and Microsoft can offer one-click
+only when raw verification succeeds. Invalid signatures, ambiguous fields,
+modified messages, unsupported signatures, and unavailable DNS fail closed to
+manual options. No message body or recipient is sent to the DNS resolver.
+
+Every resolved address must pass conservative public-address checks based on
+the [IANA IPv4 registry](https://www.iana.org/assignments/iana-ipv4-special-registry/)
+and [IPv6 registry](https://www.iana.org/assignments/iana-ipv6-special-registry/).
+The HTTP client pins those addresses in a resolver that cannot fall back to
+another name or lookup. It disables proxies, follows no redirects, and drops
+the response body immediately. Fixtures sign actual messages and reject altered
+URLs/bodies/headers, duplicate fields, borrowed signatures, forged authentication
+results, and oversized input. They also cover private/mixed DNS answers, encoded
+addresses, DNS pinning, exact form contents, redirect rejection, and bounded
+response handling.
+
+## Calendar access, booking links, and RSVP
+
+Calendar access is optional and separate from connecting mail. Start OAuth with
+`POST /v1/mail/oauth/{gmail|microsoft}/start` and `{"calendar_access":true}` only
+after the user chooses to connect their calendar. The ordinary `{}` request
+remains mail-only. A successful callback records the `calendar` capability only
+when the request explicitly opted in and the token response actually granted
+Google `calendar.events` or Microsoft `Calendars.ReadWrite`. Existing accounts
+must reconnect with that explicit choice. Enable Google Calendar API on the
+OAuth project and configure the corresponding delegated calendar permission
+for Microsoft; no additional server secrets are needed.
+
+Calendar operations use the connected account's **primary calendar**. Google
+events are expanded across the requested interval; Microsoft uses calendarView.
+All-day times use the provider calendar's IANA time zone, including daylight
+saving transitions. Missing pages, unsupported time zones, provider errors, and
+lost access fail closed; they are not reported as free time. Adapters use fixed
+HTTPS origins, bounded bodies/pages/timeouts, and validated pagination links.
+
+Authenticated API:
+
+- `GET /v1/calendar/booking-links` returns `{items:[...]}`. `POST` accepts
+  `{account_id,title,description,time_zone,duration_minutes,expires_at,slots}`;
+  each slot is `{start,end}` in RFC3339. Choose 15–240 minute meetings and up to
+  100 explicit future times within 90 days. The response includes `id`, `url`,
+  `created_at`, `disabled_at`, and slots with stable UUIDs. `DELETE
+  /v1/calendar/booking-links/{id}` revokes the link, without canceling meetings
+  already sent to the provider.
+- `GET /v1/calendar/bookings` returns the owner's recent reservations with guest
+  name/email, start/end, and `checking`, `creating`, `confirmed`, `failed`, or
+  `uncertain` status. Guest details and reusable link secrets are encrypted at
+  rest; only token hashes authorize public access.
+- `GET /v1/calendar/sharing` returns owned calendars and explicitly shared
+  calendars in the same workspace. `PUT /v1/calendar/sharing/{account_id}` with
+  `{enabled:true|false}` controls an owned account's sharing. Sharing is off by
+  default. Revocation works without contacting the provider, including when
+  OAuth credentials have expired.
+- `POST /v1/calendar/free-busy` accepts `{account_ids,start,end}` for up to eight
+  calendars and 31 days. It returns `{calendars:[{account_id,busy:[{start,end}]}],
+  start,end}`. Only busy intervals are shared; event subjects, attendees, and
+  bodies never leave the owner scope. The share is checked again after provider
+  I/O so an in-flight revocation prevents disclosure.
+- `POST /v1/calendar/invitations/respond` accepts
+  `{account_id,ical_uid,organizer,start,end,response}` with `accepted`,
+  `tentative`, or `declined`. It looks up the event in the owned primary calendar
+  and verifies the provider's UID, organizer, exact occurrence times, and the
+  account's attendee identity. A canceled, ambiguous, missing, or organizer-owned
+  event cannot receive an RSVP. Google updates only the account's attendee
+  response with an ETag precondition; Microsoft uses its response action. The
+  server returns `{status:"responded",response}` only after provider acceptance.
+  A local `.ics` copy does not qualify as a provider invitation.
+
+`/book/{secret}` serves the public booking page and its local static assets. Its
+JSON API, `/v1/calendar/public/{secret}`, returns current available slots on GET.
+POST accepts `{client_id,slot_id,name,email}`. The `client_id` UUID is an
+idempotency key: repeat the identical request after a connection failure. The
+page preserves that key and locks the selection while checking an unknown
+result. Public endpoints are rate-limited, have no session cookies/CORS, reject
+foreign Origin writes, and apply a restrictive CSP and no-referrer policy.
+Anyone holding a booking link can see its offered times and request a meeting;
+the host should revoke a link when it is no longer intended for sharing.
+
+A database advisory lock serializes reservations across **all links for the
+same host account**, including overlapping alternative slots. The server
+commits a durable reservation, checks provider availability, rechecks link and
+account authorization, then records `creating` before sending an invitation.
+An ambiguous provider response or interrupted creation keeps the time blocked
+as `uncertain` and is never retried automatically. The host must inspect their
+provider calendar before resolving such a reservation operationally. No API can
+atomically lock a provider calendar against unrelated clients: a meeting added
+in another app between the availability check and event creation can still
+conflict. Secondary calendars, automatic recurring availability rules, and
+provider cancellation/reconciliation of uncertain bookings are not included.
+
+The calendar integration test uses a real isolated PostgreSQL database and an
+injected calendar transport; it sends no real invitations. It covers tenant and
+same-workspace ownership, forced RLS, capability/nonce checks, encryption,
+concurrent overlapping booking links, idempotency, provider conflicts,
+interrupted/ambiguous creation, share revocation, and revoked memberships.
+Provider parser fixtures cover calendar time zones/DST, cursor-origin checks,
+and RSVP identity checks. Production OAuth and live provider behavior still
+require validation with the deployment's test accounts.
+
+Provider references: [Google events.list](https://developers.google.com/workspace/calendar/api/v3/reference/events/list),
+[Google event attendee responses](https://developers.google.com/workspace/calendar/api/v3/reference/events),
+[Microsoft calendarView](https://learn.microsoft.com/en-us/graph/api/user-list-calendarview?view=graph-rest-1.0),
+[Microsoft event creation](https://learn.microsoft.com/en-us/graph/api/user-post-events?view=graph-rest-1.0),
+and [Microsoft RSVP](https://learn.microsoft.com/en-us/graph/api/event-accept?view=graph-rest-1.0).
+
+## Optional AI assistance
+
+Set `OPENAI_API_KEY` on the server and choose a supported Responses API model
+with `POSTMERE_AI_MODEL` (the compatibility default is `gpt-4.1-mini`). Each
+user separately enables assistance through `GET/PUT /v1/ai/settings`. The
+settings response includes availability, provider/model, a data notice, and an
+editable style guide. No API key is stored in the desktop application.
+
+`POST /v1/ai/summary` and `/suggestions` accept selected `message_ids`;
+`/draft` accepts those IDs plus `draft_text`, `instruction`, and `notes`.
+`/ask` accepts a `question` and optional `account_ids`. Retrieval is bounded
+PostgreSQL text search over the user's cached mail in the current workspace,
+with up to 20 retrieved messages; it is not a full-history or calendar search.
+Responses include source metadata and only validated source UUIDs. Structured
+outputs are bounded, generated suggestions have no direct write authority, and
+no arbitrary model tools or URLs are executed.
+
+Only selected/retrieved message text, user instructions, and the style guide
+are sent to OpenAI. Attachments and private notes are excluded. Requests use
+`store:false`; this does not promise zero provider abuse-monitoring retention.
+Review the provider's data policy for the deployment's account. Missing setup,
+invalid model output, unauthorized sources, and rate limits fail explicitly.
+Unit tests use a local mock Responses endpoint; database tests verify opt-in,
+account/workspace boundaries, and unauthorized message rejection before any
+provider request. Live model calls are not part of the regression suite.
+
+## Mail accounts and provider OAuth
+
+Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` for a Google **web application**
+OAuth client, and register the exact callback
+`<POSTMERE_PUBLIC_URL>/v1/mail/oauth/gmail/callback`. Set `MICROSOFT_CLIENT_ID`,
+`MICROSOFT_CLIENT_SECRET`, and optionally `MICROSOFT_TENANT` (`common` by default)
+for a Microsoft web application with callback
+`<POSTMERE_PUBLIC_URL>/v1/mail/oauth/microsoft/callback`. Configure the provider's
+consent screen, app audience, and production verification before external use.
+Production callback URLs must use HTTPS.
+
+The desktop starts a connection with authenticated
+`POST /v1/mail/oauth/{gmail|microsoft}/start` and `{}`. It receives
+`{connection_id,authorization_url,expires_at}`, opens the authorization URL, and
+polls `GET /v1/mail/oauth/connections/{id}` for
+`{status,account_id,error}`. A connection lasts ten minutes. Server-side state
+has a random 256-bit nonce; only its hash is stored. Its locked, single-use
+verification establishes the initiating workspace and user before code exchange.
+The PKCE verifier is encrypted with the connection ID as part of its binding.
+Provider access and refresh tokens never reach the desktop.
+
+Ordinary Gmail connections request `gmail.modify`. Microsoft connections request
+`offline_access User.Read Mail.ReadWrite Mail.Send`. The explicit body
+`{calendar_access:true}` additionally requests Google `calendar.events` or
+Microsoft `Calendars.ReadWrite`. The account gains the `calendar` capability only
+when that request was explicit **and** the returned token grant includes the
+required scope. Refresh-token rotation is serialized per account, and a refresh
+that removes calendar permission removes its capability.
+
+`GET /v1/mail/accounts` returns an array of
+`{id,provider,email,display_name,status,last_synced_at,capabilities}`. Multiple
+accounts are scoped to their connecting user inside the workspace. Disconnect
+with `DELETE /v1/mail/accounts/{id}`; this disables the account, cancels pending
+sends, stops synchronization, and disables calendar sharing. It does not erase
+cached mail or claim to revoke consent at the provider.
+
+## Mail synchronization, search and attachments
+
+The server starts a background account-sync worker alongside the send worker.
+OAuth connection and explicit synchronization seed an identifier-only scheduler.
+Each tick processes at most one account page. Active user/workspace membership
+and account ownership are checked before credentials are opened and again before
+results are committed. Disabled or revoked accounts are removed from the queue.
+Provider checkpoints and bounded batches survive server restarts.
+
+Gmail starts with full mailbox paging and then consumes Gmail history changes.
+An expired history bookmark restarts the bootstrap without deleting absent cache
+rows. Microsoft starts with full paging, then uses an overlapping
+`lastModifiedDateTime` watermark. A rotating set of exact provider-ID checks
+covers deletions that are unavailable in that listing or lost to expired Gmail
+history. Only explicit history deletions or a targeted provider 404 hide cached
+mail. Empty/limited pages never imply deletion. Google and Microsoft requests
+use fixed origins; Graph continuation URLs are validated before attaching tokens.
+
+`POST /v1/mail/accounts/{id}/sync` accepts `{cursor?,limit?}`. This cursor belongs
+to the **desktop cache**, independently of the provider checkpoint. The response
+is `{messages,deleted_message_ids,next_cursor,has_more}`. Persist `next_cursor`
+only after successfully merging messages and explicit deletion IDs. Fetch more
+while `has_more` is true; retain the cursor even for an empty response. This
+allows a client to catch changes fetched while it was closed.
+
+Cache cursors use authenticated encryption bound to the workspace, account and
+user, and are limited to 4 KiB. All pages in a cycle keep a stable upper
+watermark. Per-account write locks and database clock timestamps ensure later
+changes are delivered in a subsequent cycle instead of being skipped. Retain
+old encryption keys while clients still use their cursor versions. After an
+intentional old-key retirement, `Invalid sync cursor` means the client should
+clear only that account's cursor and perform a complete cache resync; it must not
+treat missing pages as deletions.
+
+| Route | Behavior |
+| --- | --- |
+| `GET /v1/mail/messages?account_id=&query=&cursor=&limit=` | Search/browse the scoped server cache. This route uses plain text; native advanced query parsing remains local. |
+| `GET /v1/mail/messages/{id}` | Fetch one normalized cached message, including RFC threading metadata. |
+| `POST /v1/mail/accounts/{id}/search` | `{query,cursor?,limit?}` searches deeper at the provider and caches the results. Query syntax is Gmail search or Microsoft Graph search, respectively. |
+| `PATCH /v1/mail/messages/{id}` | `{is_read?,is_starred?,mailbox?}`; destinations are `inbox`, `archive`, or `trash`. Returns `{}` after provider confirmation and cache update. |
+| `GET /v1/mail/messages/{id}/attachments/{attachment_id}` | Return an attachment owned by that scoped message, with a 25 MiB download limit. |
+
+Messages contain server/account/provider IDs, sender and recipient address
+objects, plain/HTML bodies, preview, timestamp, read/star state, mailbox, provider
+labels, attachment metadata, list headers and optional `rfc_message_id`,
+`in_reply_to`, and `references`. Message and attachment UUIDs are stable within
+an account. Attachment content is never fetched using a caller-supplied URL.
+Synchronization, deep-search cache writes and message mutations serialize per
+account so a stale provider read cannot overwrite a newer confirmed mutation.
+
+## Durable delivery and reply threading
+
+`POST /v1/mail/outbox` accepts:
+
+```json
+{
+  "client_id": "stable-client-uuid",
+  "account_id": "connected-account-uuid",
+  "to": [{"name": "Pat", "email": "pat@example.com"}],
+  "cc": [],
+  "bcc": [],
+  "subject": "Hello",
+  "text_body": "A message",
+  "html_body": null,
+  "attachments": [],
+  "scheduled_at": null,
+  "undo_seconds": 10,
+  "track_opens": false,
+  "track_links": false,
+  "in_reply_to": null,
+  "references": [],
+  "provider_thread_id": null
+}
+```
+
+Attachments use `{filename,mime_type,data_base64}`; decoded files are limited to
+20 MiB total. There may be at most 100 recipients and 50 attachments. Reply IDs
+are validated against header injection and length limits. A supplied provider
+thread ID must belong to a cached thread in the same account. Gmail receives
+MIME reply headers plus `threadId`. Microsoft uses its supported base64 MIME
+`sendMail` mode so standard `In-Reply-To` and `References` headers are preserved.
+The shared MIME builder has independent parsing fixtures for Unicode subjects,
+addresses, attachment names, binary files, and reply headers.
+
+The encrypted send payload is saved before success is returned. A scoped
+`client_id` plus payload hash makes repeated uploads return the same job; reusing
+that identifier for changed content returns 409. Upload before the scheduled
+send time so delivery can continue with the app closed. The undo window is
+5–60 seconds and is always respected before a worker can claim the job.
+
+The response is
+`{id,client_id,account_id,status,scheduled_at,undo_until,provider_message_id,error_code,created_at}`.
+`GET /v1/mail/outbox` returns `{items:[...]}`. `POST /v1/mail/outbox/{id}/cancel`
+transactionally cancels a pending job; a claimed job cannot be cancelled.
+`POST /v1/mail/outbox/{id}/retry` accepts only a confirmed `failed` job.
+
+The worker marks `delivering` before contacting a provider. A confirmed provider
+acceptance becomes `sent`; a definite rejection becomes `failed`. A network
+ambiguity or interrupted delivery becomes `uncertain` and is **never retried
+automatically**. The user must inspect Sent before composing another copy. A
+provider receipt confirms acceptance by the provider, not recipient delivery.
+
+## Optional open and link activity
+
+Tracking is off unless `track_opens` or `track_links` is explicitly true for that
+message. The server adds one image request and/or rewrites eligible quoted HTTP(S)
+anchor destinations. It preserves scripts, comments, other attributes, mailto
+links and local destinations. Random tokens are stored only as hashes and are
+scoped to the owning user and workspace. Public pixels reveal no message data;
+invalid pixels return the same transparent image. Tracking redirects never make
+server-side requests to the destination.
+
+`GET /v1/mail/activity?message_id=<outbox UUID>` returns
+`{items:[{outbox_id,opens,clicks,first_open_at,last_open_at,first_click_at,last_click_at,events}],attribution_notice}`.
+Events contain `{id,kind,occurred_at,recipient,device,is_proxy_or_bot}`. Recipient
+attribution is null for multi-recipient messages. No raw IP or complete
+user-agent is stored. Rapid duplicate probes are coalesced over ten seconds;
+event collection stops after 180 days.
+
+Open counts measure image requests, **not verified reads**. Privacy proxies,
+blocked images, scanners and forwarding affect counts and attribution. Device
+names are coarse inferences from the requesting client. Display the returned
+notice beside activity rather than treating these signals as proof of reading.
+
+Mail tests inject fake delivery and synchronization transports. They exercise
+actual PostgreSQL isolation, OAuth nonce replay, idempotency, cancellation,
+uncertain-send recovery, membership revocation, durable checkpoints, opaque
+cursor tampering/account binding, changes during pagination and explicit
+provider deletions. They do not contact Google/Microsoft or send real email.
+Live OAuth consent, provider quotas and production delivery still require
+configured credentials and an explicit deployment verification run.
