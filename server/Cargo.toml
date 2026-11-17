@@ -1,0 +1,95 @@
+[workspace]
+members = [".", "crates/*"]
+default-members = [".", "crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+[workspace.dependencies]
+aes-gcm = { version = "0.11.1", features = ["zeroize"] }
+argon2 = { version = "0.6.0", features = ["getrandom", "zeroize"] }
+axum = { version = "0.8.9", features = ["json", "http1", "tokio"] }
+base64 = "0.22.1"
+chrono = { version = "0.4.42", features = ["serde"] }
+chrono-tz = "0.10.4"
+getrandom = "0.4.3"
+mailparse = "0.16"
+# Newer mail-auth releases require Rust 1.98 through mail-parser 1.x.
+mail-auth = { version = "=0.13.3", default-features = false, features = ["ring"] }
+html-escape = "0.2"
+hmac = "0.12.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "form", "query", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10.9"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+thiserror = "2.0"
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "io-util"] }
+tower = { version = "0.5", features = ["util", "limit"] }
+tower-http = { version = "0.6", features = ["limit", "timeout", "set-header"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = { version = "2.5", features = ["serde"] }
+uuid = { version = "1.18", features = ["v4", "serde"] }
+zeroize = { version = "1.8", features = ["derive"] }
+http-body-util = "0.1"
+postmere-core = { path = "crates/postmere-core" }
+postmere-providers = { path = "crates/postmere-providers" }
+postmere-tracking = { path = "crates/postmere-tracking" }
+postmere-mail = { path = "crates/postmere-mail" }
+postmere-calendar = { path = "crates/postmere-calendar" }
+postmere-collaboration = { path = "crates/postmere-collaboration" }
+postmere-ai = { path = "crates/postmere-ai" }
+postmere-unsubscribe = { path = "crates/postmere-unsubscribe" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[package]
+name = "postmere-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+postmere-core.workspace = true
+postmere-tracking.workspace = true
+postmere-mail.workspace = true
+postmere-calendar.workspace = true
+postmere-collaboration.workspace = true
+postmere-ai.workspace = true
+postmere-unsubscribe.workspace = true
+axum.workspace = true
+serde.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+postmere-providers.workspace = true
+base64.workspace = true
+chrono.workspace = true
+getrandom.workspace = true
+http-body-util.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tower.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
