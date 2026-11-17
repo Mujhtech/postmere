@@ -1,0 +1,88 @@
+import Foundation
+
+@main
+private struct CalendarChecks {
+    @MainActor
+    static func main() async throws {
+        let zone = TimeZone(identifier: "America/Los_Angeles")!
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let day = calendar.date(from: DateComponents(year: 2027, month: 3, day: 14))!
+        let nine = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: day)!
+        let all = MailAvailability.slots(on: day, busyEvents: [], timeZone: zone, now: .distantPast)
+        precondition(all.count == 16 && all.first?.start == nine, "DST must not move 9 am working hours")
+        let busy = MailCalendarEvent(id: "busy", title: "Private title", start: nine.addingTimeInterval(1_800),
+            end: nine.addingTimeInterval(5_400), isAllDay: false, calendarTitle: "Calendar", location: "", isBusy: true)
+        let free = MailCalendarEvent(id: "free", title: "Free event", start: nine, end: nine.addingTimeInterval(1_800),
+            isAllDay: false, calendarTitle: "Calendar", location: "", isBusy: false)
+        let available = MailAvailability.slots(on: day, busyEvents: [busy, free], timeZone: zone, now: .distantPast)
+        precondition(available.count == 14 && available.first?.start == nine, "Half-open conflicts must allow adjacent and free events")
+        let allDay = MailCalendarEvent(id: "day", title: "Away", start: day, end: calendar.date(byAdding: .day, value: 1, to: day)!,
+            isAllDay: true, calendarTitle: "Calendar", location: "", isBusy: true)
+        precondition(MailAvailability.slots(on: day, busyEvents: [allDay], timeZone: zone, now: .distantPast).isEmpty)
+        let text = MailAvailability.text(for: [all[1], all[0], all[0]], locale: Locale(identifier: "en_US"))
+        precondition(text.components(separatedBy: "\n").count == 3 && text.contains("America/Los_Angeles") && text.contains("UTC−07:00"))
+        precondition(!text.contains("Private title"), "Availability text must never disclose calendar event details")
+        print("PASS: DST working hours, adjacent/free/all-day conflicts, deduplicated timezone-explicit availability")
+
+        let invalid = MailCalendarEventDraft(title: "Meeting", start: nine, end: nine)
+        do { _ = try invalid.validated(); preconditionFailure("Zero-length events must fail") } catch MailCalendarError.invalidDateRange { }
+        do { _ = try MailCalendarEventDraft(title: "Meeting", urlString: "javascript:alert(1)").validated(); preconditionFailure("Unsafe event links must fail") } catch MailCalendarError.invalidLink { }
+        do { _ = try MailCalendarEventDraft(title: "Meeting", timeZoneIdentifier: "Not/A_Timezone").validated(); preconditionFailure("Invalid time zones must fail") } catch MailCalendarError.invalidTimeZone { }
+        let detection = MailDateDetector.suggestions(in: "Please join on November 24, 2027 at 3:30 PM for our review.")
+        precondition(!detection.isEmpty && detection.first?.isAllDay == false && detection.first!.end > detection.first!.start)
+        print("PASS: reviewable date recognition and event validation")
+
+        let invitation = """
+        BEGIN:VCALENDAR
+        VERSION:2.0
+        METHOD:REQUEST
+        BEGIN:VEVENT
+        UID:meeting-123@example.com
+        SEQUENCE:3
+        DTSTART:20271124T150000Z
+        DTEND:20271124T160000Z
+        SUMMARY:Project 
+         review
+        ORGANIZER;CN="Ada; Organizer":mailto:ada@example.com
+        ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:me@example.com
+        DESCRIPTION:First line\\nSecond\\, line
+        LOCATION:Room 2
+        URL:javascript:bad
+        RRULE:FREQ=WEEKLY;COUNT=4
+        BEGIN:VALARM
+        SUMMARY:Alarm title must not replace the event
+        END:VALARM
+        END:VEVENT
+        END:VCALENDAR
+        """
+        let parsed = try MailCalendarInvitationParser.parse(data: Data(invitation.utf8), defaultTimeZone: zone)
+        precondition(parsed.count == 1)
+        let event = parsed[0]
+        precondition(event.title == "Project review" && event.sequence == 3 && event.organizer == "ada@example.com")
+        precondition(event.attendees == ["me@example.com"] && event.notes == "First line\nSecond, line")
+        precondition(event.end.timeIntervalSince(event.start) == 3_600 && event.canRespond && event.urlString.isEmpty)
+        precondition(event.recurrence != nil && !event.warnings.isEmpty)
+        let canceled = try MailCalendarInvitationParser.parse(data: Data(invitation.replacingOccurrences(of: "METHOD:REQUEST", with: "METHOD:CANCEL").utf8))
+        precondition(canceled[0].isCanceled && !canceled[0].canRespond)
+        let daily = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:day\nDTSTART;VALUE=DATE:20270314\nSUMMARY:Day off\nEND:VEVENT\nEND:VCALENDAR"
+        let dailyEvent = try MailCalendarInvitationParser.parse(data: Data(daily.utf8), defaultTimeZone: zone)[0]
+        precondition(dailyEvent.isAllDay && dailyEvent.end.timeIntervalSince(dailyEvent.start) == 23 * 3_600,
+                     "All-day exclusive end must follow the local day across DST")
+        do { _ = try MailCalendarInvitationParser.parse(data: Data(repeating: 65, count: 512 * 1_024 + 1)); preconditionFailure("Oversized invitations must fail") } catch MailCalendarError.invitationTooLarge { }
+        print("PASS: folded/escaped invitations, nested alarms, UTC, recurrence warnings, cancellation, safe URLs, and all-day DST")
+
+        let suite = "Postmere-Calendar-Checks-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let service = MailCalendarService(defaults: defaults, observeChanges: false)
+        precondition(!service.isEnabled && service.events.isEmpty)
+        await service.refreshAgenda(from: day, to: day.addingTimeInterval(86_400))
+        precondition(service.events.isEmpty && !service.isLoading)
+        do { _ = try await service.events(from: day, to: day.addingTimeInterval(86_400)); preconditionFailure("Disabled integration must block reads") } catch MailCalendarError.accessRequired { }
+        do { _ = try await service.saveReviewedEvent(MailCalendarEventDraft(title: "")); preconditionFailure("Invalid drafts must fail before any permission request") } catch MailCalendarError.missingTitle { }
+        service.disconnectAgenda()
+        precondition(!defaults.bool(forKey: "calendarIntegrationEnabled"))
+        print("PASS: opt-in calendar gate and pre-permission validation; no permission request or calendar read/write performed")
+    }
+}
