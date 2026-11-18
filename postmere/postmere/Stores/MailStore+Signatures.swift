@@ -1,8 +1,7 @@
 import Foundation
 
 extension MailStore {
-    /// Uses the actual provider identity when available, instead of the shared
-    /// Gmail display label. Callers with other providers may use any account ID.
+    /// Workspace signatures use the full server/user/account identity.
     var draftSignatureAccountKey: String {
         if draftAccount.isRemote { return draftAccount.rawValue }
         let providerEmail = draftProviderAccountEmail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

@@ -1,7 +1,21 @@
 import Foundation
 
 extension MailStore {
-    var draftRecoveryAvailable: Bool { recoveredDraft != nil && !isComposing }
+    var draftRecoveryAvailable: Bool {
+        guard !isComposing, let draft = recoveredDraft else { return false }
+        return !draft.account.isRemote || draft.account.remote != nil
+    }
+    var previousAccountDrafts: [MailMessage] {
+        messages.filter { !$0.mailAccount.isRemote && ($0.mailbox == .drafts || $0.mailbox == .outbox) }
+            .sorted { $0.sentAt > $1.sentAt }
+    }
+
+    func reviewPreviousAccountDraft(id: UUID) {
+        guard !isComposing, let message = previousAccountDrafts.first(where: { $0.id == id }) else { return }
+        if message.mailbox == .outbox { restoreQueuedDraft(id) }
+        else { beginEditingDraft(message) }
+    }
+
     var attachmentStorageDirectory: URL { persistence?.attachmentDirectory ?? testAttachmentDirectory }
 
     var activeDraftSnapshot: ActiveMailDraft {
@@ -37,8 +51,7 @@ extension MailStore {
             outgoingQueue = saved.outgoingQueue.map { item in
                 var recovered = item
                 if let message = saved.messages.first(where: { $0.id == item.id }), !message.mailAccount.isRemote {
-                    recovered.status = .failed
-                    recovered.lastError = MailStorageError.workspaceRequired.localizedDescription
+                    recovered = stoppedLegacySend(recovered)
                 } else if recovered.status == .delivering && recovered.serverJobID == nil {
                     recovered.status = .failed
                     recovered.lastError = "Delivery was interrupted. Check Sent before retrying to avoid sending twice."
@@ -58,8 +71,9 @@ extension MailStore {
     @discardableResult
     func persistState() -> Bool {
         guard persistenceReady, persistenceSuspended == 0 else { return true }
-        guard let persistence else { return true }
         guard !persistenceBlocked else { return false }
+        preserveRecoveredDraftDuringComposition()
+        guard let persistence else { return true }
         do {
             try persistence.save(MailStateSnapshot(messages: messages, savedViews: savedViews,
                 snippets: snippets, senderRules: senderRules, outgoingQueue: outgoingQueue,
@@ -94,7 +108,7 @@ extension MailStore {
     }
 
     func recoverDraft() {
-        guard !isComposing, let draft = recoveredDraft else { return }
+        guard draftRecoveryAvailable, let draft = recoveredDraft else { return }
         persistenceSuspended += 1
         editingDraftID = draft.editingMessageID
         draftConversationID = draft.conversationID
@@ -125,8 +139,50 @@ extension MailStore {
     }
 
     func discardRecoveredDraft() {
+        guard draftRecoveryAvailable else { return }
         recoveredDraft = nil
         persistState()
+    }
+
+    /// The persisted active-draft slot is singular. Before another workspace
+    /// begins composing, retain its hidden recovery as a normal scoped draft.
+    private func preserveRecoveredDraftDuringComposition() {
+        guard isComposing, let draft = recoveredDraft else { return }
+        let existingIndex = messages.firstIndex {
+            $0.id == draft.editingMessageID && $0.account == draft.account.rawValue && $0.mailbox == .drafts
+        }
+        var message = existingIndex.map { messages[$0] } ?? MailMessage(
+            sender: "Me", senderEmail: draft.providerAccountEmail ?? draft.account.email, initials: "",
+            subject: draft.subject, preview: "", paragraphs: [], timeLabel: "Just now",
+            mailbox: .drafts, account: draft.account.rawValue, isOutgoing: true,
+            conversationID: draft.conversationID)
+        message.subject = draft.subject
+        message.preview = draft.body.replacingOccurrences(of: "\n", with: " ")
+        message.paragraphs = draft.body.components(separatedBy: "\n\n")
+        message.bodyRTF = draft.bodyRTF
+        message.bodyHTML = nil
+        message.toRecipients = draft.to.isEmpty ? [] : [draft.to]
+        message.ccRecipients = draft.cc.isEmpty ? [] : [draft.cc]
+        message.bccRecipients = draft.bcc.isEmpty ? [] : [draft.bcc]
+        message.attachments = draft.attachments
+        message.conversationID = draft.conversationID
+        message.providerThreadID = draft.providerThreadID
+        message.providerAccountEmail = draft.providerAccountEmail
+        message.inReplyTo = draft.inReplyTo
+        message.references = draft.references
+        message.trackOpens = draft.trackOpens
+        message.trackLinks = draft.trackLinks
+        message.workflow.scheduledSendAt = draft.sendAt
+        message.workflow.followUpAt = draft.followUpAt
+        message.workflow.followUpOnlyIfNoReply = draft.followUpOnlyIfNoReply
+        persistenceSuspended += 1
+        let previousSuppression = suppressRemoteMutations
+        suppressRemoteMutations = true
+        if let existingIndex { messages[existingIndex] = message }
+        else { messages.insert(message, at: 0) }
+        recoveredDraft = nil
+        suppressRemoteMutations = previousSuppression
+        persistenceSuspended -= 1
     }
 
     func syncProviderChanges(from previous: [MailMessage]) {

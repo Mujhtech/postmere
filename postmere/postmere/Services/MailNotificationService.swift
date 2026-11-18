@@ -45,19 +45,16 @@ enum MailReminderPlanning {
         return "\(Data(identity.utf8).base64EncodedString()).\(message.conversationID.uuidString)"
     }
 
-    static func isAvailable(_ message: MailMessage, activeGmailEmail: String?) -> Bool {
+    static func isAvailable(_ message: MailMessage) -> Bool {
         guard !message.isDraft, !message.isDeletedOnProvider, message.mailbox != .trash, message.mailbox != .outbox,
               message.workflow.screeningState == .accepted else { return false }
-        if message.account == "Gmail", let identity = message.providerAccountEmail {
-            return identity.caseInsensitiveCompare(activeGmailEmail ?? "") == .orderedSame
-        }
-        return true
+        return message.mailAccount.isConnected
     }
 
-    static func sources(messages: [MailMessage], dueSnoozes: [String: Date] = [:], activeGmailEmail: String? = nil) -> [MailReminderSource] {
+    static func sources(messages: [MailMessage], dueSnoozes: [String: Date] = [:]) -> [MailReminderSource] {
         var result: [MailReminderSource] = []
         for (key, conversation) in Dictionary(grouping: messages, by: { conversationKey($0) }) {
-            let available = conversation.filter { isAvailable($0, activeGmailEmail: activeGmailEmail) }.sorted {
+            let available = conversation.filter { isAvailable($0) }.sorted {
                 $0.sentAt == $1.sentAt ? $0.id.uuidString < $1.id.uuidString : $0.sentAt > $1.sentAt
             }
             guard let newest = available.first else { continue }
@@ -98,6 +95,12 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
     private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
     private(set) var lastError: String?
     @ObservationIgnored var openMessage: ((UUID) -> Void)?
+    @ObservationIgnored var openRemoteMessage: ((MailPushDestination) -> Void)?
+    @ObservationIgnored var validateRemoteDestination: ((MailPushDestination) -> Bool)?
+    @ObservationIgnored var shouldPresentRemoteDestination: ((MailPushDestination) async -> Bool)?
+    @ObservationIgnored var shouldNotifyLocally: ((MailMessage) -> Bool)?
+    @ObservationIgnored var shouldDeliverIncoming: ((MailMessage) -> Bool)?
+    @ObservationIgnored var onPreferencesChanged: (() -> Void)?
     @ObservationIgnored private let client: any MailNotificationClient
     @ObservationIgnored private let preferences: UserDefaults
     @ObservationIgnored private var scheduledFingerprint = ""
@@ -118,7 +121,7 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
         self.client = client
         self.preferences = preferences
         let saved: [NotificationProfile] = Self.load("notificationProfiles.v1", preferences: preferences) ?? []
-        profiles = ["Work", "Personal", "Gmail"].map { id in saved.first { $0.id == id } ?? NotificationProfile(id: id) }
+        profiles = saved
         deliveryRecords = Self.load("reminderDeliveries.v1", preferences: preferences) ?? [:]
         dueSnoozes = Self.load("dueSnoozeNotifications.v1", preferences: preferences) ?? [:]
         incomingRecords = Self.load("incomingNotificationReceipts.v1", preferences: preferences) ?? [:]
@@ -126,11 +129,22 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
         client.setDelegate(self)
     }
 
+    /// Preserve saved schedules for disconnected accounts while exposing a
+    /// separate profile for every active server/user/account identity.
+    func reconcileAccounts() {
+        let existing = Set(profiles.map(\.id))
+        let additions = RemoteAccountRegistry.accounts.filter { !existing.contains($0.localID) }
+            .map { NotificationProfile(id: $0.localID) }
+        if !additions.isEmpty { profiles.append(contentsOf: additions) }
+    }
+
     func refreshAuthorization(now: Date = .now) async {
         let status = await client.authorizationStatus()
-        if authorizationStatus != status { scheduledFingerprint = "" }
+        let changed = authorizationStatus != status
+        if changed { scheduledFingerprint = "" }
         authorizationStatus = status
         lastAuthorizationCheck = now
+        if changed { onPreferencesChanged?() }
     }
 
     func requestAuthorization() async {
@@ -163,8 +177,11 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func notifyNewMessage(_ message: MailMessage, now: Date = .now, calendar: Calendar = .current) async {
+        reconcileAccounts()
         if now.timeIntervalSince(lastAuthorizationCheck) >= 60 { await refreshAuthorization(now: now) }
-        guard isAuthorized, MailReminderPlanning.isAvailable(message, activeGmailEmail: preferences.string(forKey: "gmailEmail")),
+        guard isAuthorized, MailReminderPlanning.isAvailable(message),
+              shouldNotifyLocally?(message) != false,
+              shouldDeliverIncoming?(message) != false,
               message.isUnread, !message.isOutgoing,
               let profile = profiles.first(where: { $0.id == message.account }),
               let delivery = profile.nextPermittedDate(after: now, calendar: calendar) else { return }
@@ -174,6 +191,12 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
         content.userInfo["deliveryDate"] = delivery.timeIntervalSince1970
         do {
             try await client.add(UNNotificationRequest(identifier: identifier, content: content, trigger: trigger(delivery: delivery, now: now)))
+            guard MailReminderPlanning.isAvailable(message), shouldNotifyLocally?(message) != false,
+                  shouldDeliverIncoming?(message) != false else {
+                client.removePending([identifier])
+                client.removeDelivered([identifier])
+                return
+            }
             incomingRecords[identifier] = IncomingNotificationRecord(messageID: message.id, sentAt: message.sentAt)
             saveDeliveryState()
             scheduledFingerprint = ""
@@ -182,20 +205,27 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
 
     private var isAuthorized: Bool { authorizationStatus == .authorized || authorizationStatus == .provisional }
 
+    func notificationPolicyChanged() { scheduledFingerprint = "" }
+
     private func applyReconciliation() async {
         let now = latestDate
         let calendar = latestCalendar
         if now.timeIntervalSince(lastAuthorizationCheck) >= 60 { await refreshAuthorization(now: now) }
         let messages = latestMessages
-        let activeEmail = preferences.string(forKey: "gmailEmail")
-        let sources = MailReminderPlanning.sources(messages: messages, dueSnoozes: dueSnoozes, activeGmailEmail: activeEmail)
+        reconcileAccounts()
+        let activeAccounts = RemoteAccountRegistry.accounts.filter { $0.status == "connected" }.map(\.localID).sorted()
+        let sources = MailReminderPlanning.sources(messages: messages, dueSnoozes: dueSnoozes)
         let sourceFingerprint = sources.map { "\($0.identifier)|\($0.occurrence)|\($0.message.id)|\($0.message.subject)" }.joined(separator: "\n")
         let profileFingerprint = profiles.map { "\(timingSignature($0, calendar: calendar, now: now))|\($0.showPreview)" }.joined(separator: "\n")
         let messageStates = messages.map { "\($0.id)|\($0.isUnread)|\($0.mailbox.rawValue)|\($0.workflow.screeningState.rawValue)" }.sorted().joined(separator: ";")
-        let fingerprint = "\(sourceFingerprint)|\(profileFingerprint)|\(messageStates)|\(activeEmail ?? "")|\(authorizationStatus.rawValue)"
+        let fingerprint = "\(sourceFingerprint)|\(profileFingerprint)|\(messageStates)|\(activeAccounts.joined(separator: ";"))|\(authorizationStatus.rawValue)"
         guard fingerprint != scheduledFingerprint || now >= nextReconciliation else { return }
 
         let pending = await client.pendingRequests()
+        guard activeAccounts == RemoteAccountRegistry.accounts.filter({ $0.status == "connected" }).map(\.localID).sorted() else {
+            needsReconciliation = true
+            return
+        }
         let pendingByID = Dictionary(pending.map { ($0.identifier, $0) }, uniquingKeysWith: { _, last in last })
         if !isAuthorized {
             client.removePending(pending.map(\.identifier).filter(Self.manages))
@@ -236,6 +266,10 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
         var hadError = false
         for plan in plans {
             let source = plan.source
+            guard MailReminderPlanning.isAvailable(source.message) else {
+                needsReconciliation = true
+                return
+            }
             let content = notification(for: source.message, title: source.title, showPreview: plan.profile.showPreview)
             let signature = "\(source.occurrence)|\(source.message.id)|\(content.title)|\(content.body)|\(plan.delivery.timeIntervalSince1970)"
             content.userInfo["occurrence"] = source.occurrence
@@ -245,6 +279,12 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
                 do {
                     try await client.add(UNNotificationRequest(identifier: source.identifier, content: content,
                                                                trigger: trigger(delivery: plan.delivery, now: now)))
+                    guard MailReminderPlanning.isAvailable(source.message) else {
+                        client.removePending([source.identifier])
+                        client.removeDelivered([source.identifier])
+                        needsReconciliation = true
+                        return
+                    }
                 } catch { lastError = error.localizedDescription; hadError = true; continue }
             }
             deliveryRecords[source.identifier] = ReminderDeliveryRecord(occurrence: source.occurrence, deliveryDate: plan.delivery, timingSignature: plan.timing)
@@ -264,7 +304,8 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
         for request in pending where request.identifier.hasPrefix("incoming.") {
             let messageID = (request.content.userInfo["messageID"] as? String).flatMap(UUID.init(uuidString:))
             guard let message = messages.first(where: { $0.id == messageID }), message.isUnread,
-                  MailReminderPlanning.isAvailable(message, activeGmailEmail: preferences.string(forKey: "gmailEmail")),
+                  MailReminderPlanning.isAvailable(message),
+                  shouldDeliverIncoming?(message) != false,
                   let profile = profiles.first(where: { $0.id == message.account }),
                   let next = profile.nextPermittedDate(after: now, calendar: calendar) else {
                 client.removePending([request.identifier])
@@ -275,7 +316,14 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
             let content = notification(for: message, title: message.sender, showPreview: profile.showPreview)
             content.userInfo["deliveryDate"] = delivery.timeIntervalSince1970
             guard content.body != request.content.body || delivery != previousDate else { continue }
-            do { try await client.add(UNNotificationRequest(identifier: request.identifier, content: content, trigger: trigger(delivery: delivery, now: now))) }
+            do {
+                try await client.add(UNNotificationRequest(identifier: request.identifier, content: content, trigger: trigger(delivery: delivery, now: now)))
+                if !MailReminderPlanning.isAvailable(message) || shouldDeliverIncoming?(message) == false {
+                    client.removePending([request.identifier])
+                    client.removeDelivered([request.identifier])
+                    needsReconciliation = true
+                }
+            }
             catch { lastError = error.localizedDescription; hadError = true }
         }
         return hadError
@@ -308,6 +356,7 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
         catch { lastError = error.localizedDescription }
         scheduledFingerprint = ""
         if isReconciling { needsReconciliation = true }
+        onPreferencesChanged?()
     }
 
     private func saveDeliveryState() {
@@ -322,16 +371,45 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
         preferences.data(forKey: key).flatMap { try? JSONDecoder().decode(Value.self, from: $0) }
     }
 
+    func presentationOptions(for account: String,
+                             focusAllows: (String) async -> Bool = { await PostmereFocusFilter.allowsNotifications(for: $0) }) async -> UNNotificationPresentationOptions {
+        guard MailAccount(rawValue: account)?.isConnected == true,
+              await focusAllows(account),
+              MailAccount(rawValue: account)?.isConnected == true,
+              profiles.first(where: { $0.id == account })?.permits(.now) == true else { return [] }
+        return [.banner, .sound]
+    }
+
+    func remotePresentationOptions(for destination: MailPushDestination,
+                                    focusAllows: (String) async -> Bool = { await PostmereFocusFilter.allowsNotifications(for: $0) }) async -> UNNotificationPresentationOptions {
+        guard validateRemoteDestination?(destination) == true, await shouldPresentRemoteDestination?(destination) == true else { return [] }
+        let options = await presentationOptions(for: destination.filterCriteria, focusAllows: focusAllows)
+        guard validateRemoteDestination?(destination) == true, await shouldPresentRemoteDestination?(destination) == true else { return [] }
+        return options
+    }
+
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                            willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        if let destination = MailPushDestination(userInfo: notification.request.content.userInfo) {
+            return await remotePresentationOptions(for: destination)
+        }
+        // A malformed remote payload must not fall through as a local alert.
+        guard notification.request.content.userInfo["postmere_push"] == nil else { return [] }
         guard let account = notification.request.content.filterCriteria else { return [] }
-        let permitted = await MainActor.run { self.profiles.first(where: { $0.id == account })?.permits(.now) == true }
-        guard permitted, await PostmereFocusFilter.allowsNotifications(for: account) else { return [] }
-        return [.banner, .sound]
+        return await presentationOptions(for: account)
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                            didReceive response: UNNotificationResponse) async {
+        if let destination = MailPushDestination(userInfo: response.notification.request.content.userInfo) {
+            guard response.actionIdentifier != UNNotificationDismissActionIdentifier else { return }
+            await MainActor.run {
+                NSApp.activate(ignoringOtherApps: true)
+                self.openRemoteMessage?(destination)
+            }
+            return
+        }
+        guard response.notification.request.content.userInfo["postmere_push"] == nil else { return }
         guard response.actionIdentifier != UNNotificationDismissActionIdentifier,
               let identifier = response.notification.request.content.userInfo["messageID"] as? String,
               let id = UUID(uuidString: identifier) else { return }

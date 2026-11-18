@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SidebarView: View {
     @Bindable var store: MailStore
-    @Environment(MailRuntime.self) private var runtime
     var onSelect: (() -> Void)?
     @State private var showsViewEditor = false
     @State private var editingSavedView: SavedInboxView?
@@ -79,18 +78,12 @@ struct SidebarView: View {
                     }
                 }
 
-                Section("Accounts") {
-                    ForEach(accounts, id: \.self) { account in
-                        accountRow(account)
+                if !accounts.isEmpty {
+                    Section("Accounts") {
+                        ForEach(accounts) { account in
+                            accountRow(account)
+                        }
                     }
-                    if accounts.isEmpty {
-                        Text(runtime.backend.isConnected ? "No email accounts" : "Workspace not connected")
-                            .font(.system(size: 12)).foregroundStyle(.secondary)
-                    }
-                    AccountSettingsButton(title: runtime.backend.isConnected ? "Add Account…" : "Sign In…")
-                        .buttonStyle(.plain)
-                        .font(.system(size: 12))
-                        .foregroundStyle(PostmereTheme.accentInk)
                 }
             }
             .scrollIndicators(.never)
@@ -99,28 +92,19 @@ struct SidebarView: View {
 
             Divider()
 
-            HStack(spacing: 9) {
-                PostmereIcon("person.crop.circle", size: 23)
-                    .foregroundStyle(PostmereTheme.icon)
-                    .fixedSize()
-                Text(runtime.backend.isConnected ? "Postmere Workspace" : "Not signed in")
-                    .font(.system(size: 12))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .help(runtime.backend.isConnected ? "Connected to your Postmere workspace" : "Sign in from Accounts settings")
-                Spacer(minLength: 4)
-                SettingsLink {
+            SettingsLink {
+                HStack(spacing: 8) {
                     navigationIcon("gearshape")
+                    Text("Settings")
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.borderless)
-                .fixedSize()
-                .layoutPriority(1)
-                .foregroundStyle(.secondary)
-                .help("Settings")
-                .accessibilityLabel("Settings")
+                    .font(.system(size: 12))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .contentShape(.rect)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
         }
         .sheet(isPresented: $showsViewEditor) { SavedInboxViewEditor(store: store, editing: editingSavedView) }
     }

@@ -21,6 +21,13 @@ struct MailAccount: RawRepresentable, Codable, CaseIterable, Identifiable, Hasha
     var isConnected: Bool { remote?.status == "connected" }
     var remote: RemoteAccountIdentity? { RemoteAccountRegistry.accounts.first { $0.localID == rawValue } }
     var name: String { self == .unassigned ? "Choose an account" : isRemote ? remote?.email ?? "Disconnected account" : rawValue }
+    static func scopeLabel(for id: String?, providerEmail: String? = nil) -> String {
+        guard let id else { return "All accounts" }
+        let account = MailAccount(rawValue: id)
+        if let email = account?.remote?.email ?? providerEmail, !email.isEmpty { return email }
+        guard let account, account != .unassigned else { return "No account" }
+        return account.name
+    }
     var displayName: String {
         if isRemote { return remote?.displayName ?? "Me" }
         return self == .work || self == .personal ? "Alex Johnson" : "Me"
@@ -240,7 +247,14 @@ struct MailMessage: Codable, Identifiable {
         set { providerDeletedAt = newValue ? providerDeletedAt ?? .now : nil }
     }
 
-    var mailAccount: MailAccount { MailAccount(rawValue: account) ?? .work }
+    var mailAccount: MailAccount { MailAccount(rawValue: account) ?? .unassigned }
+    var accountLabel: String { MailAccount.scopeLabel(for: account, providerEmail: providerAccountEmail) }
+    var displaySubject: String { Self.displaySubject(subject) }
+
+    static func displaySubject(_ subject: String) -> String {
+        subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(No subject)" : subject
+    }
+
     var isDraft: Bool { mailbox == .drafts || (mailbox == .trash && trashedFrom == .drafts) }
 
     /// Compatibility for callers that only need the first attachment.
@@ -291,7 +305,7 @@ struct MailMessage: Codable, Identifiable {
         self.sentAt = sentAt
         self.sender = sender
         let outgoing = isOutgoing ?? (mailbox == .sent || mailbox == .drafts || trashedFrom == .sent || trashedFrom == .drafts)
-        let identity = MailAccount(rawValue: account) ?? .work
+        let identity = MailAccount(rawValue: account) ?? .unassigned
         // Earlier sample messages stored the recipient in senderEmail for outgoing mail.
         self.senderEmail = outgoing && toRecipients == nil ? identity.email : senderEmail
         self.initials = initials

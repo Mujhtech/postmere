@@ -1,14 +1,20 @@
 import Foundation
 
 extension MailRuntime {
-    func syncBackend() async {
-        guard let requestScope = backend.scope, !isSyncingBackend else { return }
+    func syncBackend(refreshProvider: Bool = true) async {
+        guard backend.canAccessWorkspace, let requestScope = backend.scope, !isSyncingBackend else { return }
         isSyncingBackend = true
-        lastBackendSync = .now
-        lastBackendSyncScope = requestScope
+        if refreshProvider {
+            lastBackendSync = .now
+            lastBackendSyncScope = requestScope
+        }
         defer { isSyncingBackend = false }
         do {
             try await backend.refreshAccounts()
+            guard backend.scope == requestScope else { return }
+            // Restore remote-delivery ownership before new cache rows can
+            // schedule a duplicate local alert after a quit/relaunch.
+            await synchronizePush()
             guard backend.scope == requestScope else { return }
             let identities = RemoteAccountRegistry.accounts.filter { $0.scope == requestScope }
             var failures: [String] = []
@@ -23,7 +29,7 @@ extension MailRuntime {
                         let known = Set(store.messages.filter { $0.account == identity.localID }.map(\.id))
                         let page: BackendMailPage
                         do {
-                            page = try await backend.request("POST", "/v1/mail/accounts/\(identity.accountID.uuidString)/sync", body: BackendSyncInput(cursor: cursor))
+                            page = try await backend.request("POST", "/v1/mail/accounts/\(identity.accountID.uuidString)/sync", body: BackendSyncInput(cursor: cursor, refreshProvider: refreshProvider ? nil : false))
                         } catch BackendError.response(400, _) where cursor != nil {
                             guard backend.isAccountConnected(identity.accountID, scope: identity.scope) else { break }
                             // A retired cursor key or reset server cache requires a
@@ -36,7 +42,7 @@ extension MailRuntime {
                         guard backend.isAccountConnected(identity.accountID, scope: identity.scope) else { break }
                         guard store.applyBackendPage(page, identity: identity) else { return }
                         for message in store.backendNotificationCandidates(for: identity, excluding: known) {
-                            await notifications.notifyNewMessage(message)
+                            await notifyBackendMessage(message)
                         }
                         if !page.hasMore { break }
                     }
@@ -118,7 +124,7 @@ nonisolated struct BackendSearchContext: Equatable {
     let query: String
 }
 
-nonisolated struct BackendSyncInput: Encodable, Sendable { let cursor: String? }
+nonisolated struct BackendSyncInput: Encodable, Sendable { let cursor: String?; var refreshProvider: Bool? = nil }
 
 nonisolated struct BackendSearchRequest: Encodable, Sendable {
     let query: String

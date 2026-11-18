@@ -90,9 +90,8 @@ extension MailStore {
             onRetryRemoteSend(id)
             return
         }
-        outgoingQueue[index].status = .failed
-        outgoingQueue[index].lastError = MailStorageError.workspaceRequired.localizedDescription
-        operationError = MailStorageError.workspaceRequired.localizedDescription
+        outgoingQueue[index] = stoppedLegacySend(outgoingQueue[index])
+        operationError = outgoingQueue[index].lastError
     }
 
     /// Delivery belongs to the server. Quarantine legacy local sends without
@@ -103,9 +102,21 @@ extension MailStore {
             guard outgoingQueue[index].status == .pending || outgoingQueue[index].status == .delivering,
                   let message = messages.first(where: { $0.id == outgoingQueue[index].id }),
                   !message.mailAccount.isRemote else { continue }
-            outgoingQueue[index].status = .failed
-            outgoingQueue[index].lastError = MailStorageError.workspaceRequired.localizedDescription
+            outgoingQueue[index] = stoppedLegacySend(outgoingQueue[index])
         }
+    }
+
+    func stoppedLegacySend(_ item: OutgoingMailItem) -> OutgoingMailItem {
+        var result = item
+        var details = item.lastError ?? ""
+        if item.status == .delivering && !details.contains("Check Sent") {
+            details += (details.isEmpty ? "" : " ") + "Previous delivery was interrupted and may have reached the provider. Check Sent before sending again."
+        }
+        let notice = MailStorageError.workspaceRequired.localizedDescription
+        if !details.contains(notice) { details += (details.isEmpty ? "" : " ") + notice }
+        result.status = .failed
+        result.lastError = details
+        return result
     }
 
     func processWorkflowDates(now: Date = .now) {
@@ -203,22 +214,7 @@ extension MailStore {
         reconcileSelection()
     }
 
-    func markProviderMessagesUnavailable(ids: Set<String>, accountEmail: String) {
-        guard !ids.isEmpty else { return }
-        var updated = messages
-        var changed = false
-        for index in updated.indices where updated[index].providerAccountEmail?.caseInsensitiveCompare(accountEmail) == .orderedSame {
-            guard let providerID = updated[index].providerMessageID, ids.contains(providerID), !updated[index].isDeletedOnProvider else { continue }
-            updated[index].isDeletedOnProvider = true
-            providerOverrides[updated[index].id] = nil
-            changed = true
-        }
-        guard changed else { return }
-        suppressRemoteMutations = true
-        messages = updated
-        suppressRemoteMutations = false
-        reconcileSelection()
-    }
+
 }
 
 private enum BackendQueueError {

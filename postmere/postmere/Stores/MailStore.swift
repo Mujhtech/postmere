@@ -35,10 +35,12 @@ final class MailStore {
         didSet {
             if oldValue != draftAccount {
                 draftProviderAccountEmail = draftAccount.isLive ? draftAccount.email : nil
-                draftProviderThreadID = nil
-                draftInReplyTo = nil
-                draftReferences = []
-                draftConversationID = UUID()
+                if isComposing {
+                    draftProviderThreadID = nil
+                    draftInReplyTo = nil
+                    draftReferences = []
+                    draftConversationID = UUID()
+                }
             }
             draftChanged()
         }
@@ -64,9 +66,9 @@ final class MailStore {
     var inboxSplitOverlapPolicy: InboxSplitOverlapPolicy = .firstMatch { didSet { persistState(); reconcileSelection() } }
     var vipContacts: [VIPContact] = [] { didSet { persistState(); reconcileSelection() } }
     var snippets: [MailSnippet] = [] { didSet { persistState() } }
-    var senderRules: [SenderRule] = [] { didSet { persistState() } }
+    var senderRules: [SenderRule] = [] { didSet { persistState(); onNotificationPolicyChanged?() } }
     var outgoingQueue: [OutgoingMailItem] = [] { didSet { persistState() } }
-    var senderScreeningEnabled = false { didSet { persistState() } }
+    var senderScreeningEnabled = false { didSet { persistState(); onNotificationPolicyChanged?() } }
     var selectedSavedViewID: UUID?
     var persistenceError: String?
     var backendSyncCursors: [String: String] = [:]
@@ -86,6 +88,7 @@ final class MailStore {
     @ObservationIgnored var onRetryRemoteSend: ((UUID) -> Void)?
     @ObservationIgnored var remoteMutation: (@MainActor (MailMessage, MailMessage) async throws -> Void)?
     @ObservationIgnored var onSnoozeDue: (@MainActor (MailMessage, Date) -> Void)?
+    @ObservationIgnored var onNotificationPolicyChanged: (() -> Void)?
     @ObservationIgnored var providerOverrides: [UUID: ProviderMessageOverride] = [:]
     @ObservationIgnored var suppressRemoteMutations = false
     @ObservationIgnored var remoteMutationTasks: [UUID: Task<Void, Never>] = [:]
@@ -541,7 +544,7 @@ final class MailStore {
             id: editingDraftID ?? UUID(),
             sender: "Me",
             senderEmail: draftAccount.isLive ? draftProviderAccountEmail ?? draftAccount.email : draftAccount.email,
-            initials: "A",
+            initials: String(draftAccount.displayName.split(separator: " ").compactMap(\.first).prefix(2)).uppercased(),
             subject: draftSubject.isEmpty ? "(No subject)" : draftSubject,
             preview: draftBody.replacingOccurrences(of: "\n", with: " "),
             paragraphs: draftBody.components(separatedBy: "\n\n"),

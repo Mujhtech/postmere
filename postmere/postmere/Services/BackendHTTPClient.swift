@@ -7,10 +7,10 @@ nonisolated enum BackendError: LocalizedError, Sendable {
         switch self {
         case .invalidURL: "Enter the server’s base URL without a query, fragment, or password."
         case .insecureURL: "Use HTTPS for your Postmere server. Local development can use loopback HTTP."
-        case .redirect: "The server redirected this request. Check the server address in Settings."
+        case .redirect: "The server redirected this request. Check your workspace server address."
         case .invalidResponse: "The server returned an unreadable response."
         case .tooLarge: "The server response exceeded the size limit."
-        case .notConnected: "Connect to your Postmere server in Settings → Accounts."
+        case .notConnected: "Sign in to your Postmere workspace to continue."
         case let .response(_, message): message
         }
     }
@@ -24,14 +24,14 @@ nonisolated struct BackendHTTPClient: Sendable {
     private let maximumBytes = 40 * 1024 * 1024
 
     init(baseURL: String, configuration: URLSessionConfiguration = .ephemeral) throws {
-        guard let components = URLComponents(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let url = components.url, let host = components.host, !host.isEmpty,
-              components.user == nil, components.password == nil,
-              components.query == nil, components.fragment == nil,
-              components.path.isEmpty || components.path == "/" else { throw BackendError.invalidURL }
-        let loopback = ["127.0.0.1", "::1", "[::1]", "localhost"].contains(host.lowercased())
-        guard components.scheme == "https" || (components.scheme == "http" && loopback) else { throw BackendError.insecureURL }
-        self.baseURL = url
+        self.baseURL = try Self.validatedBaseURL(baseURL)
+        let isolated = Self.isolatedConfiguration(configuration)
+        isolated.timeoutIntervalForRequest = 45
+        isolated.timeoutIntervalForResource = 120
+        session = URLSession(configuration: isolated, delegate: BackendNoRedirect(), delegateQueue: nil)
+    }
+
+    static func isolatedConfiguration(_ configuration: URLSessionConfiguration) -> URLSessionConfiguration {
         let isolated = configuration.copy() as! URLSessionConfiguration
         isolated.httpCookieStorage = nil
         isolated.httpShouldSetCookies = false
@@ -40,9 +40,18 @@ nonisolated struct BackendHTTPClient: Sendable {
         isolated.urlCredentialStorage = nil
         isolated.httpAdditionalHeaders = [:]
         isolated.requestCachePolicy = .reloadIgnoringLocalCacheData
-        isolated.timeoutIntervalForRequest = 45
-        isolated.timeoutIntervalForResource = 120
-        session = URLSession(configuration: isolated, delegate: BackendNoRedirect(), delegateQueue: nil)
+        return isolated
+    }
+
+    static func validatedBaseURL(_ baseURL: String) throws -> URL {
+        guard let components = URLComponents(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let url = components.url, let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil,
+              components.path.isEmpty || components.path == "/" else { throw BackendError.invalidURL }
+        let loopback = ["127.0.0.1", "::1", "[::1]", "localhost"].contains(host.lowercased())
+        guard components.scheme == "https" || (components.scheme == "http" && loopback) else { throw BackendError.insecureURL }
+        return url
     }
 
     func request<Response: Decodable & Sendable>(_ method: String, _ path: String, token: String? = nil,
@@ -90,7 +99,7 @@ nonisolated struct BackendHTTPClient: Sendable {
             // Do not expose arbitrary response HTML or provider credentials in UI errors.
             let message: String
             switch response.statusCode {
-            case 401: message = "Your session expired or the sign-in details were not accepted."
+            case 401: message = "Your workspace sign-in is no longer valid, or the sign-in details were not accepted."
             case 403: message = "This account does not have access to that operation."
             case 404: message = "That item is no longer available."
             case 409: message = "The item changed. Refresh it before trying again."
@@ -129,7 +138,7 @@ nonisolated struct BackendHTTPClient: Sendable {
     }
 }
 
-nonisolated private final class BackendNoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+nonisolated final class BackendNoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)

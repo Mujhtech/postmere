@@ -57,7 +57,7 @@ final class MailUnsubscribeService: MailUnsubscribeRequesting {
 
     init(configuration: URLSessionConfiguration = .ephemeral,
          resolveHost: @escaping @Sendable (String) async throws -> [String] = { host in try await MailUnsubscribeURLPolicy.resolveHost(host) }) {
-        // Never share Gmail authorization, browser cookies, cached credentials,
+        // Never share provider authorization, browser cookies, cached credentials,
         // or a persistent session with a sender-controlled endpoint (RFC 8058).
         let isolated = configuration.copy() as! URLSessionConfiguration
         isolated.httpCookieStorage = nil
@@ -84,10 +84,8 @@ final class MailUnsubscribeService: MailUnsubscribeRequesting {
     }
 
     func requestOneClick(for message: MailMessage) async throws {
-        // Gmail's API exposes ordinary RFC headers, including messages inserted
-        // without receiver scanning. Authentication-Results text is not proof.
-        // The workspace service verifies raw DKIM cryptographically; direct
-        // Gmail retains explicit email/browser alternatives until it can too.
+        // Cached headers are not cryptographic proof. The workspace server
+        // verifies raw DKIM and owns every one-click unsubscribe request.
         throw MailUnsubscribeError.unsupported
     }
 

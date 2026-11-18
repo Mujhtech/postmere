@@ -14,19 +14,14 @@ struct AccountSettingsButton: View {
 }
 
 struct WorkspaceConnectionEmptyView: View {
-    @Environment(MailRuntime.self) private var runtime
-
     var body: some View {
         ContentUnavailableView {
-            PostmereLabel(runtime.backend.isConnected ? "Add your email accounts" : "Welcome to Postmere",
-                          symbol: "envelope", size: 42)
+            PostmereLabel.emptyState("Add your first email account", symbol: "envelope", size: 42)
         } description: {
-            Text(runtime.backend.isConnected
-                 ? "Connect your Google and Outlook accounts to read and send mail from one workspace."
-                 : "Sign in to your Postmere workspace, then add your Google and Outlook accounts.")
+            Text("Choose Google or Outlook in Accounts settings to start reading and sending mail.")
                 .frame(maxWidth: 340)
         } actions: {
-            AccountSettingsButton(title: runtime.backend.isConnected ? "Add an Account" : "Sign In to Workspace")
+            AccountSettingsButton(title: "Open Accounts Settings")
                 .buttonStyle(.borderedProminent)
         }
     }

@@ -186,6 +186,14 @@ extension MailStore {
             && (rule.providerAccountEmail == nil || rule.providerAccountEmail?.lowercased() == message.providerAccountEmail?.lowercased())
     }
 
+    func permitsIncomingNotification(_ message: MailMessage) -> Bool {
+        guard message.isUnread, !message.isOutgoing, !message.isDeletedOnProvider, message.mailbox == .inbox else { return false }
+        if let rule = senderRules.first(where: { matchesRule($0, message: message) }) {
+            return rule.route == .inbox || rule.route == .needsReply
+        }
+        return !senderScreeningEnabled
+    }
+
     func applyRule(_ rule: SenderRule, to message: inout MailMessage) {
         message.workflow.screeningState = rule.route == .blocked ? .blocked : .accepted
         // Routing never revives mail that was explicitly trashed, except an accepted screened sender.

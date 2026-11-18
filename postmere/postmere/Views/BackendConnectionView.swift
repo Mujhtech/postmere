@@ -3,6 +3,8 @@ import AppKit
 
 struct BackendConnectionView: View {
     @Bindable var session: BackendSession
+    @Bindable var store: MailStore
+    @Environment(\.openWindow) private var openWindow
     var onSync: () async -> Void
     @State private var email = ""
     @State private var password = ""
@@ -25,6 +27,11 @@ struct BackendConnectionView: View {
                 if session.isConnected {
                     LabeledContent("Server", value: session.baseURL)
                     Text("Your workspace keeps your accounts in sync and delivers scheduled mail while this Mac is asleep.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let serverURL = URL(string: session.baseURL) {
+                        Link("Manage connected assistants", destination: serverURL.appending(path: "mcp/connected"))
+                    }
+                    Text("Signing out also revokes this workspace’s assistant connections.")
                         .font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Button("Sync Mail") { Task { await onSync() } }
@@ -96,6 +103,16 @@ struct BackendConnectionView: View {
                     }
                 }
             }
+            if !store.previousAccountDrafts.isEmpty {
+                Section("Previous local drafts") {
+                    Text("Review these saved drafts, then choose a connected workspace account in From. For any previously attempted delivery, check Sent before sending again.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ForEach(store.previousAccountDrafts) { draft in
+                        previousDraftRow(draft)
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .scrollIndicators(.never)
@@ -111,6 +128,29 @@ struct BackendConnectionView: View {
         } message: {
             Text("This stops syncing the account and cancels its pending sends. Existing mail and drafts on this Mac stay saved.")
         }
+    }
+
+    private func previousDraftRow(_ draft: MailMessage) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            PostmereIcon("doc", size: 18).foregroundStyle(PostmereTheme.icon)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(MailMessage.displaySubject(draft.subject))
+                    .lineLimit(2)
+                Text(draft.providerAccountEmail ?? draft.senderEmail)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                if let error = store.outgoingQueue.first(where: { $0.id == draft.id })?.lastError {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 8)
+            Button("Review Draft") {
+                store.reviewPreviousAccountDraft(id: draft.id)
+                if store.isComposing { openWindow(id: "compose") }
+            }.disabled(store.isComposing)
+        }.padding(.vertical, 3)
     }
 
     private func accountRow(_ account: BackendAccount) -> some View {

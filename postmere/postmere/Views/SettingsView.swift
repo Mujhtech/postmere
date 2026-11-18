@@ -115,7 +115,7 @@ struct SettingsView: View {
     }
 
     private var accountSettings: some View {
-        BackendConnectionView(session: runtime.backend, onSync: runtime.sync)
+        BackendConnectionView(session: runtime.backend, store: store, onSync: runtime.sync)
     }
 
     private var notificationProfile: Binding<NotificationProfile> {
@@ -171,6 +171,12 @@ struct SettingsView: View {
                 Text("In System Settings → Focus, add Postmere as a Focus Filter to choose which accounts may notify you. Your Focus and notification permissions still apply.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            Section("While Postmere is closed") {
+                Text(runtime.push.statusText).font(.caption).foregroundStyle(.secondary)
+                if let error = runtime.push.lastError { Text(error).font(.caption).foregroundStyle(.secondary) }
+                Text("Apple push delivery follows your account schedules and system Focus settings while you stay signed in. Sign-in continues until you sign out or workspace access is revoked. Accounts with local sender screening or blocking rules use local notifications while Postmere is open.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }.formStyle(.grouped).scrollIndicators(.never)
             .task { await runtime.notifications.refreshAuthorization() }
     }
@@ -219,7 +225,7 @@ struct SettingsView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(rule.email).lineLimit(1)
-                            Text("\(rule.account ?? "All accounts") · \(rule.route.title)").font(.caption).foregroundStyle(.secondary)
+                            Text("\(MailAccount.scopeLabel(for: rule.account, providerEmail: rule.providerAccountEmail)) · \(rule.route.title)").font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button("Remove") { store.deleteSenderRule(rule.id) }.controlSize(.small)
@@ -250,7 +256,7 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Navigation and composing") {
-                shortcut("All Inbox / inbox tabs", "⌘1 … ⌘9")
+                shortcut("Select inbox tab", "⌘1 … ⌘9")
                 shortcut("Search messages", "⌘F")
                 shortcut("Show mailboxes", "⌃⌘S")
                 shortcut("Save draft", "⌘S")

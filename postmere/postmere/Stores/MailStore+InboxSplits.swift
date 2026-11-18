@@ -29,10 +29,6 @@ extension MailStore {
             operationError = contact.kind == .person ? "Enter one complete email address, such as person@example.com." : "Enter a domain, such as example.com, without a URL or @ sign."
             return false
         }
-        if contact.account == MailAccount.gmail.rawValue && contact.providerAccountEmail == nil {
-            let email = MailAccount.gmail.email.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !email.isEmpty { contact.providerAccountEmail = email.lowercased() }
-        }
         contact.providerAccountEmail = contact.providerAccountEmail?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if let index = vipContacts.firstIndex(where: {
             $0.id == contact.id || ($0.normalizedValue == contact.value && $0.kind == contact.kind

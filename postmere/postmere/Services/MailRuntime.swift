@@ -1,5 +1,7 @@
 import AppKit
+import AppIntents
 import Observation
+import UserNotifications
 
 @MainActor
 @Observable
@@ -7,6 +9,7 @@ final class MailRuntime {
     let store: MailStore
     let backend = BackendSession()
     let notifications = MailNotificationService()
+    let push = MailPushService()
     var showsCommandPalette = false
     var showsAttachmentLibrary = false
     var showsSavedViewEditor = false
@@ -28,6 +31,8 @@ final class MailRuntime {
     private(set) var privateNoteTarget: MailMessage?
     @ObservationIgnored var pendingPaletteAction: (() -> Void)?
     @ObservationIgnored var openMailWindow: (() -> Void)?
+    private var lastAccessibleWorkspaceScope: String?
+    private var suspendedComposerScope: String?
     private var started = false
     var isSyncingBackend = false
     var backendHasMore = false
@@ -39,13 +44,100 @@ final class MailRuntime {
     var lastBackendOutboxRefresh = Date.distantPast
     var submittingBackendItems: Set<UUID> = []
     @ObservationIgnored private var worker: Task<Void, Never>?
+    @ObservationIgnored private let realtime = BackendRealtimeCoordinator()
+    @ObservationIgnored private var pushRegistrationGeneration: UUID?
+    private var pendingPushDestination: MailPushDestination?
+    private var isOpeningPushDestination = false
+    private var deferredIncomingNotificationIDs: Set<UUID> = []
+    private var isFlushingDeferredNotifications = false
 
-    init(store: MailStore? = nil) { self.store = store ?? MailStore() }
+    init(store: MailStore? = nil) {
+        self.store = store ?? MailStore()
+        backend.pushInstallationID = push.installationID
+        backend.onAccountCatalogChanged = { [weak self] in
+            PostmereFocusFilter.invalidateFocusFilterAppContext()
+            self?.reconcileWorkspaceAccess()
+        }
+        notifications.shouldNotifyLocally = { [weak self] message in
+            self?.push.allowsLocalIncoming(for: message.account) == true
+        }
+        notifications.shouldDeliverIncoming = { [weak self] message in
+            self?.store.permitsIncomingNotification(message) == true
+        }
+        self.store.onNotificationPolicyChanged = { [weak self] in
+            self?.notifications.notificationPolicyChanged()
+            Task { await self?.synchronizePush() }
+        }
+        notifications.onPreferencesChanged = { [weak self] in Task { await self?.synchronizePush() } }
+        notifications.validateRemoteDestination = { [weak self] destination in
+            self?.validPushDestination(destination) == true
+        }
+        notifications.shouldPresentRemoteDestination = { [weak self] destination in
+            await self?.shouldPresentPush(destination) == true
+        }
+        notifications.openRemoteMessage = { [weak self] destination in
+            self?.pendingPushDestination = destination
+            Task { await self?.openPendingPushDestination() }
+        }
+    }
 
     func finishPaletteDismissal() {
         let action = pendingPaletteAction
         pendingPaletteAction = nil
+        guard backend.canAccessWorkspace else { return }
         action?()
+    }
+
+    var canResumeComposer: Bool {
+        !store.isComposing || suspendedComposerScope == nil || suspendedComposerScope == backend.scope
+    }
+
+    /// Save the current draft, but remove every transient mail presentation
+    /// when the workspace session ends. The scene gate removes its view tree.
+    func reconcileWorkspaceAccess() {
+        reconcileRealtime()
+        let generation = backend.realtimeGeneration
+        push.reset(generation: generation)
+        if pushRegistrationGeneration != generation {
+            deferredIncomingNotificationIDs = []
+            pushRegistrationGeneration = generation
+            if generation != nil { NSApp?.registerForRemoteNotifications() }
+            else { NSApp?.unregisterForRemoteNotifications() }
+        }
+        guard !backend.canAccessWorkspace else {
+            lastAccessibleWorkspaceScope = backend.scope
+            if !store.isComposing || suspendedComposerScope == backend.scope { suspendedComposerScope = nil }
+            return
+        }
+        pendingPaletteAction = nil
+        showsCommandPalette = false
+        showsAttachmentLibrary = false
+        showsSavedViewEditor = false
+        showsInboxManager = false
+        showsCalendar = false
+        showsAIQuestion = false
+        showsWorkspace = false
+        schedulePurpose = nil
+        scheduleTarget = nil
+        showsPrivateNote = false
+        privateNoteTarget = nil
+        activeSharedReplyID = nil
+        activeSharedReplyScope = nil
+        openMailWindow = nil
+        if store.isComposing, suspendedComposerScope == nil {
+            suspendedComposerScope = lastAccessibleWorkspaceScope ?? ""
+            store.saveDraft()
+            if !store.isComposing { suspendedComposerScope = nil }
+        } else {
+            store.flushPersistence()
+        }
+
+        // Native attachment and formatting panels are not owned by a SwiftUI
+        // sheet, so dismiss those as the authenticated view is removed.
+        for panel in (NSApp?.windows ?? []).compactMap({ $0 as? NSPanel }) {
+            if let filePanel = panel as? NSSavePanel { filePanel.cancel(nil) }
+            else { panel.orderOut(nil) }
+        }
     }
 
     func start() {
@@ -67,22 +159,148 @@ final class MailRuntime {
         store.onSnoozeDue = { [weak self] message, date in
             Task { await self?.notifications.notifySnoozeDue(message, originalDate: date) }
         }
+        Task { await backend.retryPendingRevocations(force: true) }
         await backend.restore()
         await notifications.refreshAuthorization()
         while !Task.isCancelled {
-            if backend.isConnected && !isSyncingBackend
+            Task { await backend.retryPendingRevocations() }
+            await backend.retrySavedSession()
+            await backend.expireSessionIfNeeded()
+            reconcileRealtime()
+            if backend.canAccessWorkspace && !isSyncingBackend
                 && (backend.scope != lastBackendSyncScope || Date.now.timeIntervalSince(lastBackendSync) >= 60) {
                 Task { await sync() }
             }
-            store.processWorkflowDates()
-            Task { await store.processDueWork() }
-            if backend.isConnected { Task { await processBackendOutbox() } }
-            await refreshSharedPresence()
+            if backend.canAccessWorkspace {
+                Task { await synchronizePush() }
+                Task { await openPendingPushDestination() }
+                Task { await store.processDueWork() }
+                Task { await processBackendOutbox() }
+                await refreshSharedPresence()
+            }
             await notifications.reconcileReminders(messages: store.messages)
             do { try await Task.sleep(for: .seconds(1)) }
             catch { break }
         }
         started = false
+        realtime.update(generation: nil, connect: { _, _ in }, refresh: { _ in })
+    }
+
+    func synchronizePush(forceStatus: Bool = false) async {
+        notifications.reconcileAccounts()
+        let authorized = notifications.authorizationStatus == .authorized || notifications.authorizationStatus == .provisional
+        let preferences = MailPushPreferences.workspace(accounts: RemoteAccountRegistry.accounts, profiles: notifications.profiles,
+            authorized: authorized, senderScreeningEnabled: store.senderScreeningEnabled, senderRules: store.senderRules)
+        await push.synchronize(session: backend, preferences: preferences, forceStatus: forceStatus)
+        await flushDeferredIncomingNotifications()
+    }
+
+    func notifyBackendMessage(_ message: MailMessage) async {
+        guard push.hasResolvedDeliveryOwnership else {
+            deferredIncomingNotificationIDs.insert(message.id)
+            return
+        }
+        deferredIncomingNotificationIDs.remove(message.id)
+        await notifications.notifyNewMessage(message)
+    }
+
+    private func flushDeferredIncomingNotifications() async {
+        guard !isFlushingDeferredNotifications, !deferredIncomingNotificationIDs.isEmpty,
+              push.hasResolvedDeliveryOwnership, let generation = backend.realtimeGeneration else { return }
+        isFlushingDeferredNotifications = true
+        defer { isFlushingDeferredNotifications = false }
+        let pending = deferredIncomingNotificationIDs
+        let known = Set(store.messages.map(\.id)).subtracting(pending)
+        for account in RemoteAccountRegistry.accounts {
+            for message in store.backendNotificationCandidates(for: account, excluding: known) {
+                guard backend.realtimeGeneration == generation, push.hasResolvedDeliveryOwnership else { return }
+                await notifyBackendMessage(message)
+            }
+        }
+        if backend.realtimeGeneration == generation {
+            // Entries read, removed or screened while registration was offline
+            // are deliberately dropped instead of reviving an old alert.
+            deferredIncomingNotificationIDs.subtract(pending)
+        }
+    }
+
+    func registeredForPush(token: Data) {
+        push.registered(token: token)
+        Task { await synchronizePush() }
+    }
+
+    func receivedPush(_ destination: MailPushDestination) {
+        guard validPushDestination(destination) else { return }
+        Task { await syncBackend(refreshProvider: false) }
+    }
+
+    private func validPushDestination(_ destination: MailPushDestination) -> Bool {
+        guard backend.canAccessWorkspace, let credential = backend.credential,
+              let account = RemoteAccountRegistry.accounts.first(where: { $0.accountID == destination.accountID }),
+              backend.isAccountConnected(account.accountID, scope: account.scope) else { return false }
+        return destination.matches(credential, account: account)
+    }
+
+    private func shouldPresentPush(_ destination: MailPushDestination) async -> Bool {
+        guard validPushDestination(destination), push.remoteAccountIDs.contains(destination.filterCriteria) else { return false }
+        let generation = backend.realtimeGeneration
+        if !store.messages.contains(where: { $0.backendMessageID == destination.messageID && $0.account == destination.filterCriteria }) {
+            do {
+                let response: BackendMailMessage = try await backend.request("GET", "/v1/mail/messages/\(destination.messageID.uuidString)")
+                guard backend.realtimeGeneration == generation, validPushDestination(destination),
+                      response.id == destination.messageID, response.accountId == destination.accountID,
+                      let account = RemoteAccountRegistry.accounts.first(where: { $0.localID == destination.filterCriteria }) else { return false }
+                store.mergeIncoming([response.localMessage(identity: account)])
+            } catch { return false }
+        }
+        guard backend.realtimeGeneration == generation, validPushDestination(destination),
+              push.remoteAccountIDs.contains(destination.filterCriteria),
+              let message = store.messages.first(where: { $0.backendMessageID == destination.messageID && $0.account == destination.filterCriteria }) else { return false }
+        return store.permitsIncomingNotification(message)
+    }
+
+    private func openPendingPushDestination() async {
+        guard !isOpeningPushDestination, let destination = pendingPushDestination,
+              backend.canAccessWorkspace else { return }
+        guard validPushDestination(destination) else { pendingPushDestination = nil; return }
+        let generation = backend.realtimeGeneration
+        isOpeningPushDestination = true
+        defer { isOpeningPushDestination = false }
+        do {
+            if !store.messages.contains(where: { $0.backendMessageID == destination.messageID && $0.account == destination.filterCriteria }) {
+                let response: BackendMailMessage = try await backend.request("GET", "/v1/mail/messages/\(destination.messageID.uuidString)")
+                guard backend.realtimeGeneration == generation, validPushDestination(destination), response.id == destination.messageID,
+                      response.accountId == destination.accountID,
+                      let account = RemoteAccountRegistry.accounts.first(where: { $0.localID == destination.filterCriteria }) else { return }
+                store.mergeIncoming([response.localMessage(identity: account)])
+            }
+            guard backend.realtimeGeneration == generation, validPushDestination(destination),
+                  let message = store.messages.first(where: { $0.backendMessageID == destination.messageID && $0.account == destination.filterCriteria }) else { return }
+            pendingPushDestination = nil
+            openMessage(message.id)
+        } catch {
+            if backend.realtimeGeneration == generation { pendingPushDestination = nil; store.operationError = "This notification’s message could not be opened. Refresh your mail and try again." }
+        }
+    }
+
+    private func reconcileRealtime() {
+        let requestGeneration = backend.realtimeGeneration
+        realtime.update(generation: requestGeneration, connect: { [weak self] cursor, receive in
+            guard let self, self.backend.realtimeGeneration == requestGeneration else { throw CancellationError() }
+            try await self.backend.receiveEvents(lastEventID: cursor, receive: receive)
+        }, refresh: { [weak self] changes in
+            guard let self else { return }
+            // A search or manual/provider sync may already own the merge. Keep
+            // this event pending until it can reconcile through the same path.
+            while self.isSyncingBackend {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                guard self.backend.realtimeGeneration == requestGeneration else { return }
+            }
+            guard !Task.isCancelled, self.backend.realtimeGeneration == requestGeneration else { return }
+            if !changes.intersection([.mail, .accounts]).isEmpty { await self.syncBackend(refreshProvider: false) }
+            guard !Task.isCancelled, self.backend.realtimeGeneration == requestGeneration else { return }
+            if changes.contains(.outbox) { await self.processBackendOutbox(forceRefresh: true) }
+        })
     }
 
     func refreshSharedPresence(force: Bool = false) async {
@@ -104,20 +322,28 @@ final class MailRuntime {
         }
     }
 
-    func sync() async { await syncBackend() }
+    func sync() async {
+        guard backend.canAccessWorkspace else { return }
+        await syncBackend()
+    }
 
     func openMessage(_ id: UUID) {
-        guard let message = store.messages.first(where: { $0.id == id }), store.isAccountVisible(message) else { return }
+        guard backend.canAccessWorkspace,
+              let message = store.messages.first(where: { $0.id == id }), store.isAccountVisible(message) else { return }
         store.selectMailbox(message.mailbox)
         store.select(message)
         openMailWindow?()
     }
 
     func resolveAttachment(_ attachment: MailAttachment, in message: MailMessage) async throws -> MailAttachment {
+        guard backend.canAccessWorkspace else { throw BackendError.notConnected }
+        let scope = backend.scope
         if let url = attachment.localURL, FileManager.default.fileExists(atPath: url.path) { return attachment }
         guard message.mailAccount.isRemote else {
             throw BackendError.response(400, "This cached attachment is not stored on this Mac. Connect this email account through your workspace to retrieve a current copy.")
         }
-        return try await resolveBackendAttachment(attachment, in: message)
+        let resolved = try await resolveBackendAttachment(attachment, in: message)
+        guard backend.canAccessWorkspace, backend.scope == scope else { throw BackendError.notConnected }
+        return resolved
     }
 }

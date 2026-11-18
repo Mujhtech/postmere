@@ -35,6 +35,7 @@ struct ComposerView: View {
                 }.padding(12).background(.bar)
             }
             addressFields
+            if !store.draftAccount.isConnected { accountConnectionNotice }
             if store.draftSendAt != nil || store.draftFollowUpAt != nil { schedulingSummary }
             if showsFormatting { formattingBar }
             ComposeBodyEditor(text: $store.draftBody, rtfData: $store.draftBodyRTF, formatting: formatting,
@@ -81,13 +82,13 @@ struct ComposerView: View {
         .sheet(isPresented: $showsAvailability) { AvailabilityPickerView(onInsert: formatting.insertText) }
         .sheet(isPresented: $showsBookingLinks) {
             VStack(spacing: 0) {
-                HStack { Text("Booking links").font(PostmereTheme.sheetTitle); Spacer(); Button("Done") { showsBookingLinks = false }.keyboardShortcut(.cancelAction) }.padding(22)
+                PostmereSheetHeader("Booking links")
                 BookingLinksView(session: runtime.backend) { text in formatting.insertText(text); showsBookingLinks = false }
             }.frame(width: 650, height: 540)
         }
         .sheet(isPresented: $showsTeamTemplates) {
             VStack(spacing: 0) {
-                HStack { Text("Team templates").font(PostmereTheme.sheetTitle); Spacer(); Button("Done") { showsTeamTemplates = false }.keyboardShortcut(.cancelAction) }.padding(22)
+                PostmereSheetHeader("Team templates")
                 SharedTemplatesView(runtime: runtime)
             }.frame(width: 760, height: 570)
         }
@@ -212,13 +213,35 @@ struct ComposerView: View {
                     Text("Activity shows image and link requests. Privacy proxies can affect counts.")
                 }
             } label: {
-                PostmereLabel(store.draftSendAt != nil ? "Schedule" : store.draftAccount.isLive ? "Send" : "Send Preview", symbol: "arrow.up", size: 17)
+                PostmereLabel(store.draftSendAt != nil ? "Schedule" : "Send", symbol: "arrow.up", size: 17)
                     .foregroundStyle(store.canSendDraft ? PostmereTheme.accentInk : .secondary)
             } primaryAction: {
                 store.sendDraft()
             }
-            .help(store.draftValidationMessage ?? (store.draftAccount.isLive ? "Queue email for delivery · ⌘Return" : "Send to local sample Sent · ⌘Return"))
+            .disabled(!store.draftAccount.isConnected)
+            .help(store.draftValidationMessage ?? "Queue email for delivery · ⌘Return")
         }
+    }
+
+    private var sendingAccountLabel: String {
+        if store.draftAccount.isConnected {
+            return "\(store.draftAccount.displayName) — \(store.draftAccount.email)"
+        }
+        let previousEmail = store.draftProviderAccountEmail ?? store.draftAccount.email
+        return previousEmail.isEmpty ? "Choose an account" : "\(previousEmail) · Not connected"
+    }
+
+    private var accountConnectionNotice: some View {
+        HStack(spacing: 12) {
+            PostmereIcon("envelope", size: 16).foregroundStyle(PostmereTheme.icon)
+            Text(MailAccount.sendingAccounts.isEmpty
+                 ? "Connect an email account to your workspace before sending this draft."
+                 : "Choose a connected account in From before sending this draft.")
+                .font(.caption).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            AccountSettingsButton(title: MailAccount.allCases.isEmpty ? "Add Account" : "Manage Accounts")
+                .controlSize(.small)
+        }.padding(.horizontal, 24).padding(.vertical, 10).background(.bar)
     }
 
     private var addressFields: some View {
@@ -245,25 +268,26 @@ struct ComposerView: View {
             HStack(spacing: 1) {
                 fieldLabel("From:")
                 Menu {
-                    ForEach(MailAccount.allCases.filter { $0 != .gmail || runtime.gmail.isConnected || store.draftAccount == .gmail }) { account in
+                    ForEach(MailAccount.allCases) { account in
                         Button { store.draftAccount = account } label: {
                             if account == store.draftAccount {
                                 PostmereLabel("\(account.displayName) — \(account.email)", symbol: "checkmark", size: 14)
                             } else {
-                                Text("\(account.displayName) — \(account.email)")
+                                Text("\(account.displayName) — \(account.email)\(account.isConnected ? "" : " · Reconnect required")")
                             }
-                        }
+                        }.disabled(!account.isConnected)
                     }
+                    if !MailAccount.allCases.isEmpty { Divider() }
+                    AccountSettingsButton(title: MailAccount.allCases.isEmpty ? "Add an Account…" : "Manage Accounts…")
                 } label: {
-                    Text("\(store.draftAccount.displayName) — \(store.draftAccount.isLive ? store.draftProviderAccountEmail ?? store.draftAccount.email : store.draftAccount.email)")
-                        .lineLimit(1)
+                    Text(sendingAccountLabel).lineLimit(1).truncationMode(.middle)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .fixedSize(horizontal: true, vertical: false)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .foregroundStyle(.primary)
                 .accessibilityLabel("Sending account")
-                .accessibilityValue("\(store.draftAccount.displayName), \(store.draftAccount.email)")
+                .accessibilityValue(sendingAccountLabel)
                 Spacer(minLength: 0)
             }
             .padding(.trailing, 24)
@@ -352,7 +376,7 @@ struct ComposerView: View {
                 }
                 .help("Text color")
                 .accessibilityLabel("Text color")
-                formatButton("Bold", symbol: "bold", active: formatting.isBold, action: formatting.toggleBold)
+                MailFormattingButton(title: "Bold", symbol: "bold", active: formatting.isBold, action: formatting.toggleBold)
                 Button(action: formatting.showListPanel) {
                     PostmereIcon("list.bullet", size: 15).frame(width: 25, height: 24)
                 }
@@ -407,18 +431,6 @@ struct ComposerView: View {
         }
     }
 
-    private func formatButton(_ title: String, symbol: String, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            PostmereIcon(symbol, size: 15)
-                .frame(width: 25, height: 24)
-                .foregroundStyle(active ? PostmereTheme.accentInk : PostmereTheme.icon)
-                .background(active ? PostmereTheme.accentInk.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 4))
-        }
-        .buttonStyle(.borderless)
-        .help(title)
-        .accessibilityLabel(title)
-        .accessibilityValue(active ? "On" : "Off")
-    }
 
     private var attachmentList: some View {
         ScrollView {

@@ -117,7 +117,7 @@ enum MailStorageError: LocalizedError {
         switch self {
         case .unsupportedVersion(let version): "This mailbox was saved by a newer version of Postmere (format \(version)). Its data has not been changed."
         case .invalidSnapshot(let reason): reason
-        case .workspaceRequired: "This send used a previous local account and was stopped. Restore its draft, select a workspace account, and review it before sending."
+        case .workspaceRequired: "This send uses a previous local account. Restore its draft, select a workspace account, and review it before sending."
         case .missingSender: "Connect to your workspace before sending this message."
         case .accountMismatch(let email): "This message belongs to \(email). Reconnect that workspace account to send it."
         }

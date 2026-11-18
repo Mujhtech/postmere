@@ -2,6 +2,27 @@ import AppKit
 import Observation
 import SwiftUI
 
+struct MailFormattingButton: View {
+    let title: String
+    let symbol: String
+    let active: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            PostmereIcon(symbol, size: 14)
+                .frame(width: 26, height: 24)
+                .foregroundStyle(active ? PostmereTheme.accentInk : PostmereTheme.icon)
+                .background(active ? PostmereTheme.accentInk.opacity(0.12) : .clear, in: .rect(cornerRadius: 4))
+                .contentShape(.rect)
+        }
+        .buttonStyle(.borderless)
+        .help(title)
+        .accessibilityLabel(title)
+        .accessibilityValue(active ? "On" : "Off")
+    }
+}
+
 /// The composer toolbar talks to the native text system through this window-local object.
 @MainActor
 @Observable
@@ -321,6 +342,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var rtfData: Data?
     let formatting: ComposeTextFormatting
+    var fieldLabel = "Message"
     var markdownEnabled = true
     var onCaptureAttachments: (([URL]) throws -> Void)?
     var onCaptureError: ((Error) -> Void)?
@@ -364,7 +386,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
         editor.minSize = .zero
         editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         editor.typingAttributes = Self.defaultAttributes
-        editor.setAccessibilityLabel("Message")
+        editor.setAccessibilityLabel(fieldLabel)
         editor.delegate = context.coordinator
         editor.didAttachToWindow = { [weak formatting] in formatting?.fulfillFocusRequest() }
         scrollView.documentView = editor
@@ -376,6 +398,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let editor = scrollView.documentView as? NSTextView else { return }
         context.coordinator.parent = self
+        if editor.accessibilityLabel() != fieldLabel { editor.setAccessibilityLabel(fieldLabel) }
         (editor as? ComposeNativeTextView)?.markdownEnabled = markdownEnabled
         (editor as? ComposeNativeTextView)?.continuityCapture.onReceive = onCaptureAttachments
         (editor as? ComposeNativeTextView)?.continuityCapture.onError = onCaptureError

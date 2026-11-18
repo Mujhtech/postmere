@@ -38,14 +38,15 @@ nonisolated private struct BackendSendRequest: Encodable, Sendable {
 }
 
 extension MailRuntime {
-    func processBackendOutbox() async {
+    func processBackendOutbox(forceRefresh: Bool = false) async {
         guard backend.isConnected, !isProcessingBackendOutbox else { return }
         isProcessingBackendOutbox = true
         defer { isProcessingBackendOutbox = false }
         let pending = store.outgoingQueue.filter { $0.status == .pending && $0.serverJobID == nil }.map(\.id)
         for id in pending {
             guard let message = store.messages.first(where: { $0.id == id }),
-                  message.mailAccount.remote?.scope == backend.scope else { continue }
+                  let identity = message.mailAccount.remote,
+                  backend.isAccountConnected(identity.accountID, scope: identity.scope) else { continue }
             do {
                 let job = try await submitBackendSend(id)
                 applyBackendJob(job)
@@ -57,8 +58,8 @@ extension MailRuntime {
                 }
             }
         }
-        guard Date.now.timeIntervalSince(lastBackendOutboxRefresh) >= 5,
-              store.outgoingQueue.contains(where: { $0.serverJobID != nil }) else { return }
+        guard forceRefresh || (Date.now.timeIntervalSince(lastBackendOutboxRefresh) >= 5
+              && store.outgoingQueue.contains(where: { $0.serverJobID != nil })) else { return }
         lastBackendOutboxRefresh = .now
         do {
             let response: BackendOutboxList = try await backend.request("GET", "/v1/mail/outbox")
@@ -68,7 +69,7 @@ extension MailRuntime {
 
     private func submitBackendSend(_ id: UUID) async throws -> BackendOutboxItem {
         guard let message = store.messages.first(where: { $0.id == id }),
-              let identity = message.mailAccount.remote, identity.scope == backend.scope,
+              let identity = message.mailAccount.remote, backend.isAccountConnected(identity.accountID, scope: identity.scope),
               let index = store.outgoingQueue.firstIndex(where: { $0.id == id }),
               !submittingBackendItems.contains(id) else { throw BackendError.notConnected }
         let item = store.outgoingQueue[index]
@@ -131,7 +132,8 @@ extension MailRuntime {
 
     func retryBackendSend(_ id: UUID) async {
         guard let index = store.outgoingQueue.firstIndex(where: { $0.id == id }),
-              let message = store.messages.first(where: { $0.id == id }), message.mailAccount.remote?.scope == backend.scope else {
+              let message = store.messages.first(where: { $0.id == id }), let identity = message.mailAccount.remote,
+              backend.isAccountConnected(identity.accountID, scope: identity.scope) else {
             store.operationError = BackendError.notConnected.localizedDescription; return
         }
         let item = store.outgoingQueue[index]
