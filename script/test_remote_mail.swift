@@ -71,11 +71,38 @@ import Foundation
     try check(afterReopen.backendNotificationCandidates(for: second, excluding: []).isEmpty,
               "notification eligibility never crosses server-account identities")
 
+    let policyStore = MailStore(messages: [], persistenceURL: directory.appendingPathComponent("notification-policy.json"))
+    var policyEdits = 0
+    policyStore.onNotificationPolicyChanged = { policyEdits += 1 }
+    policyStore.senderScreeningEnabled = true
+    try check(!policyStore.permitsIncomingNotification(one), "current sender screening silences unknown incoming notifications")
+    let accepted = SenderRule(email: one.senderEmail, account: first.localID, route: .inbox)
+    let blockedRule = SenderRule(email: one.senderEmail, route: .blocked)
+    policyStore.saveSenderRule(accepted, applyToExisting: false)
+    policyStore.saveSenderRule(blockedRule, applyToExisting: false)
+    try check(policyStore.permitsIncomingNotification(one) && !policyStore.permitsIncomingNotification(two),
+              "notification routing preserves ordered first-match rules and account boundaries")
+    policyStore.deleteSenderRule(accepted.id)
+    try check(!policyStore.permitsIncomingNotification(one), "removing a sender approval exposes the following blocking rule immediately")
+    policyStore.deleteSenderRule(blockedRule.id)
+    policyStore.saveSenderRule(SenderRule(email: one.senderEmail, account: first.localID, route: .needsReply,
+                                         providerAccountEmail: "another@example.com"), applyToExisting: false)
+    try check(!policyStore.permitsIncomingNotification(one), "a rule for another provider identity cannot approve incoming notifications")
+    policyStore.saveSenderRule(SenderRule(email: one.senderEmail, account: first.localID, route: .needsReply,
+                                         providerAccountEmail: first.email.uppercased()), applyToExisting: false)
+    try check(policyStore.permitsIncomingNotification(one), "needs-reply approvals allow incoming alerts for their scoped provider identity")
+    var archived = one; archived.mailbox = .archive
+    var read = one; read.isUnread = false
+    try check(!policyStore.permitsIncomingNotification(archived) && !policyStore.permitsIncomingNotification(read),
+              "sender approval never revives archived or read incoming alerts")
+    policyStore.senderScreeningEnabled = false
+    try check(policyEdits == 8, "screening/rule additions, edits and removals do not immediately request remote-policy synchronization")
+
     let queueStore = MailStore(messages: [], persistenceURL: directory.appendingPathComponent("remote-queue.json"))
     queueStore.beginCompose(account: MailAccount(rawValue: first.localID)!)
     queueStore.draftTo = "recipient@example.com"
     queueStore.draftSubject = "Remote delivery"
-    queueStore.draftBody = "Do not deliver through the local Gmail sender"
+    queueStore.draftBody = "Delivery belongs to the workspace server"
     queueStore.sendDraft()
     try check(queueStore.outgoingQueue.count == 1, "remote send enters the durable queue")
     let queuedID = queueStore.outgoingQueue[0].id
@@ -90,11 +117,9 @@ import Foundation
               && queueStore.messages[0].mailbox == .outbox && queueStore.messages[0].backendMessageID == messageID
               && queueStore.messages[0].providerMessageID == "provider-1"
               && queueStore.messages[0].providerThreadID == "thread-1"
-              && queueStore.messages[0].paragraphs == ["Do not deliver through the local Gmail sender"], "sync before an outbox poll preserves pending state and remote identifiers without duplicating the message")
-    var localSenderCalled = false
-    queueStore.liveSender = { message in localSenderCalled = true; return message }
+              && queueStore.messages[0].paragraphs == ["Delivery belongs to the workspace server"], "sync before an outbox poll preserves pending state and remote identifiers without duplicating the message")
     await queueStore.processDueWork(now: .now.addingTimeInterval(600))
-    try check(!localSenderCalled && queueStore.outgoingQueue.first?.status == .pending && queueStore.messages.first?.mailbox == .outbox, "local delivery worker never sends a server-owned queue item")
+    try check(queueStore.outgoingQueue.first?.status == .pending && queueStore.messages.first?.mailbox == .outbox, "local delivery worker never sends a server-owned queue item")
     let resumedQueue = MailStore(messages: [], persistenceURL: directory.appendingPathComponent("remote-queue.json"))
     try check(resumedQueue.outgoingQueue.first?.id == queueStore.outgoingQueue.first?.id, "remote delivery idempotency ID survives restart")
     try check(resumedQueue.messages.count == 1 && resumedQueue.messages[0].backendMessageID == messageID

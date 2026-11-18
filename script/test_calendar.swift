@@ -84,5 +84,26 @@ private struct CalendarChecks {
         service.disconnectAgenda()
         precondition(!defaults.bool(forKey: "calendarIntegrationEnabled"))
         print("PASS: opt-in calendar gate and pre-permission validation; no permission request or calendar read/write performed")
+
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        let legacy = #"{"id":"11111111-1111-1111-1111-111111111111","account_id":"22222222-2222-2222-2222-222222222222","title":"Meeting","description":"","time_zone":"Africa/Lagos","duration_minutes":30,"url":"https://postmere.example/book/fixture","expires_at":"2027-03-20T00:00:00Z","created_at":"2027-03-01T00:00:00Z","slots":[]}"#
+        let oldLink = try decoder.decode(BookingLink.self, from: Data(legacy.utf8))
+        precondition(oldLink.calendarId == nil && oldLink.availability == nil)
+        let rule = WeeklyBookingAvailability(startDate: "2027-03-02", endDate: "2027-03-19", weekdays: [1, 3, 5], startMinute: 540, endMinute: 1020)
+        let payload = BookingLinkInput(accountId: oldLink.accountId, title: "Weekly", description: "", timeZone: "America/New_York", durationMinutes: 30, expiresAt: oldLink.expiresAt, slots: [], calendarId: "work@example.test", conflictCalendarIds: ["primary", "work@example.test"], availability: rule)
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.dateEncodingStrategy = .iso8601
+        let encoded = try JSONSerialization.jsonObject(with: encoder.encode(payload)) as! [String: Any]
+        precondition(encoded["calendar_id"] as? String == "work@example.test")
+        let encodedRule = encoded["availability"] as! [String: Any]
+        precondition(encodedRule["start_date"] as? String == "2027-03-02" && encodedRule["start_minute"] as? Int == 540)
+        let list = try decoder.decode(ProviderCalendars.self, from: Data(#"{"items":[{"id":"primary","name":"Primary","is_primary":true,"can_write":true}],"requires_reconnect":true}"#.utf8))
+        precondition(list.requiresReconnect && list.items.first?.isPrimary == true)
+        let cancellation = try decoder.decode(CalendarBookingResult.self, from: Data(#"{"id":"11111111-1111-1111-1111-111111111111","status":"cancel_uncertain","start":"2027-03-20T09:00:00Z","end":"2027-03-20T09:30:00Z","message":"Cancellation pending"}"#.utf8))
+        precondition(cancellation.status == "cancel_uncertain" && cancellation.end > cancellation.start)
+        print("PASS: legacy booking responses, secondary calendars, weekly availability wire keys, reconnect state, and uncertain cancellation decoding")
     }
 }

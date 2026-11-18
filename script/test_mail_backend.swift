@@ -14,6 +14,11 @@ enum RegressionFailure: Error { case failed(String) }
         defer { try? FileManager.default.removeItem(at: directory) }
         try runSearchSplitRegressions(directory: directory)
         try await runRemoteMailRegressions(directory: directory)
+        let workspaceAccount = RemoteAccountIdentity(localID: "remote:fixture:workspace:user:primary", accountID: UUID(),
+            scope: "fixture:workspace:user", email: "me@example.com", displayName: "Me", provider: "gmail")
+        RemoteAccountRegistry.accounts = [workspaceAccount]
+        defer { RemoteAccountRegistry.accounts = [] }
+        try scopedDraftRecovery(directory: directory, account: workspaceAccount)
         let stateURL = directory.appendingPathComponent("state.json")
         let initial = MailMessage(sender: "Pat", senderEmail: "pat@example.com", initials: "P", subject: "A question", preview: "Hello", paragraphs: ["Hello"], timeLabel: "10:00", isUnread: true, sentAt: .now.addingTimeInterval(-100))
         let store = MailStore(messages: [initial], persistenceURL: stateURL)
@@ -67,6 +72,7 @@ enum RegressionFailure: Error { case failed(String) }
         try check(!recovered.isComposing && recovered.outgoingQueue.count == 1, "send atomically queues before closing compose")
         let queuedRestart = MailStore(messages: [], persistenceURL: stateURL)
         try check(!queuedRestart.draftRecoveryAvailable && queuedRestart.outgoingQueue.count == 1, "outgoing queue survives restart without phantom active draft")
+        queuedRestart.onCancelRemoteSend = { id in queuedRestart.restoreQueuedDraft(id) }
         queuedRestart.undoLastSend()
         try check(queuedRestart.outgoingQueue.isEmpty && queuedRestart.isComposing && queuedRestart.draftSubject == "Recover me", "undo send restores editable message")
         queuedRestart.draftSendAt = .now.addingTimeInterval(600)
@@ -75,9 +81,9 @@ enum RegressionFailure: Error { case failed(String) }
         await queuedRestart.processDueWork(now: scheduled.scheduledAt.addingTimeInterval(-1))
         try check(queuedRestart.outgoingQueue.count == 1, "scheduled mail does not deliver early")
         await queuedRestart.processDueWork(now: scheduled.scheduledAt.addingTimeInterval(1))
-        try check(queuedRestart.outgoingQueue.isEmpty && queuedRestart.messages.contains { $0.id == scheduled.id && $0.mailbox == .sent }, "due sample mail moves to Sent once")
+        try check(queuedRestart.outgoingQueue.count == 1 && queuedRestart.messages.contains { $0.id == scheduled.id && $0.mailbox == .outbox }, "due workspace mail waits for server delivery")
         let deliveredRestart = MailStore(messages: [], persistenceURL: stateURL)
-        try check(deliveredRestart.outgoingQueue.isEmpty && deliveredRestart.messages.contains { $0.id == scheduled.id && $0.mailbox == .sent }, "delivery completion survives restart")
+        try check(deliveredRestart.outgoingQueue.count == 1 && deliveredRestart.messages.contains { $0.id == scheduled.id && $0.mailbox == .outbox }, "server-owned send survives restart without local delivery")
 
         let scheduledDraftURL = directory.appendingPathComponent("scheduled-draft.json")
         let scheduledDraft = MailStore(messages: [], persistenceURL: scheduledDraftURL)
@@ -93,22 +99,15 @@ enum RegressionFailure: Error { case failed(String) }
         savedScheduleRestart.sendDraft()
         try check(abs(savedScheduleRestart.outgoingQueue[0].scheduledAt.timeIntervalSince(plannedSend)) < 0.001, "reopened scheduled draft queues for the intended future time")
         await savedScheduleRestart.processDueWork(now: plannedSend.addingTimeInterval(1))
-        try check(savedScheduleRestart.messages[0].workflow.scheduledSendAt == nil, "sent message clears draft-only send schedule")
+        try check(abs(savedScheduleRestart.messages[0].workflow.scheduledSendAt!.timeIntervalSince(plannedSend)) < 0.001 && savedScheduleRestart.messages[0].mailbox == .outbox, "unconfirmed workspace send keeps its schedule until the server acknowledges delivery")
 
-        let live = MailStore(messages: [])
-        live.beginCompose()
-        live.draftAccount = .gmail
-        live.draftTo = "person@example.com"
-        live.draftSubject = "Live failure"
-        live.sendDraft()
-        let liveID = live.outgoingQueue[0].id
-        await live.processDueWork(now: live.outgoingQueue[0].scheduledAt.addingTimeInterval(1))
-        try check(live.outgoingQueue[0].status == .failed && live.messages.first?.mailbox == .outbox, "unconnected Gmail never pretends to send")
-        live.liveSender = { message in var sent = message; sent.providerMessageID = "live-123"; return sent }
-        live.retrySend(liveID)
-        await live.processDueWork(now: .now.addingTimeInterval(1))
-        try check(live.outgoingQueue.isEmpty && live.messages.first?.providerMessageID == "live-123", "injected live delivery preserves provider receipt")
-
+        var liveMessage = initial
+        liveMessage.account = workspaceAccount.localID
+        liveMessage.providerAccountEmail = workspaceAccount.email
+        liveMessage.providerMessageID = "live-123"
+        liveMessage.mailbox = .sent
+        let live = MailStore(messages: [liveMessage])
+        let liveID = liveMessage.id
         live.remoteMutation = { _, _ in throw RegressionFailure.failed("provider offline") }
         live.toggleStar(liveID)
         for task in live.remoteMutationTasks.values { await task.value }
@@ -203,62 +202,150 @@ enum RegressionFailure: Error { case failed(String) }
         live.mergeIncoming([stale])
         try check(!live.messages[0].isStarred, "confirmed provider state later accepts external changes")
 
-        let originalArguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        defer { UserDefaults.standard.setVolatileDomain(originalArguments, forName: UserDefaults.argumentDomain) }
-        var preferences = originalArguments
-        preferences["gmailEmail"] = "old@example.com"
-        UserDefaults.standard.setVolatileDomain(preferences, forName: UserDefaults.argumentDomain)
-        let identityQueue = MailStore(messages: [])
-        identityQueue.beginCompose()
-        identityQueue.draftAccount = .gmail
-        identityQueue.draftTo = "recipient@example.com"
-        identityQueue.draftSubject = "Original account"
-        identityQueue.sendDraft()
-        let capturedIdentity = identityQueue.messages[0].providerAccountEmail
-        let identityDraft = MailStore(messages: [])
-        identityDraft.beginCompose()
-        identityDraft.draftAccount = .gmail
-        identityDraft.draftTo = "recipient@example.com"
-        identityDraft.draftSubject = "Do not switch sender"
-        preferences["gmailEmail"] = "new@example.com"
-        UserDefaults.standard.setVolatileDomain(preferences, forName: UserDefaults.argumentDomain)
-        var calledSender = false
-        identityQueue.liveSender = { message in calledSender = true; return message }
-        await identityQueue.processDueWork(now: identityQueue.outgoingQueue[0].scheduledAt.addingTimeInterval(1))
-        try check(capturedIdentity == "old@example.com" && !calledSender && identityQueue.outgoingQueue[0].status == .failed, "Gmail account switch cannot deliver another account’s queued mail")
-        try check(!identityDraft.canSendDraft, "Gmail draft retains original sender and blocks mismatched account")
+        let legacyURL = directory.appendingPathComponent("legacy.json")
         var oldAccount = initial
         oldAccount.account = MailAccount.gmail.rawValue
         oldAccount.providerAccountEmail = "old@example.com"
         oldAccount.providerMessageID = "same-provider-id"
         oldAccount.rfcMessageID = "same-message-id"
+        oldAccount.mailbox = .outbox
+        oldAccount.workflow.privateNote = "Keep legacy notes"
+        let legacy = MailStore(messages: [oldAccount], persistenceURL: legacyURL)
+        legacy.outgoingQueue = [OutgoingMailItem(messageID: oldAccount.id, queuedAt: .now, undoUntil: .now, scheduledAt: .now)]
+        let legacyRestart = MailStore(persistenceURL: legacyURL)
+        try check(legacyRestart.outgoingQueue.first?.status == .failed && legacyRestart.outgoingQueue.first?.lastError?.contains("workspace") == true,
+                  "legacy direct sends are stopped after relaunch without being transferred")
+        await legacyRestart.processDueWork(now: .now.addingTimeInterval(600))
+        try check(legacyRestart.messages.first?.mailbox == .outbox && legacyRestart.messages.first?.workflow.privateNote == "Keep legacy notes",
+                  "stopping legacy sends preserves content and private notes")
+        legacyRestart.retrySend(oldAccount.id)
+        try check(legacyRestart.outgoingQueue.first?.status == .failed, "legacy retries cannot re-enable direct delivery")
+        try check(legacyRestart.previousAccountDrafts.map(\.id) == [oldAccount.id], "stopped legacy sends remain explicitly recoverable")
+        legacyRestart.reviewPreviousAccountDraft(id: oldAccount.id)
+        try check(legacyRestart.isComposing && !legacyRestart.canSendDraft, "legacy draft recovery requires choosing a workspace account")
+        legacyRestart.draftAccount = MailAccount(rawValue: workspaceAccount.localID)!
+        legacyRestart.draftTo = "recipient@example.com"
+        try check(legacyRestart.canSendDraft, "explicitly selecting a connected workspace account enables a recovered draft")
+        let ambiguousURL = directory.appendingPathComponent("legacy-ambiguous.json")
+        let ambiguous = MailStore(messages: [oldAccount], persistenceURL: ambiguousURL)
+        var interruptedLegacy = OutgoingMailItem(messageID: oldAccount.id, queuedAt: .now, undoUntil: .now, scheduledAt: .now)
+        interruptedLegacy.status = .delivering
+        interruptedLegacy.lastError = "Original provider warning."
+        ambiguous.outgoingQueue = [interruptedLegacy]
+        let ambiguousRestart = MailStore(persistenceURL: ambiguousURL)
+        try check(ambiguousRestart.outgoingQueue[0].lastError?.contains("Original provider warning") == true
+                  && ambiguousRestart.outgoingQueue[0].lastError?.contains("Check Sent") == true,
+                  "legacy interrupted sends retain provider details and duplicate-delivery warning")
+        let ambiguousAgain = MailStore(persistenceURL: ambiguousURL)
+        try check(ambiguousAgain.outgoingQueue[0].lastError == ambiguousRestart.outgoingQueue[0].lastError,
+                  "legacy delivery warnings remain stable across repeated relaunches")
+        let formerIdentity = legacyRestart.draftAccount
+        RemoteAccountRegistry.accounts = []
+        try check(!legacyRestart.canSendDraft && MailAccount.allCases.isEmpty, "sign-out removes sender choices and blocks existing drafts")
+        RemoteAccountRegistry.accounts = [workspaceAccount]
+        try check(legacyRestart.draftAccount == formerIdentity && legacyRestart.canSendDraft, "reconnecting the same scoped account restores draft availability")
+        var reconnectRequired = workspaceAccount
+        reconnectRequired.status = "reconnect_required"
+        RemoteAccountRegistry.accounts = [reconnectRequired]
+        try check(!legacyRestart.canSendDraft && MailAccount.sendingAccounts.isEmpty, "revoked provider access blocks sending while preserving the account")
+        RemoteAccountRegistry.accounts = [workspaceAccount]
+        let fresh = MailStore(persistenceURL: directory.appendingPathComponent("empty.json"))
+        try check(fresh.messages.isEmpty && !MailAccount.allCases.contains(.work) && !MailAccount.allCases.contains(.gmail),
+                  "fresh workspace-only mailboxes never seed sample or direct accounts")
         var newAccount = oldAccount
         newAccount.id = UUID()
-        newAccount.providerAccountEmail = "new@example.com"
+        newAccount.account = workspaceAccount.localID
+        newAccount.providerAccountEmail = workspaceAccount.email
+        newAccount.backendMessageID = UUID()
+        newAccount.mailbox = .inbox
+        newAccount.workflow = MailWorkflowState()
         let identities = MailStore(messages: [oldAccount])
-        identities.setPrivateNote("Old account note", for: oldAccount.id)
         identities.mergeIncoming([newAccount])
-        try check(identities.messages.count == 2 && identities.filteredMessages.count == 1 && identities.filteredMessages[0].id == newAccount.id, "account switch hides cached mail without merging or deleting it")
-        try check(identities.filteredMessages[0].workflow.privateNote.isEmpty, "private notes do not leak between provider identities")
+        try check(identities.messages.count == 2 && identities.filteredMessages.map(\.id) == [newAccount.id],
+                  "workspace mail does not merge into or expose legacy direct mail")
+        try check(identities.filteredMessages[0].workflow.privateNote.isEmpty, "private notes do not leak into newly connected accounts")
         identities.setPrivateNote("Keep this deleted email’s context", for: newAccount.id)
         identities.setFollowUp(newAccount.id, at: .now.addingTimeInterval(60))
-        identities.markProviderMessagesUnavailable(ids: ["same-provider-id"], accountEmail: "new@example.com")
-        try check(identities.messages.count == 2 && identities.filteredMessages.isEmpty && identities.notificationSchedules.isEmpty, "verified remote deletion hides original without deleting retained data or scheduling reminders")
-        try check(identities.messages.first(where: { $0.id == newAccount.id })?.workflow.privateNote == "Keep this deleted email’s context"
-                  && identities.messages.first(where: { $0.id == oldAccount.id })?.isDeletedOnProvider == false,
-                  "remote deletion retains private notes and affects only the verified provider identity")
+        let deletion = BackendMailPage(messages: [], nextCursor: "deleted", hasMore: false, deletedMessageIds: [newAccount.backendMessageID!])
+        _ = identities.applyBackendPage(deletion, identity: workspaceAccount)
+        try check(identities.messages.count == 2 && identities.filteredMessages.isEmpty && identities.notificationSchedules.isEmpty,
+                  "workspace deletion hides original mail while retaining local notes")
+        try check(identities.messages.first(where: { $0.id == newAccount.id })?.workflow.privateNote == "Keep this deleted email’s context",
+                  "workspace deletion preserves private notes")
         identities.mergeIncoming([newAccount])
         try check(identities.filteredMessages.count == 1 && !identities.filteredMessages[0].isDeletedOnProvider,
-                  "a later successful provider read restores hidden mail")
+                  "a later successful workspace read restores hidden mail")
         var retainedDraft = newAccount
         retainedDraft.id = UUID()
         retainedDraft.mailbox = .drafts
-        retainedDraft.providerMessageID = "deleted-draft"
         let draftDeletion = MailStore(messages: [retainedDraft])
-        draftDeletion.markProviderMessagesUnavailable(ids: ["deleted-draft"], accountEmail: "new@example.com")
+        _ = draftDeletion.applyBackendPage(deletion, identity: workspaceAccount)
         draftDeletion.selectMailbox(.drafts)
         try check(draftDeletion.filteredMessages.count == 1 && draftDeletion.messages[0].isDeletedOnProvider,
                   "provider deletion never hides or removes local saved drafts")
         print("All backend regressions passed")
+    }
+
+    @MainActor static func scopedDraftRecovery(directory: URL, account: RemoteAccountIdentity) throws {
+        let stateURL = directory.appendingPathComponent("scoped-draft-recovery.json")
+        let original = MailStore(messages: [], persistenceURL: stateURL)
+        original.beginCompose()
+        original.draftTo = "unfinished address"
+        original.draftSubject = "Workspace A draft"
+        original.draftBody = "Saved body"
+        original.saveDraft()
+        let originalID = original.messages[0].id
+        original.setPrivateNote("A private draft note", for: originalID)
+        original.beginEditingDraft(original.messages[0])
+        original.draftBody = "Latest workspace A body"
+        original.draftBodyRTF = Data("A rich body".utf8)
+        original.draftAttachments = [MailAttachment(name: "A.txt", detail: "A attachment")]
+        let plannedSend = Date.now.addingTimeInterval(3_600)
+        original.draftSendAt = plannedSend
+
+        // Match provider/email/account UUID to ensure that only the complete
+        // current workspace/user identity can make a recovery visible.
+        let other = RemoteAccountIdentity(localID: "remote:fixture:other:user:primary", accountID: account.accountID,
+            scope: "fixture:other:user", email: account.email, displayName: "Other", provider: account.provider)
+        RemoteAccountRegistry.accounts = [other]
+        defer { RemoteAccountRegistry.accounts = [account] }
+        let switched = MailStore(messages: [], persistenceURL: stateURL)
+        try check(!switched.draftRecoveryAvailable, "another workspace cannot offer the previous workspace's active draft")
+        switched.recoverDraft()
+        switched.discardRecoveredDraft()
+        try check(!switched.isComposing && switched.recoveredDraft?.body == "Latest workspace A body",
+                  "direct recovery and discard cannot expose or delete an unavailable workspace draft")
+        switched.beginCompose()
+        try check(switched.isComposing && switched.draftAccount.rawValue == other.localID && switched.draftBody != "Latest workspace A body",
+                  "new composition cannot automatically reopen another workspace's recovery")
+        let preserved = switched.messages.first { $0.id == originalID }!
+        try check(preserved.account == account.localID && preserved.paragraphs == ["Latest workspace A body"]
+                  && preserved.bodyRTF == Data("A rich body".utf8) && preserved.attachments.first?.name == "A.txt"
+                  && preserved.toRecipients == ["unfinished address"] && preserved.workflow.privateNote == "A private draft note"
+                  && abs(preserved.workflow.scheduledSendAt!.timeIntervalSince(plannedSend)) < 0.001,
+                  "starting another workspace's draft preserves hidden recovery content, files, timing, note, and original ID")
+        try check(!switched.isAccountVisible(preserved), "preserved workspace A recovery stays hidden under workspace B")
+        switched.draftSubject = "Workspace B draft"
+        switched.draftBody = "Latest workspace B body"
+
+        let restarted = MailStore(messages: [], persistenceURL: stateURL)
+        try check(restarted.draftRecoveryAvailable && restarted.recoveredDraft?.account.rawValue == other.localID
+                  && restarted.messages.first(where: { $0.id == originalID })?.paragraphs == ["Latest workspace A body"],
+                  "both workspace drafts survive restart despite the singleton active-draft slot")
+        RemoteAccountRegistry.accounts = [account]
+        try check(!restarted.draftRecoveryAvailable, "switching back does not expose workspace B's active recovery")
+        restarted.beginEditingDraft(restarted.messages.first { $0.id == originalID }!)
+        try check(restarted.isComposing && restarted.editingDraftID == originalID && restarted.draftBody == "Latest workspace A body"
+                  && restarted.messages.contains { $0.account == other.localID && $0.mailbox == .drafts && $0.paragraphs == ["Latest workspace B body"] },
+                  "returning to workspace A restores its draft and preserves workspace B's unsaved draft")
+
+        let legacyURL = directory.appendingPathComponent("legacy-active-recovery.json")
+        let legacy = MailStore(messages: [], persistenceURL: legacyURL)
+        legacy.beginCompose(); legacy.draftAccount = .gmail; legacy.draftBody = "Previous local account draft"
+        let legacyRestart = MailStore(messages: [], persistenceURL: legacyURL)
+        try check(legacyRestart.draftRecoveryAvailable, "previous local-account recovery remains available after workspace sign-in")
+        legacyRestart.recoverDraft()
+        try check(legacyRestart.isComposing && legacyRestart.draftBody == "Previous local account draft" && !legacyRestart.canSendDraft,
+                  "legacy recovery preserves content and still requires choosing a connected workspace sender")
     }
 }

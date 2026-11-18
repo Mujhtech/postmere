@@ -42,7 +42,7 @@ struct UnsubscribeFixtures {
 
     static func message(_ headers: MailUnsubscribeHeaders = headers()) -> MailMessage {
         MailMessage(sender: "Fixture newsletter", senderEmail: "news@example.com", initials: "FN", subject: "Fixture",
-                    preview: "", paragraphs: ["Fixture"], timeLabel: "Now", account: "Gmail", toRecipients: ["me@example.com"],
+                    preview: "", paragraphs: ["Fixture"], timeLabel: "Now", account: "remote:fixture:newsletter", toRecipients: ["me@example.com"],
                     providerMessageID: "fixture-message", providerAccountEmail: "me@example.com", unsubscribeHeaders: headers)
     }
 
@@ -164,18 +164,25 @@ struct UnsubscribeFixtures {
         precondition(oldMessage.unsubscribeHeaders == nil)
 
         let source = headers()
-        let wireHeaders = [GmailHeader(name: "From", value: "List <news@example.com>"), GmailHeader(name: "To", value: "me@example.com")]
-            + source.listUnsubscribe.map { GmailHeader(name: "lIsT-uNsUbScRiBe", value: $0) }
-            + source.listUnsubscribePost.map { GmailHeader(name: "List-Unsubscribe-Post", value: $0) }
-            + source.authenticationResults.map { GmailHeader(name: "Authentication-Results", value: $0) }
-            + source.dkimSignatures.map { GmailHeader(name: "DKIM-Signature", value: $0) }
-        let part = GmailMessagePart(partId: "", mimeType: "text/plain", filename: nil, headers: wireHeaders, body: nil, parts: nil)
-        let wire = GmailWireMessage(id: "fixture", threadId: "thread", labelIds: ["INBOX", "CATEGORY_PROMOTIONS"], snippet: nil, internalDate: nil, payload: part)
-        let mapped = GmailMessageMapper.message(wire, accountEmail: "me@example.com")
-        precondition(mapped.unsubscribeHeaders == source)
+        let account = UUID()
+        let identity = RemoteAccountIdentity(localID: "remote:fixture:\(account.uuidString)", accountID: account,
+            scope: "fixture", email: "me@example.com", displayName: "Me", provider: "gmail")
+        let wire = BackendMailMessage(id: UUID(), accountId: account, providerMessageId: "fixture",
+            providerThreadId: "thread", subject: "Fixture", from: BackendAddress(name: "List", email: "news@example.com"),
+            to: [BackendAddress(email: "me@example.com")], cc: [], bcc: [], textBody: "Fixture", htmlBody: nil,
+            preview: "Fixture", sentAt: .now, isRead: false, isStarred: false, mailbox: "inbox",
+            providerLabels: ["INBOX", "CATEGORY_PROMOTIONS"], attachments: [],
+            listUnsubscribe: source.listUnsubscribe, listUnsubscribePost: source.listUnsubscribePost)
+        let mapped = wire.localMessage(identity: identity)
+        precondition(mapped.unsubscribeHeaders?.listUnsubscribe == source.listUnsubscribe)
+        precondition(mapped.unsubscribeHeaders?.listUnsubscribePost == source.listUnsubscribePost)
+        precondition(mapped.unsubscribeHeaders?.authenticationResults.isEmpty == true)
+        precondition(mapped.unsubscribeHeaders?.dkimSignatures.isEmpty == true)
+        precondition(mapped.unsubscribeHeaders?.source == identity.provider)
+        precondition(mapped.backendMessageID == wire.id && mapped.account == identity.localID)
         precondition(mapped.providerLabelIDs.contains("CATEGORY_PROMOTIONS"))
         precondition(MailUnsubscribeService.options(for: mapped).oneClickURL == nil)
-        print("PASS: imported list/authentication headers and provider labels retained; pre-feature mailbox JSON decodes unchanged")
+        print("PASS: workspace list metadata and provider labels retained without treating copied authentication headers as proof; pre-feature mailbox JSON decodes unchanged")
     }
 
     static func networkFixtures() async throws {
@@ -189,7 +196,7 @@ struct UnsubscribeFixtures {
         precondition(browserURL.absoluteString == endpoint && recorder.count == 0, "Browser validation fetched its URL")
         do { try await client.requestOneClick(for: message()); preconditionFailure("Forged authentication headers authorized a POST") }
         catch MailUnsubscribeError.unsupported { }
-        precondition(recorder.count == 0, "Unverified direct Gmail caused a request")
+        precondition(recorder.count == 0, "Unverified native metadata caused a request")
         let privateClient = service(addresses: ["93.184.216.34", "127.0.0.1"])
         do { _ = try await privateClient.validateBrowserURL(URL(string: endpoint)!); preconditionFailure("Private browser destination accepted") }
         catch MailUnsubscribeError.unsafeDestination { }
@@ -197,6 +204,6 @@ struct UnsubscribeFixtures {
         do { _ = try await emptyClient.validateBrowserURL(URL(string: endpoint)!); preconditionFailure("Empty DNS accepted") }
         catch MailUnsubscribeError.unresolvedHost { }
         precondition(recorder.count == 0)
-        print("PASS: forged receiver headers cannot authorize direct Gmail POSTs; browser validation rejects private or missing DNS without fetching")
+        print("PASS: forged receiver headers cannot authorize native one-click POSTs; browser validation rejects private or missing DNS without fetching")
     }
 }

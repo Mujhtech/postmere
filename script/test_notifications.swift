@@ -19,12 +19,18 @@ private final class FakeNotificationClient: MailNotificationClient {
     var removedDelivered: [String] = []
     var failAdds = false
     var authorizationRequests = 0
+    var beforePendingRead: (() async -> Void)?
+    var duringAdd: (() async -> Void)?
     func setDelegate(_ delegate: any UNUserNotificationCenterDelegate) {}
     func authorizationStatus() async -> UNAuthorizationStatus { status }
     func requestAuthorization() async throws { authorizationRequests += 1 }
-    func pendingRequests() async -> [UNNotificationRequest] { Array(pending.values) }
+    func pendingRequests() async -> [UNNotificationRequest] {
+        if let action = beforePendingRead { beforePendingRead = nil; await action() }
+        return Array(pending.values)
+    }
     func add(_ request: UNNotificationRequest) async throws {
         if failAdds { throw NotificationCheckFailure(description: "Synthetic scheduling failure") }
+        if let action = duringAdd { duringAdd = nil; await action() }
         added.append(request.identifier)
         if request.trigger == nil { delivered[request.identifier] = request }
         else { pending[request.identifier] = request }
@@ -48,6 +54,10 @@ private final class FakeNotificationClient: MailNotificationClient {
 private struct NotificationChecks {
     @MainActor
     static func main() async throws {
+        RemoteAccountRegistry.accounts = ["work", "personal", "third"].map {
+            RemoteAccountIdentity(localID: "remote:fixture:\($0)", accountID: UUID(), scope: "fixture", email: "\($0)@example.com", displayName: $0, provider: "gmail")
+        }
+        defer { RemoteAccountRegistry.accounts = [] }
         var utc = Calendar(identifier: .gregorian)
         utc.timeZone = TimeZone(secondsFromGMT: 0)!
         try schedules(calendar: utc)
@@ -55,14 +65,192 @@ private struct NotificationChecks {
         try await reconciliation(calendar: utc)
         try await overdueAndQuietHours(calendar: utc)
         try await budgetAndRetry(calendar: utc)
+        try await manyAccountProfiles(calendar: utc)
+        try await accountChangesDuringScheduling(calendar: utc)
+        try await foregroundPresentation()
+        try await remoteOwnership(calendar: utc)
+        try await incomingPolicyChanges(calendar: utc)
         print("PASS: notification checks use a fake center; no prompts, alerts, or network")
     }
 
     static func date(_ text: String) -> Date { ISO8601DateFormatter().date(from: text)! }
 
     @MainActor
+    static func remoteOwnership(calendar: Calendar) async throws {
+        let now = date("2026-11-16T12:00:00Z")
+        try await withService { service, client, _ in
+            service.shouldNotifyLocally = { _ in false }
+            let incoming = message(sentAt: now)
+            await service.notifyNewMessage(incoming, now: now, calendar: calendar)
+            try expect(client.added.isEmpty, "Confirmed APNs ownership must suppress duplicate local incoming alerts")
+            var reminder = incoming
+            reminder.workflow.snoozedUntil = now.addingTimeInterval(60)
+            await service.reconcileReminders(messages: [reminder], now: now, calendar: calendar)
+            try expect(client.pending.count == 1, "APNs ownership must not suppress local reminders")
+        }
+        try await withService { service, client, _ in
+            var remoteOwns = false
+            service.shouldNotifyLocally = { _ in !remoteOwns }
+            client.duringAdd = { remoteOwns = true }
+            await service.notifyNewMessage(message(sentAt: now), now: now, calendar: calendar)
+            try expect(client.pending.isEmpty && client.delivered.isEmpty, "Ownership change during insertion must remove a duplicate local alert")
+            remoteOwns = false
+            await service.notifyNewMessage(message(sentAt: now.addingTimeInterval(1)), now: now, calendar: calendar)
+            try expect(client.delivered.count == 1, "Unavailable remote delivery must retain local notification fallback")
+        }
+        try await withService { service, _, _ in
+            var valid = true
+            var remoteOwns = true
+            let account = RemoteAccountRegistry.accounts[0]
+            let destination = MailPushDestination(userInfo: ["postmere_push":1,"server_origin":"https://postmere.example.test",
+                "workspace_id":UUID().uuidString,"user_id":UUID().uuidString,"account_id":account.accountID.uuidString,
+                "message_id":UUID().uuidString,"filter_criteria":account.localID])!
+            service.validateRemoteDestination = { _ in valid }
+            service.shouldPresentRemoteDestination = { _ in remoteOwns }
+            let visible = await service.remotePresentationOptions(for: destination, focusAllows: { _ in true })
+            try expect(visible == [.banner, .sound], "Valid APNs foreground alerts must use the existing presentation policy")
+            let focused = await service.remotePresentationOptions(for: destination, focusAllows: { _ in false })
+            try expect(focused.isEmpty, "APNs foreground delivery must respect Focus")
+            let stale = await service.remotePresentationOptions(for: destination, focusAllows: { _ in valid = false; return true })
+            try expect(stale.isEmpty, "Identity changes during APNs Focus lookup must suppress presentation")
+            valid = true
+            remoteOwns = false
+            let noOwner = await service.remotePresentationOptions(for: destination, focusAllows: { _ in true })
+            try expect(noOwner.isEmpty, "Unconfirmed remote ownership must not duplicate local foreground alerts")
+        }
+        print("PASS: APNs/local incoming ownership, insertion races, retained reminders and scoped foreground Focus checks")
+    }
+
+    @MainActor
+    static func foregroundPresentation() async throws {
+        let accounts = RemoteAccountRegistry.accounts
+        defer { RemoteAccountRegistry.accounts = accounts }
+        try await withService { service, _, _ in
+            let account = "remote:fixture:work"
+            let connected = await service.presentationOptions(for: account, focusAllows: { _ in true })
+            try expect(connected == [.banner, .sound], "Connected enabled account can present a banner")
+            let filtered = await service.presentationOptions(for: account, focusAllows: { _ in false })
+            try expect(filtered.isEmpty, "Focus still suppresses an active account")
+            let stale = await service.presentationOptions(for: account, focusAllows: { _ in
+                RemoteAccountRegistry.accounts = []
+                return true
+            })
+            try expect(stale.isEmpty, "Logout during Focus lookup suppresses a retained notification")
+            var lookedUpFocus = false
+            let disconnected = await service.presentationOptions(for: account, focusAllows: { _ in
+                lookedUpFocus = true
+                return true
+            })
+            try expect(disconnected.isEmpty && !lookedUpFocus, "Saved profiles cannot present disconnected-account notifications")
+            RemoteAccountRegistry.accounts = accounts
+            RemoteAccountRegistry.accounts[0].status = "reconnect_required"
+            let revoked = await service.presentationOptions(for: account, focusAllows: { _ in true })
+            try expect(revoked.isEmpty, "Revoked accounts cannot present old notifications")
+        }
+        print("PASS: foreground presentation rechecks connected accounts after Focus and logout")
+    }
+
+    @MainActor
+    static func incomingPolicyChanges(calendar: Calendar) async throws {
+        let now = date("2026-11-16T12:00:00Z")
+        try await withService { service, client, _ in
+            var allowed = true
+            service.shouldDeliverIncoming = { _ in allowed }
+            service.profiles[0].scheduleEnabled = true
+            service.profiles[0].startMinute = 22 * 60
+            service.profiles[0].endMinute = 23 * 60
+            service.profiles[0].weekdays = Set(1...7)
+            let incoming = message(sentAt: now)
+            await service.notifyNewMessage(incoming, now: now, calendar: calendar)
+            await service.reconcileReminders(messages: [incoming], now: now, calendar: calendar)
+            try expect(client.pending.count == 1, "Allowed sender did not retain its quiet-hour incoming alert")
+            allowed = false
+            service.notificationPolicyChanged()
+            await service.reconcileReminders(messages: [incoming], now: now, calendar: calendar)
+            try expect(client.pending.isEmpty, "Blocking a sender did not cancel an already queued quiet-hour alert")
+        }
+        try await withService { service, client, _ in
+            var allowed = true
+            service.shouldDeliverIncoming = { _ in allowed }
+            client.duringAdd = { allowed = false }
+            await service.notifyNewMessage(message(sentAt: now), now: now, calendar: calendar)
+            try expect(client.pending.isEmpty && client.delivered.isEmpty, "Sender-policy change during insertion left a stale incoming alert")
+        }
+        try await withService { service, _, _ in
+            let account = RemoteAccountRegistry.accounts[0]
+            let destination = MailPushDestination(userInfo: ["postmere_push":1,"server_origin":"https://postmere.example.test",
+                "workspace_id":UUID().uuidString,"user_id":UUID().uuidString,"account_id":account.accountID.uuidString,
+                "message_id":UUID().uuidString,"filter_criteria":account.localID])!
+            var allowed = true
+            service.validateRemoteDestination = { _ in true }
+            service.shouldPresentRemoteDestination = { _ in await Task.yield(); return allowed }
+            let suppressed = await service.remotePresentationOptions(for: destination, focusAllows: { _ in allowed = false; return true })
+            try expect(suppressed.isEmpty, "Policy changes during foreground Focus lookup were not rechecked")
+        }
+        print("PASS: sender-policy changes cancel queued incoming alerts and recheck insertion/foreground races")
+    }
+
+    @MainActor
+    static func accountChangesDuringScheduling(calendar: Calendar) async throws {
+        let accounts = RemoteAccountRegistry.accounts
+        defer { RemoteAccountRegistry.accounts = accounts }
+        let now = date("2026-11-16T12:00:00Z")
+        let reminder = message(sentAt: now.addingTimeInterval(-10), snooze: now.addingTimeInterval(60))
+        try await withService { service, client, _ in
+            client.beforePendingRead = { RemoteAccountRegistry.accounts = [] }
+            await service.reconcileReminders(messages: [reminder], now: now, calendar: calendar)
+            try expect(client.added.isEmpty, "Logout during pending-request lookup cannot schedule old-account reminders")
+        }
+        RemoteAccountRegistry.accounts = accounts
+        try await withService { service, client, _ in
+            client.duringAdd = { RemoteAccountRegistry.accounts = [] }
+            await service.reconcileReminders(messages: [reminder], now: now, calendar: calendar)
+            try expect(client.pending.isEmpty && client.delivered.isEmpty, "Disconnect during reminder insertion removes the stale request")
+        }
+        RemoteAccountRegistry.accounts = accounts
+        try await withService { service, client, _ in
+            client.duringAdd = { RemoteAccountRegistry.accounts = [] }
+            await service.notifyNewMessage(message(sentAt: now.addingTimeInterval(-10)), now: now, calendar: calendar)
+            try expect(client.pending.isEmpty && client.delivered.isEmpty, "Logout during incoming notification insertion removes the stale request")
+        }
+        print("PASS: account changes during notification lookups and insertion fail closed")
+    }
+
+    @MainActor
+    static func manyAccountProfiles(calendar: Calendar) async throws {
+        let oldAccounts = RemoteAccountRegistry.accounts
+        defer { RemoteAccountRegistry.accounts = oldAccounts }
+        let many = (0..<32).map { index in
+            RemoteAccountIdentity(localID: "remote:many:user:account-\(index)", accountID: UUID(), scope: "many:user",
+                                  email: "account\(index)@example.com", displayName: "Account \(index)", provider: index.isMultiple(of: 2) ? "gmail" : "microsoft")
+        }
+        RemoteAccountRegistry.accounts = many
+        try await withService { service, client, defaults in
+            service.reconcileAccounts()
+            try expect(Set(service.profiles.map(\.id)).isSuperset(of: Set(many.map(\.localID))), "Every connected account gets an independent notification profile")
+            let target = many[31]
+            let index = service.profiles.firstIndex { $0.id == target.localID }!
+            service.profiles[index].enabled = true
+            let now = date("2026-11-16T12:00:00Z")
+            let incoming = message(account: target.localID, sentAt: now.addingTimeInterval(-10))
+            await service.notifyNewMessage(incoming, now: now, calendar: calendar)
+            try expect(client.delivered.values.contains { $0.content.filterCriteria == target.localID }, "Accounts beyond the first ten can notify with their own Focus identity")
+            let restored = MailNotificationService(client: client, preferences: defaults)
+            try expect(restored.profiles.first { $0.id == target.localID }?.enabled == true, "Dynamic account notification preferences survive relaunch")
+            var snoozed = incoming
+            snoozed.workflow.snoozedUntil = now.addingTimeInterval(100)
+            await service.reconcileReminders(messages: [snoozed], now: now, calendar: calendar)
+            try expect(!client.pending.isEmpty, "Connected account reminder is scheduled")
+            RemoteAccountRegistry.accounts = []
+            await service.reconcileReminders(messages: [snoozed], now: now.addingTimeInterval(1), calendar: calendar)
+            try expect(client.pending.isEmpty, "Signing out removes pending notifications for disconnected accounts")
+        }
+        print("PASS: 32 scoped notification profiles, persistence, Focus identities, and logout cancellation")
+    }
+
+    @MainActor
     static func schedules(calendar: Calendar) throws {
-        var p = NotificationProfile(id: "Work", enabled: true, scheduleEnabled: true, weekdays: [2])
+        var p = NotificationProfile(id: "remote:fixture:work", enabled: true, scheduleEnabled: true, weekdays: [2])
         let monday = date("2026-11-16T09:00:00Z")
         try expect(p.permits(monday, calendar: calendar), "Schedule must include its start")
         try expect(!p.permits(date("2026-11-16T18:00:00Z"), calendar: calendar), "End must be exclusive")
@@ -92,7 +280,7 @@ private struct NotificationChecks {
     }
 
     @MainActor
-    static func message(conversation: UUID = UUID(), account: String = "Work", sentAt: Date,
+    static func message(conversation: UUID = UUID(), account: String = "remote:fixture:work", sentAt: Date,
                         snooze: Date? = nil, followup: Date? = nil, reference: Date? = nil) -> MailMessage {
         MailMessage(sender: "Sender", senderEmail: "sender@example.com", initials: "S", subject: "Review",
                     preview: "Preview", paragraphs: ["Body"], timeLabel: "", isUnread: true, account: account,
@@ -102,15 +290,21 @@ private struct NotificationChecks {
 
     @MainActor
     static func focusAndPlanning() throws {
-        for p in [MailFocusProfile.all, .work, .personal, .gmail, .none] {
-            for account in ["Work", "Personal", "Gmail", "Other"] {
-                try expect(p.notificationPredicate.evaluate(with: account) == p.allows(account: account), "Focus predicate and foreground policy must agree")
+        let available: Set<String> = ["remote:fixture:work", "remote:fixture:personal", "remote:fixture:third"]
+        let selected: Set<String> = ["remote:fixture:work", "remote:disconnected:account"]
+        for p in [MailFocusProfile.all, .selected, .none] {
+            for account in available.union(["remote:disconnected:account", "Work"]) {
+                try expect(p.notificationPredicate(selectedAccountIDs: selected, availableAccountIDs: available).evaluate(with: account)
+                           == p.allows(account: account, selectedAccountIDs: selected, availableAccountIDs: available),
+                           "Focus predicate and foreground policy must agree for every scoped account")
             }
         }
+        try expect(!MailFocusProfile.selected.allows(account: "remote:disconnected:account", selectedAccountIDs: selected, availableAccountIDs: available),
+                   "Focus selected accounts fail closed after disconnection")
         let now = date("2026-11-16T12:00:00Z"), conversation = UUID()
         let original = message(conversation: conversation, sentAt: now.addingTimeInterval(-600), snooze: now.addingTimeInterval(600), followup: now.addingTimeInterval(900), reference: now)
         var duplicate = original; duplicate.id = UUID(); duplicate.sentAt = now.addingTimeInterval(-500)
-        let personal = message(conversation: conversation, account: "Personal", sentAt: now.addingTimeInterval(-600), followup: now.addingTimeInterval(900), reference: now)
+        let personal = message(conversation: conversation, account: "remote:fixture:personal", sentAt: now.addingTimeInterval(-600), followup: now.addingTimeInterval(900), reference: now)
         let sources = MailReminderPlanning.sources(messages: [original, duplicate, personal])
         try expect(sources.count == 3 && Set(sources.map(\.identifier)).count == 3, "Dedupe must isolate account, conversation, and kind")
         let reply = message(conversation: conversation, sentAt: now.addingTimeInterval(1))
@@ -119,8 +313,8 @@ private struct NotificationChecks {
         try expect(MailReminderPlanning.sources(messages: [duplicate, reply]).contains { $0.kind == .followup }, "Unconditional follow-up must remain")
         var deleted = original; deleted.providerDeletedAt = now
         try expect(MailReminderPlanning.sources(messages: [deleted]).isEmpty, "Deleted provider messages must not notify")
-        var gmail = original; gmail.account = "Gmail"; gmail.providerAccountEmail = "old@example.com"
-        try expect(MailReminderPlanning.sources(messages: [gmail], activeGmailEmail: "new@example.com").isEmpty, "Inactive Gmail account must not notify")
+        var legacy = original; legacy.account = "Gmail"; legacy.providerAccountEmail = "old@example.com"
+        try expect(MailReminderPlanning.sources(messages: [legacy]).isEmpty, "Legacy direct account must not notify")
         print("PASS: Focus policy, reminder identity, reply conditions, and account/deletion boundaries")
     }
 
@@ -131,7 +325,7 @@ private struct NotificationChecks {
         defer { defaults.removePersistentDomain(forName: suite) }
         let client = FakeNotificationClient()
         let service = MailNotificationService(client: client, preferences: defaults)
-        service.profiles = [NotificationProfile(id: "Work", enabled: true), NotificationProfile(id: "Personal"), NotificationProfile(id: "Gmail")]
+        service.profiles = [NotificationProfile(id: "remote:fixture:work", enabled: true), NotificationProfile(id: "remote:fixture:personal"), NotificationProfile(id: "remote:fixture:third")]
         try await body(service, client, defaults)
         try expect(client.authorizationRequests == 0, "Reconciliation must not request permission")
     }
@@ -150,7 +344,7 @@ private struct NotificationChecks {
             service.profiles[0].showPreview = false
             await service.reconcileReminders(messages: [original, duplicate], now: now.addingTimeInterval(2), calendar: calendar)
             try expect(client.pending.values.allSatisfy { $0.content.body == "Open Postmere to view the message." }, "Pending previews must update")
-            try expect(client.pending.values.allSatisfy { $0.content.filterCriteria == "Work" }, "All requests need Focus criteria")
+            try expect(client.pending.values.allSatisfy { $0.content.filterCriteria == "remote:fixture:work" }, "All requests need Focus criteria")
             let reply = message(conversation: original.conversationID, sentAt: now.addingTimeInterval(3))
             await service.reconcileReminders(messages: [original, duplicate, reply], now: now.addingTimeInterval(4), calendar: calendar)
             try expect(client.pending.count == 1 && client.pending.keys.first!.hasPrefix("reminder.snooze."), "Reply must remove pending follow-up")
@@ -214,7 +408,7 @@ private struct NotificationChecks {
     static func budgetAndRetry(calendar: Calendar) async throws {
         try await withService { service, client, _ in
             let now = date("2026-11-16T12:00:00Z")
-            let disabled = (1...60).map { message(account: "Personal", sentAt: now, followup: now.addingTimeInterval(Double($0)), reference: now) }
+            let disabled = (1...60).map { message(account: "remote:fixture:personal", sentAt: now, followup: now.addingTimeInterval(Double($0)), reference: now) }
             let enabled = (1...3).map { message(sentAt: now, followup: now.addingTimeInterval(Double($0 + 100)), reference: now) }
             await service.reconcileReminders(messages: disabled + enabled, now: now, calendar: calendar)
             try expect(client.pending.count == 3, "Disabled profiles must not use pending budget")
