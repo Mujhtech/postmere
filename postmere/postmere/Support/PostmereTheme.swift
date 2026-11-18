@@ -33,6 +33,43 @@ extension View {
     }
 }
 
+struct PostmereSheetHeader<Accessory: View>: View {
+    @Environment(\.dismiss) private var dismiss
+    let title: String
+    let subtitle: String?
+    let accessory: Accessory
+
+    init(_ title: String, subtitle: String? = nil, @ViewBuilder accessory: () -> Accessory = { EmptyView() }) {
+        self.title = title
+        self.subtitle = subtitle
+        self.accessory = accessory()
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(PostmereTheme.sheetTitle)
+                    .lineLimit(2)
+                    .accessibilityAddTraits(.isHeader)
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+            }
+            Spacer(minLength: 8)
+            accessory
+            Button("Done") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
+    }
+}
+
 enum MailAppearance: String, CaseIterable {
     case system, light, dark
 

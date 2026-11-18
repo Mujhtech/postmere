@@ -1,7 +1,17 @@
 {
-  "fill" : {
-    "automatic-gradient" : "extended-srgb:0.07059,0.24706,0.21176,1.00000"
-  },
+  "fill-specializations" : [
+    {
+      "value" : {
+        "automatic-gradient" : "extended-srgb:0.07059,0.24706,0.21176,1.00000"
+      }
+    },
+    {
+      "appearance" : "dark",
+      "value" : {
+        "automatic-gradient" : "extended-srgb:0.04314,0.14510,0.12157,1.00000"
+      }
+    }
+  ],
   "groups" : [
     {
       "layers" : [
@@ -11,6 +21,13 @@
         }
       ],
       "name" : "Seal",
+      "position" : {
+        "scale" : 1.4,
+        "translation-in-points" : [
+          0,
+          0
+        ]
+      },
       "shadow" : {
         "kind" : "neutral",
         "opacity" : 0.15
@@ -25,29 +42,22 @@
         {
           "image-name" : "envelope.svg",
           "name" : "Envelope"
-        }
-      ],
-      "name" : "Envelope",
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.3
-      },
-      "translucency" : {
-        "enabled" : false,
-        "value" : 0
-      }
-    },
-    {
-      "layers" : [
+        },
         {
           "image-name" : "letter.svg",
           "name" : "Letter"
         }
       ],
-      "name" : "Letter",
+      "name" : "Paper",
+      "opacity-specializations" : [
+        {
+          "appearance" : "dark",
+          "value" : 0.76
+        }
+      ],
       "shadow" : {
         "kind" : "neutral",
-        "opacity" : 0.25
+        "opacity" : 0.3
       },
       "translucency" : {
         "enabled" : false,

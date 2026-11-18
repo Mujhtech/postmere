@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 /// Uses a contextual NSMenu so AppKit supplies the real nearby-device commands.
 struct ComposeAttachmentMenuButton: NSViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
     let onChooseFiles: () -> Void
     /// Consume or copy these URLs synchronously; captured temporary files are then removed.
     let onCapture: ([URL]) throws -> Void
@@ -28,6 +29,7 @@ struct ComposeAttachmentMenuButton: NSViewRepresentable {
     }
 
     private func update(_ button: ContinuityAttachmentButton) {
+        button.image = PostmereSymbols.image("paperclip", size: 16, colorScheme: colorScheme)
         button.onChooseFiles = onChooseFiles
         button.capture.onReceive = onCapture
         button.capture.onError = onError
@@ -93,7 +95,6 @@ private final class ContinuityAttachmentButton: NSButton {
 
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: 28, height: 24))
-        image = PostmereSymbols.image("paperclip", size: 16)
         contentTintColor = .secondaryLabelColor
         imagePosition = .imageOnly
         bezelStyle = .texturedRounded

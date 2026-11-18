@@ -4,6 +4,7 @@ import SwiftUI
 /// Postmere's own 24-point line icons. Keeping the drawing in one place also
 /// gives native AppKit controls the same artwork as SwiftUI labels and menus.
 struct PostmereIcon: View {
+    @Environment(\.colorScheme) private var colorScheme
     let symbol: String
     let size: CGFloat
 
@@ -13,7 +14,7 @@ struct PostmereIcon: View {
     }
 
     var body: some View {
-        Image(nsImage: PostmereSymbols.image(symbol, size: size))
+        Image(nsImage: PostmereSymbols.image(symbol, size: size, colorScheme: colorScheme))
             .renderingMode(.template)
             .accessibilityHidden(true)
     }
@@ -30,24 +31,48 @@ struct PostmereLabel: View {
         self.size = size
     }
 
+    static func emptyState(_ title: String, symbol: String, size: CGFloat) -> some View {
+        Label { Text(title) } icon: {
+            PostmereIcon(symbol, size: size).foregroundStyle(PostmereTheme.icon)
+        }
+    }
+
     var body: some View {
         Label { Text(title) } icon: { PostmereIcon(symbol, size: size) }
+    }
+}
+
+struct PostmereSearchEmptyState: View {
+    let query: String
+    let clearSearch: () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            PostmereLabel.emptyState("No results", symbol: "magnifyingglass", size: 36)
+        } description: {
+            Text("No matches for “\(query)”.").lineLimit(3)
+        } actions: {
+            Button("Clear Search", action: clearSearch)
+        }
     }
 }
 
 enum PostmereSymbols {
     private static var images: [String: NSImage] = [:]
 
-    static func image(_ symbol: String, size: CGFloat = 16) -> NSImage {
-        let key = "\(symbol):\(size)"
+    static func image(_ symbol: String, size: CGFloat = 16, colorScheme: ColorScheme) -> NSImage {
+        let dark = colorScheme == .dark
+        let key = "\(symbol):\(size):\(dark)"
         if let image = images[key] { return image }
         let artwork = drawing(symbol)
+        // Native menu labels can draw the original pixels even when the image is a template.
+        let ink = (dark ? NSColor.white : NSColor.black).cgColor
         let image = NSImage(size: NSSize(width: size, height: size), flipped: true) { _ in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
             context.saveGState()
             context.scaleBy(x: size / 24, y: size / 24)
-            context.setStrokeColor(NSColor.black.cgColor)
-            context.setFillColor(NSColor.black.cgColor)
+            context.setStrokeColor(ink)
+            context.setFillColor(ink)
             context.setLineWidth(max(1.7, 25.2 / size))
             context.setLineCap(.round)
             context.setLineJoin(.round)
@@ -103,6 +128,15 @@ enum PostmereSymbols {
         case "trash":
             d.line([3, 6, 21, 6]); d.line([9, 6, 9, 3, 15, 3, 15, 6])
             d.line([5, 9, 6, 21, 18, 21, 19, 9]); d.line([9, 10, 9.5, 17]); d.line([15, 10, 14.5, 17])
+        case "info.circle":
+            d.circle(12, 12, 9)
+            d.disc(12, 8, 1)
+            d.line([12, 11, 12, 16])
+        case "arrowshape.turn.up.left.2":
+            d.line([8, 4, 2, 10, 8, 16])
+            d.line([14, 4, 8, 10, 14, 16])
+            d.line([8, 10, 14, 10])
+            d.curve(from: [14, 10], to: [22, 20], c1: [20, 10], c2: [22, 13])
         case "arrowshape.turn.up.left", "arrow.uturn.backward":
             d.line([9, 4, 3, 10, 9, 16]); d.line([3, 10, 13, 10])
             d.curve(from: [13, 10], to: [21, 20], c1: [19, 10], c2: [21, 13])
@@ -214,6 +248,15 @@ enum PostmereSymbols {
             d.line([6, 3, 6, 21]); d.line([6, 3, 12, 3])
             d.curve(from: [12, 3], to: [12, 11], c1: [20, 3], c2: [20, 11]); d.line([6, 11, 12, 11])
             d.curve(from: [12, 11], to: [12, 21], c1: [22, 11], c2: [22, 21]); d.line([6, 21, 12, 21])
+        case "italic":
+            d.line([11, 4, 20, 4])
+            d.line([15.5, 4, 8.5, 20])
+            d.line([4, 20, 13, 20])
+        case "underline":
+            d.line([6, 3, 6, 11])
+            d.curve(from: [6, 11], to: [18, 11], c1: [6, 19], c2: [18, 19])
+            d.line([18, 11, 18, 3])
+            d.line([5, 21, 19, 21])
         case "chevron.left": d.line([15, 5, 8, 12, 15, 19])
         case "chevron.right": d.line([9, 5, 16, 12, 9, 19])
         case "chevron.down": d.line([5, 9, 12, 16, 19, 9])
@@ -227,7 +270,7 @@ enum PostmereSymbols {
             else { d.line([5, 5, 19, 19]); d.line([19, 5, 5, 19]) }
         case "ellipsis", "ellipsis.circle":
             if name.hasSuffix("circle") { d.circle(12, 12, 9) }
-            for x: CGFloat in [7, 12, 17] { d.disc(x, 12, 1) }
+            for x: CGFloat in [6, 12, 18] { d.disc(x, 12, 1.65) }
         case "exclamationmark.circle":
             d.circle(12, 12, 9); d.line([12, 7, 12, 12]); d.disc(12, 16, 1)
         case "externaldrive.badge.exclamationmark":
