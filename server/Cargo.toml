@@ -53,6 +53,7 @@ postmere-mcp-auth = { path = "crates/postmere-mcp-auth" }
 postmere-mcp-operations = { path = "crates/postmere-mcp-operations" }
 postmere-mcp = { path = "crates/postmere-mcp" }
 postmere-realtime = { path = "crates/postmere-realtime" }
+postmere-push = { path = "crates/postmere-push" }
 postmere-webhooks = { path = "crates/postmere-webhooks" }
 
 [workspace.lints.rust]
@@ -76,6 +77,7 @@ postmere-unsubscribe.workspace = true
 postmere-mcp.workspace = true
 postmere-mcp-auth.workspace = true
 postmere-realtime.workspace = true
+postmere-push.workspace = true
 postmere-webhooks.workspace = true
 axum.workspace = true
 serde.workspace = true

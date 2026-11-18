@@ -23,6 +23,7 @@ pub fn feature_routes() -> Router<AppState> {
         .merge(postmere_calendar::router())
         .merge(postmere_mcp::router())
         .merge(postmere_realtime::router())
+        .merge(postmere_push::router())
         .merge(postmere_webhooks::router())
 }
 
