@@ -31,21 +31,21 @@ struct SignatureEditorView: View {
                 }
                 VStack(spacing: 0) {
                     HStack(spacing: 4) {
-                        formatButton("Bold", symbol: "bold", active: formatting.isBold, action: formatting.toggleBold)
-                        formatButton("Italic", symbol: "italic", active: formatting.isItalic, action: formatting.toggleItalic)
-                        formatButton("Underline", symbol: "underline", active: formatting.isUnderlined, action: formatting.toggleUnderline)
+                        MailFormattingButton(title: "Bold", symbol: "bold", active: formatting.isBold, action: formatting.toggleBold)
+                        MailFormattingButton(title: "Italic", symbol: "italic", active: formatting.isItalic, action: formatting.toggleItalic)
+                        MailFormattingButton(title: "Underline", symbol: "underline", active: formatting.isUnderlined, action: formatting.toggleUnderline)
                         Spacer()
                         Button(action: formatting.undo) { PostmereIcon("arrow.uturn.backward", size: 13) }
                             .buttonStyle(.borderless).disabled(!formatting.canUndo).help("Undo").accessibilityLabel("Undo signature change")
                     }.padding(.horizontal, 8).padding(.vertical, 5)
                     Divider()
-                    ComposeBodyEditor(text: binding(\.text), rtfData: binding(\.rtfData), formatting: formatting)
+                    ComposeBodyEditor(text: binding(\.text), rtfData: binding(\.rtfData), formatting: formatting,
+                                      fieldLabel: "Signature for selected account")
                         .frame(height: 106)
                         .id(selectedAccountID)
                 }
                 .background(PostmereTheme.subtleFill, in: .rect(cornerRadius: PostmereTheme.cardRadius))
                 .overlay { RoundedRectangle(cornerRadius: PostmereTheme.cardRadius).strokeBorder(PostmereTheme.rule) }
-                .accessibilityLabel("Signature for selected account")
                 HStack(spacing: 18) {
                     Toggle("New messages", isOn: binding(\.includeInNewMessages))
                     Toggle("Replies", isOn: binding(\.includeInReplies))
@@ -79,11 +79,4 @@ struct SignatureEditorView: View {
         })
     }
 
-    private func formatButton(_ title: String, symbol: String, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            PostmereIcon(symbol, size: 13).frame(width: 25, height: 23)
-                .foregroundStyle(active ? PostmereTheme.accentInk : PostmereTheme.icon)
-                .background(active ? PostmereTheme.accent.opacity(0.12) : .clear, in: .rect(cornerRadius: 4))
-        }.buttonStyle(.borderless).help(title).accessibilityLabel(title).accessibilityValue(active ? "On" : "Off")
-    }
 }

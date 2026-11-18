@@ -32,7 +32,7 @@ struct MailScheduleSheet: View {
                 Toggle("Only if nobody replies", isOn: $onlyIfNoReply)
             }
             if purpose == .sendLater {
-                Text("Postmere must be open and your Mac awake to send. If it’s closed, delivery resumes when you open it.")
+                Text("Keep Postmere open until your workspace accepts the message. Your server then delivers it at the scheduled time, even while this Mac is asleep.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             HStack {
@@ -60,7 +60,7 @@ struct PrivateNoteSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Private note").font(PostmereTheme.sheetTitle)
-            Text(message.subject).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+            Text(message.displaySubject).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
             TextEditor(text: $note).font(.system(size: 13)).scrollIndicators(.never)
                 .scrollContentBackground(.hidden)
                 .frame(height: 180).accessibilityLabel("Private note")
@@ -137,11 +137,11 @@ struct OutgoingStatusView: View {
                 Text(item.scheduledAt, format: .dateTime.month().day().hour().minute()).font(.caption)
                 Text(item.serverJobID != nil ? "Your server will deliver this message while Postmere is closed."
                      : item.submissionStarted == true ? "Waiting for server confirmation. Keep Postmere open."
-                     : "Delivery resumes while Postmere is open.").font(.caption).foregroundStyle(.secondary)
+                     : "Keep Postmere open until your workspace accepts this message.").font(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 if item.status == .failed && item.serverState != "uncertain" { Button("Retry Send") { store.retrySend(item.id) } }
-                if item.status != .delivering && item.serverState != "uncertain" { Button("Cancel Send & Edit") { store.cancelQueuedSend(item.id) } }
+                if item.status != .delivering && item.serverState != "uncertain" { Button("Cancel Send and Edit") { store.cancelQueuedSend(item.id) } }
             }.controlSize(.small)
         }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             .background(PostmereTheme.subtleFill, in: RoundedRectangle(cornerRadius: PostmereTheme.cardRadius))

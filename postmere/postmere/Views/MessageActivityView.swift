@@ -26,7 +26,6 @@ nonisolated struct BackendActivityEvent: Decodable, Identifiable, Sendable {
 struct MessageActivityView: View {
     let message: MailMessage
     let session: BackendSession
-    @Environment(\.dismiss) private var dismiss
     @State private var response: BackendActivityResponse?
     @State private var isLoading = false
     @State private var error: String?
@@ -35,20 +34,13 @@ struct MessageActivityView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Message activity").font(PostmereTheme.sheetTitle)
-                    Text(message.subject).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-            }.padding(24)
+            PostmereSheetHeader("Message activity", subtitle: message.displaySubject)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if message.backendOutboxID == nil || (message.trackOpens != true && message.trackLinks != true) {
                         ContentUnavailableView {
-                            PostmereLabel("Tracking was off", symbol: "eye", size: 32)
+                            PostmereLabel.emptyState("Tracking was off", symbol: "eye", size: 32)
                         } description: {
                             Text("Enable tracking from the Send menu before sending a message from a workspace account.")
                         }

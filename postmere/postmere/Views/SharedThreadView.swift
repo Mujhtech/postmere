@@ -17,7 +17,7 @@ struct SharedThreadView: View {
             if let detail {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text(detail.thread.subject).font(.system(size: 21, weight: .semibold, design: .serif))
+                        Text(MailMessage.displaySubject(detail.thread.subject)).font(.system(size: 21, weight: .semibold, design: .serif))
                         HStack {
                             Text("Shared snapshot · \(detail.thread.ownerEmail)").font(.caption).foregroundStyle(.secondary)
                             Spacer()

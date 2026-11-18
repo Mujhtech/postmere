@@ -32,29 +32,33 @@ struct SnippetPickerView: View {
         self.onImportAttachments = onImportAttachments
     }
 
-    private var selectedSnippet: MailSnippet? { snippets.first { $0.id == selection } }
+    private var query: String { search.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var selectedSnippet: MailSnippet? { filteredSnippets.first { $0.id == selection } }
     private var filteredSnippets: [MailSnippet] {
-        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        return snippets.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
-            || $0.body.localizedCaseInsensitiveContains(query) || ($0.subject?.localizedCaseInsensitiveContains(query) ?? false) }
+        snippets.filter { matchesSearch($0) }
+    }
+
+    private func matchesSearch(_ snippet: MailSnippet) -> Bool {
+        query.isEmpty || snippet.title.localizedCaseInsensitiveContains(query)
+            || snippet.body.localizedCaseInsensitiveContains(query)
+            || snippet.subject?.localizedCaseInsensitiveContains(query) == true
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Snippets & Templates").font(PostmereTheme.sheetTitle)
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-            }.padding(24)
+            PostmereSheetHeader("Snippets & Templates")
             Divider()
             HStack(spacing: 0) {
                 sidebar
                 Divider()
                 if let snippet = selectedSnippet {
                     details(snippet)
+                } else if !query.isEmpty && filteredSnippets.isEmpty {
+                    PostmereSearchEmptyState(query: query) { search = "" }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ContentUnavailableView {
-                        PostmereLabel(snippets.isEmpty ? "Save a reusable message" : "Choose a snippet or template",
+                        PostmereLabel.emptyState(snippets.isEmpty ? "Save a reusable message" : "Choose a snippet or template",
                                       symbol: "text.badge.plus", size: 40)
                     } description: {
                         Text("Snippets insert text at your cursor. Templates can also fill message fields and attach files.")
@@ -63,11 +67,14 @@ struct SnippetPickerView: View {
             }
         }
         .frame(width: 760, height: 580)
-        .onAppear { if selection == nil { selection = snippets.first?.id } }
+        .onChange(of: filteredSnippets.map(\.id), initial: true) { _, visibleIDs in
+            if selection.map(visibleIDs.contains) != true { selection = visibleIDs.first }
+        }
         .onChange(of: selection) { values = [:]; applyMode = nil }
         .sheet(item: $editingSnippet) { snippet in
             SnippetEditorView(snippet: snippet, onImportAttachments: onImportAttachments) { updated in
                 onSave(updated)
+                if !matchesSearch(updated) { search = "" }
                 selection = updated.id
                 values = [:]
                 applyMode = nil
@@ -99,7 +106,10 @@ struct SnippetPickerView: View {
             } label: {
                 PostmereLabel("New", symbol: "plus", size: 14)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            }.menuStyle(.borderlessButton).padding(12)
+            }
+            .menuStyle(.borderlessButton)
+            .tint(PostmereTheme.accentInk)
+            .padding(12)
         }.frame(width: 200)
     }
 
@@ -171,7 +181,7 @@ struct SnippetPickerView: View {
             HStack {
                 Button("Delete", role: .destructive) {
                     onDelete(snippet.id)
-                    selection = snippets.first { $0.id != snippet.id }?.id
+                    selection = filteredSnippets.first { $0.id != snippet.id }?.id
                 }
                 Button("Edit") { editingSnippet = snippet }
                 Spacer()
@@ -276,9 +286,9 @@ private struct SnippetEditorView: View {
             }
             VStack(spacing: 0) {
                 HStack(spacing: 4) {
-                    formatButton("Bold", symbol: "bold", active: formatting.isBold, action: formatting.toggleBold)
-                    formatButton("Italic", symbol: "italic", active: formatting.isItalic, action: formatting.toggleItalic)
-                    formatButton("Underline", symbol: "underline", active: formatting.isUnderlined, action: formatting.toggleUnderline)
+                    MailFormattingButton(title: "Bold", symbol: "bold", active: formatting.isBold, action: formatting.toggleBold)
+                    MailFormattingButton(title: "Italic", symbol: "italic", active: formatting.isItalic, action: formatting.toggleItalic)
+                    MailFormattingButton(title: "Underline", symbol: "underline", active: formatting.isUnderlined, action: formatting.toggleUnderline)
                     Divider().frame(height: 16).padding(.horizontal, 4)
                     Menu {
                         ForEach([11, 12, 14, 16, 18, 24], id: \.self) { size in
@@ -286,6 +296,8 @@ private struct SnippetEditorView: View {
                         }
                     } label: { Text("\(Int(formatting.fontSize)) pt").font(.system(size: 12)).frame(width: 52) }
                     .menuStyle(.borderlessButton)
+                    .tint(PostmereTheme.icon)
+                    .accessibilityLabel("Text size")
                     Button(action: formatting.showColorPanel) {
                         RoundedRectangle(cornerRadius: 3).fill(Color(nsColor: formatting.textColor)).frame(width: 14, height: 14)
                     }.buttonStyle(.borderless).help("Text color").accessibilityLabel("Text color")
@@ -294,12 +306,12 @@ private struct SnippetEditorView: View {
                         .buttonStyle(.borderless).disabled(!formatting.canUndo).help("Undo").accessibilityLabel("Undo")
                 }.padding(.horizontal, 10).padding(.vertical, 8)
                 Divider()
-                ComposeBodyEditor(text: $draft.body, rtfData: $draft.bodyRTF, formatting: formatting)
+                ComposeBodyEditor(text: $draft.body, rtfData: $draft.bodyRTF, formatting: formatting,
+                                  fieldLabel: draft.isTemplate ? "Template message" : "Snippet text")
                     .frame(minHeight: 160, maxHeight: .infinity)
             }
             .background(PostmereTheme.subtleFill, in: .rect(cornerRadius: PostmereTheme.cardRadius))
             .overlay { RoundedRectangle(cornerRadius: PostmereTheme.cardRadius).strokeBorder(PostmereTheme.rule) }
-            .accessibilityLabel(draft.isTemplate ? "Template message" : "Snippet text")
             if draft.isTemplate {
                 attachmentEditor
             }
@@ -363,11 +375,4 @@ private struct SnippetEditorView: View {
         }
     }
 
-    private func formatButton(_ title: String, symbol: String, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            PostmereIcon(symbol, size: 14).frame(width: 26, height: 24)
-                .foregroundStyle(active ? PostmereTheme.accentInk : PostmereTheme.icon)
-                .background(active ? PostmereTheme.accent.opacity(0.12) : .clear, in: .rect(cornerRadius: 4))
-        }.buttonStyle(.borderless).help(title).accessibilityLabel(title).accessibilityValue(active ? "On" : "Off")
-    }
 }

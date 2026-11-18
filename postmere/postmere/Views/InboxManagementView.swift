@@ -50,11 +50,7 @@ struct InboxManagementView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Organize your inbox").font(PostmereTheme.sheetTitle)
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-            }.padding(24)
+            PostmereSheetHeader("Organize your inbox")
             Picker("Organization", selection: $section) {
                 Text("Inbox tabs").tag(0)
                 Text("VIPs").tag(1)
@@ -144,7 +140,7 @@ struct InboxManagementView: View {
                             .foregroundStyle(PostmereTheme.icon)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(contact.value)
-                            Text(contact.account ?? "All accounts").font(.caption).foregroundStyle(.secondary)
+                            Text(MailAccount.scopeLabel(for: contact.account, providerEmail: contact.providerAccountEmail)).font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button("Remove") { store.deleteVIPContact(contact.id) }.controlSize(.small)

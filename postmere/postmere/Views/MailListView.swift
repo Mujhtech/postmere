@@ -32,11 +32,11 @@ struct MailListView: View {
         if let view = store.selectedSavedView { return view.name }
         if store.selectedMailbox == .inbox,
            let split = store.inboxSplits.first(where: { $0.id == store.selectedInboxSplitID && !$0.isHidden }) { return split.name }
-        if let account = store.selectedAccount { return "\(MailAccount(rawValue: account)?.name ?? account) Inbox" }
+        if let account = store.selectedAccount { return "\(MailAccount.scopeLabel(for: account)) \(store.selectedMailbox.title)" }
         return store.selectedMailbox == .inbox ? "All Inboxes" : store.selectedMailbox.title
     }
     private var searchLocation: String {
-        searchesAllMailboxes ? store.selectedAccount.map { "all \(MailAccount(rawValue: $0)?.name ?? $0) mailboxes" } ?? "all mailboxes" : mailboxTitle
+        searchesAllMailboxes ? store.selectedAccount.map { "all \(MailAccount.scopeLabel(for: $0)) mailboxes" } ?? "all mailboxes" : mailboxTitle
     }
     private var activeFilterNames: String {
         [store.unreadOnly ? "Unread" : nil, store.attachmentsOnly ? "Attachments" : nil]
@@ -103,7 +103,8 @@ struct MailListView: View {
             .padding(.horizontal, 16)
             .frame(height: 29)
         }
-        .navigationTitle(searchesAllMailboxes ? store.selectedAccount.map { "\(MailAccount(rawValue: $0)?.name ?? $0) Search" } ?? "Search Results" : mailboxTitle)
+        .defaultFocus($isListFocused, true)
+        .navigationTitle(searchesAllMailboxes ? store.selectedAccount.map { "\(MailAccount.scopeLabel(for: $0)) Search" } ?? "Search Results" : mailboxTitle)
         .sheet(isPresented: $showsViewEditor) { SavedInboxViewEditor(store: store, editing: store.selectedSavedView) }
         .sheet(isPresented: $showsInboxManager) { InboxManagementView(store: store) }
         .sheet(isPresented: $showsProviderSearch) { ProviderSearchView(runtime: runtime) }
@@ -133,8 +134,10 @@ struct MailListView: View {
                     .accessibilityLabel("Search messages")
                     .help("Search \(searchLocation) · ⌘F")
                     .onExitCommand {
-                        if store.searchText.isEmpty { isSearchFocused = false }
-                        else { store.searchText = "" }
+                        if store.searchText.isEmpty {
+                            isSearchFocused = false
+                            isListFocused = !store.filteredMessages.isEmpty
+                        } else { store.searchText = "" }
                     }
                 if !store.searchText.isEmpty {
                     Button { store.searchText = "" } label: {
@@ -156,7 +159,7 @@ struct MailListView: View {
                         Text("This Mailbox").tag(MailSearchScope.currentMailbox)
                         Text("All Mailboxes").tag(MailSearchScope.allMailboxes)
                     }
-                    .help(store.selectedAccount.map { "Search within your \($0) account" } ?? "Search across all accounts")
+                    .help(store.selectedAccount.map { "Search within your \(MailAccount.scopeLabel(for: $0)) account" } ?? "Search across all accounts")
                     Spacer(minLength: 0)
                     Picker("Search field", selection: $store.searchField) {
                         ForEach(MailSearchField.allCases) { field in
@@ -172,7 +175,7 @@ struct MailListView: View {
                     Text("Searching mail saved on this Mac").font(.system(size: 10)).foregroundStyle(.secondary)
                     Spacer()
                     if runtime.backend.isConnected {
-                        Button("Search all mail…") { showsProviderSearch = true }.buttonStyle(.plain)
+                        Button("Search online…") { showsProviderSearch = true }.buttonStyle(.plain)
                             .font(.system(size: 10)).foregroundStyle(PostmereTheme.accentInk)
                     }
                     Button("Search tips") { showsSearchHelp = true }.buttonStyle(.plain)
@@ -211,6 +214,7 @@ struct MailListView: View {
                         .foregroundStyle(hasMessageFilters ? AnyShapeStyle(PostmereTheme.accentInk) : AnyShapeStyle(PostmereTheme.icon))
                 }
                 .menuStyle(.borderlessButton)
+                .tint(hasMessageFilters ? PostmereTheme.accentInk : PostmereTheme.icon)
                 .fixedSize()
                 .font(.system(size: 11))
                 .help(hasMessageFilters ? "Filtering: \(activeFilterNames)" : "Filter messages")
@@ -236,7 +240,7 @@ struct MailListView: View {
 
     private var emptyState: some View {
         ContentUnavailableView {
-            PostmereLabel(emptyTitle, symbol: query.isEmpty ? store.selectedMailbox.systemImage : "magnifyingglass", size: 40)
+            PostmereLabel.emptyState(emptyTitle, symbol: query.isEmpty ? store.selectedMailbox.systemImage : "magnifyingglass", size: 40)
         } description: {
             Text(emptyDescription)
         } actions: {
@@ -248,7 +252,9 @@ struct MailListView: View {
                     Button(hasMessageFilters ? "Clear Search and Filters" : "Clear Search") { store.clearFilters() }
                 } else if hasMessageFilters {
                     Button("Show All Messages", action: clearMessageFilters)
-                } else if store.selectedMailbox == .drafts {
+                } else if !MailAccount.allCases.isEmpty && MailAccount.sendingAccounts.isEmpty {
+                    AccountSettingsButton(title: "Reconnect an Account")
+                } else if store.selectedMailbox == .drafts && !MailAccount.sendingAccounts.isEmpty {
                     Button("New Message") { store.beginCompose() }
                 }
             }
@@ -323,11 +329,11 @@ struct MailListView: View {
             Button("Edit Draft") { store.beginEditingDraft(message) }
         } else {
             Button("Reply") { store.beginCompose(replyTo: message) }
-                .disabled(message.isDraft)
+                .disabled(message.isDraft || MailAccount.sendingAccounts.isEmpty)
             Button("Reply All") { store.beginReplyAll(message) }
-                .disabled(message.isDraft || !store.hasReplyAllRecipients(for: message))
+                .disabled(message.isDraft || MailAccount.sendingAccounts.isEmpty || !store.hasReplyAllRecipients(for: message))
             Button("Forward") { store.beginForward(message) }
-                .disabled(message.isDraft)
+                .disabled(message.isDraft || MailAccount.sendingAccounts.isEmpty)
         }
         Divider()
         Button(message.isUnread ? "Mark as Read" : "Mark as Unread") { store.toggleRead(message.id) }
@@ -415,7 +421,10 @@ struct MailListView: View {
         case "r":
             guard store.selectedMessageIDs.count == 1, let message = store.selectedMessage, message.mailbox != .outbox else { return .ignored }
             if message.mailbox == .drafts { store.beginEditingDraft(message) }
-            else { store.beginCompose(replyTo: message) }
+            else {
+                guard !MailAccount.sendingAccounts.isEmpty else { return .ignored }
+                store.beginCompose(replyTo: message)
+            }
         default: return .ignored
         }
         return .handled
@@ -476,11 +485,11 @@ private struct MailRow: View {
                         .fixedSize()
                 }
                 HStack(spacing: 7) {
-                    Text(message.subject)
+                    Text(message.displaySubject)
                         .font(.system(size: 12, weight: message.isUnread ? .medium : .regular))
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    messageIndicators
+                    if message.isStarred || !message.attachments.isEmpty { messageIndicators }
                 }
                 if showMessagePreviews {
                     Text(message.preview)
@@ -491,7 +500,7 @@ private struct MailRow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if showsLocation {
-                    Text("\(message.account) · \(message.mailbox.title)")
+                    Text("\(message.accountLabel) · \(message.mailbox.title)")
                         .font(.system(size: 11))
                         .foregroundStyle(secondaryForeground)
                         .lineLimit(1)
@@ -506,12 +515,8 @@ private struct MailRow: View {
 
     private var messageIndicators: some View {
         HStack(spacing: 5) {
-            PostmereIcon("star.fill", size: 11)
-                .frame(width: 12)
-                .opacity(message.isStarred ? 1 : 0)
-            PostmereIcon("paperclip", size: 11)
-                .frame(width: 12)
-                .opacity(message.attachments.isEmpty ? 0 : 1)
+            if message.isStarred { PostmereIcon("star.fill", size: 11) }
+            if !message.attachments.isEmpty { PostmereIcon("paperclip", size: 11) }
         }
         .font(.system(size: 11, weight: .regular))
         .symbolRenderingMode(.monochrome)

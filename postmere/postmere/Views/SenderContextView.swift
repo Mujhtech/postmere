@@ -8,7 +8,6 @@ struct SenderContextView: View {
     let onOpenMessage: (MailMessage) -> Void
     let onOpenAttachment: (MailAttachment, MailMessage) -> Void
     private let notes: MailContactNotesStore
-    @Environment(\.dismiss) private var dismiss
 
     init(store: MailStore, email: String, accountKey: String, displayName: String = "",
          notes: MailContactNotesStore? = nil,
@@ -25,22 +24,17 @@ struct SenderContextView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            PostmereSheetHeader(displayName.isEmpty ? email : displayName,
+                                subtitle: displayName.isEmpty ? nil : email)
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(displayName.isEmpty ? email : displayName).font(.system(size: 17, weight: .semibold)).lineLimit(2)
-                        if !displayName.isEmpty { Text(email).font(.system(size: 12)).foregroundStyle(.secondary).textSelection(.enabled) }
-                    }
-                    Spacer()
-                    Button { dismiss() } label: { PostmereIcon("xmark", size: 12) }
-                        .buttonStyle(.plain).help("Close contact details").accessibilityLabel("Close contact details")
-                }
                 Toggle("VIP for this account", isOn: Binding(get: {
                     store.hasSenderVIP(email: email, accountKey: accountKey)
                 }, set: { _ = store.setSenderVIP($0, email: email, accountKey: accountKey) }))
                     .toggleStyle(.checkbox).font(.system(size: 12))
                 if let error = store.operationError { Text(error).font(.caption).foregroundStyle(.red) }
-            }.padding(20)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 16)
             Divider()
             SenderHistoryView(store: store, email: email, accountKey: accountKey,
                               onOpenMessage: onOpenMessage, onOpenAttachment: onOpenAttachment)
@@ -83,7 +77,7 @@ private struct SenderHistoryView: View {
                         Button { onOpenMessage(conversation.latestMessage) } label: {
                             VStack(alignment: .leading, spacing: 5) {
                                 HStack(alignment: .firstTextBaseline) {
-                                    Text(conversation.latestMessage.subject.isEmpty ? "(No subject)" : conversation.latestMessage.subject)
+                                    Text(conversation.latestMessage.displaySubject)
                                         .font(.system(size: 12, weight: .medium)).lineLimit(2)
                                     Spacer(minLength: 4)
                                     Text(conversation.latestMessage.sentAt, format: .dateTime.month(.abbreviated).day())
@@ -108,7 +102,7 @@ private struct SenderHistoryView: View {
                                 AttachmentIconView(attachment: item.attachment, size: 34)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(item.attachment.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                                    Text(item.message.subject).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                                    Text(item.message.displaySubject).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                                     Text(item.attachment.detail).font(.system(size: 10)).foregroundStyle(.secondary)
                                 }
                                 Spacer(minLength: 0)

@@ -2,15 +2,10 @@ import SwiftUI
 
 struct WorkspaceView: View {
     let runtime: MailRuntime
-    @Environment(\.dismiss) private var dismiss
     @State private var tab = 0
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Workspace").font(PostmereTheme.sheetTitle)
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-            }.padding(22)
+            PostmereSheetHeader("Workspace")
             if runtime.backend.isConnected {
                 Picker("Workspace", selection: $tab) {
                     Text("Shared threads").tag(0); Text("Team templates").tag(1); Text("Members").tag(2)
@@ -20,9 +15,12 @@ struct WorkspaceView: View {
                 else if tab == 1 { SharedTemplatesView(runtime: runtime) }
                 else { WorkspaceMembersView(session: runtime.backend) }
             } else {
+                Divider()
                 ContentUnavailableView {
-                    PostmereLabel("Connect your workspace", symbol: "bubble.left.and.bubble.right", size: 36)
-                } description: { Text("Open Settings → Accounts to sign in to your Postmere server.") }
+                    PostmereLabel.emptyState("Connect your workspace", symbol: "bubble.left.and.bubble.right", size: 36)
+                } description: { Text("Sign in to see shared conversations, team templates, and members.") } actions: {
+                    AccountSettingsButton()
+                }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.frame(width: 790, height: 670).tint(PostmereTheme.accent)
@@ -40,7 +38,7 @@ private struct SharedThreadsView: View {
                 HStack { Text("Conversations").font(.caption.weight(.medium)); Spacer(); Button { Task { await reload() } } label: { PostmereIcon("arrow.clockwise", size: 13) }.help("Refresh shared threads") }.padding(14)
                 List(threads, selection: $selected) { thread in
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(thread.subject).font(.system(size: 13, weight: .medium)).lineLimit(2)
+                        Text(MailMessage.displaySubject(thread.subject)).font(.system(size: 13, weight: .medium)).lineLimit(2)
                         Text(thread.ownerEmail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         Text("\(thread.messageCount) messages · \(thread.permission)").font(.caption2).foregroundStyle(.secondary)
                     }.padding(.vertical, 5).tag(thread.id)
@@ -50,7 +48,7 @@ private struct SharedThreadsView: View {
             if let selected { SharedThreadView(runtime: runtime, threadID: selected).id(selected) }
             else {
                 ContentUnavailableView {
-                    PostmereLabel("Shared conversations", symbol: "bubble.left.and.bubble.right", size: 32)
+                    PostmereLabel.emptyState("Shared conversations", symbol: "bubble.left.and.bubble.right", size: 32)
                 } description: { Text("Select a shared thread. To share your own, choose Share Conversation from its message menu.") }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }

@@ -22,12 +22,7 @@ struct MailAIAssistantView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                PostmereIcon("sparkles", size: 21).foregroundStyle(PostmereTheme.accentInk)
-                Text(mode.title).font(PostmereTheme.sheetTitle)
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-            }.padding(22)
+            PostmereSheetHeader(mode.title)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -103,7 +98,7 @@ struct MailAIAssistantView: View {
                     Text(item.text).font(.system(size: 13)).textSelection(.enabled)
                     ForEach(result.sources.filter { item.sourceIds.contains($0.id) }) { source in
                         Button { Task { await open(source) } } label: {
-                            PostmereLabel(source.subject, symbol: "envelope", size: 12).font(.caption).lineLimit(1)
+                            PostmereLabel(MailMessage.displaySubject(source.subject), symbol: "envelope", size: 12).font(.caption).lineLimit(1)
                         }.buttonStyle(.borderless)
                     }
                     if let action = item.action, mode == .suggestions {

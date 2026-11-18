@@ -40,7 +40,7 @@ struct ReaderView: View {
         Group {
             if store.selectedMessageIDs.count > 1 {
                 ContentUnavailableView {
-                    PostmereLabel("\(store.selectedMessageIDs.count) Messages Selected", symbol: "envelope.on.envelope", size: 40)
+                    PostmereLabel.emptyState("\(store.selectedMessageIDs.count) Messages Selected", symbol: "envelope.on.envelope", size: 40)
                 } description: {
                     Text("Use the list actions or Message menu to organize your selection.")
                 } actions: {
@@ -53,11 +53,7 @@ struct ReaderView: View {
                 let conversation = message.isDraft || message.mailbox == .outbox ? [message] : store.conversationMessages(for: message)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(message.subject)
-                            .font(.system(size: 24, weight: .semibold, design: .serif))
-                            .tracking(-0.4)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
+                        readerHeading(message)
                             .padding(.bottom, conversation.count > 1 ? 10 : 16)
                         workflowSummary(message)
                         MailDateSuggestionsView(title: message.subject, text: message.paragraphs.joined(separator: "\n\n")) {
@@ -95,16 +91,15 @@ struct ReaderView: View {
                             messageContents(message)
                         }
                     }
-                    .frame(maxWidth: 680, alignment: .leading)
-                    .padding(.horizontal, 24)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
                     .padding(.vertical, 22)
-                    .frame(maxWidth: .infinity, alignment: .top)
                 }
                 .scrollIndicators(.never)
                 .id(message.id)
             } else {
                 ContentUnavailableView {
-                    PostmereLabel("No Message Selected", symbol: "envelope", size: 40)
+                    PostmereLabel.emptyState("No Message Selected", symbol: "envelope", size: 40)
                 } description: {
                     Text("Choose a message from the list, or write a new one.")
                 }
@@ -166,6 +161,56 @@ struct ReaderView: View {
         )) {
             Button("OK") { attachmentError = nil }
         } message: { Text(attachmentError ?? "Please try again.") }
+    }
+
+    private func readerHeading(_ message: MailMessage) -> some View {
+        let subject = Text(message.displaySubject)
+            .font(.system(size: 24, weight: .semibold, design: .serif))
+            .tracking(-0.4)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityAddTraits(.isHeader)
+        return Group {
+            if showsQuickActions(for: message) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 16) {
+                        subject.fixedSize(horizontal: true, vertical: false)
+                        Spacer(minLength: 0)
+                        quickActions(message)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        subject
+                        quickActions(message)
+                    }
+                }
+            } else {
+                subject
+            }
+        }
+    }
+
+    private func showsQuickActions(for message: MailMessage) -> Bool {
+        !message.isDraft && message.mailbox != .outbox && message.mailbox != .trash
+    }
+
+    private func quickActions(_ message: MailMessage) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                store.setStarred(!message.isStarred, for: [message.id])
+            } label: {
+                PostmereLabel(message.isStarred ? "Starred" : "Star", symbol: message.isStarred ? "star.fill" : "star", size: 13)
+            }
+            .help(message.isStarred ? "Remove star from this message" : "Star this message")
+            .accessibilityValue(message.isStarred ? "On" : "Off")
+            Button { runtime.schedulePurpose = .snooze } label: {
+                PostmereLabel(message.workflow.snoozedUntil == nil ? "Snooze…" : "Reschedule Snooze…", symbol: "moon.zzz", size: 13)
+            }
+            .help("Choose when this conversation returns to the inbox")
+        }
+        .labelStyle(.titleAndIcon)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .fixedSize()
     }
 
     @ViewBuilder
@@ -244,7 +289,7 @@ struct ReaderView: View {
                     else { expandedMessageIDs.insert(message.id) }
                 } label: {
                     HStack(alignment: .top, spacing: 12) {
-                        Text(message.isOutgoing ? "AJ" : message.initials)
+                        Text(message.initials)
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(.secondary)
                             .frame(width: 32, height: 32)
@@ -278,7 +323,7 @@ struct ReaderView: View {
 
                 if isExpanded {
                     Button { presentedSheet = .messageDetails(message) } label: {
-                        PostmereIcon("ellipsis", size: 16).foregroundStyle(PostmereTheme.icon)
+                        PostmereIcon("info.circle", size: 16).foregroundStyle(PostmereTheme.icon)
                     }
                     .buttonStyle(.borderless)
                     .help("Message details")
@@ -332,18 +377,14 @@ struct ReaderView: View {
             }
 
             if message.mailbox != .outbox {
-              Divider().padding(.top, 28).padding(.bottom, 18)
-              ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    replyButton(message)
-                    if !message.isDraft {
-                        Button("Forward") { store.beginForward(message) }
-                    }
+                Divider().padding(.top, 28).padding(.bottom, 18)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { responseButtons(message) }.fixedSize()
+                    VStack(alignment: .leading, spacing: 8) { responseButtons(message) }
                 }
-                replyButton(message)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.regular)
+                .labelStyle(.titleAndIcon)
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -362,7 +403,7 @@ struct ReaderView: View {
 
     private func senderHeader(_ message: MailMessage) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Text(message.isOutgoing ? "AJ" : message.initials)
+            Text(message.initials)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
                 .frame(width: 36, height: 36)
@@ -393,7 +434,7 @@ struct ReaderView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text("\(message.dateLabel), \(message.timeLabel) · \(message.account)")
+                Text("\(message.dateLabel), \(message.timeLabel) · \(message.accountLabel)")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .padding(.top, 2)
@@ -402,13 +443,8 @@ struct ReaderView: View {
     }
 
     private func messageDetails(_ message: MailMessage) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("Message details").font(PostmereTheme.sheetTitle)
-                Spacer()
-                Button("Done") { presentedSheet = nil }
-                    .keyboardShortcut(.cancelAction)
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            PostmereSheetHeader("Message details")
             Divider()
             ScrollView {
                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
@@ -419,16 +455,16 @@ struct ReaderView: View {
                         detailRow("Bcc", message.bccRecipients.joined(separator: ", "))
                     }
                     detailRow("Date", "\(message.dateLabel), \(message.timeLabel)")
-                    detailRow("Account", message.account)
+                    detailRow("Account", message.accountLabel)
                     detailRow("Mailbox", message.mailbox.title)
                 }
                 .font(.system(size: 12))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(24)
             }
             .scrollIndicators(.never)
         }
-        .padding(24)
         .frame(width: 480, height: 340, alignment: .topLeading)
     }
 
@@ -446,7 +482,7 @@ struct ReaderView: View {
                     AttachmentIconView(attachment: attachment, size: 40)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(attachment.name).font(.system(size: 12, weight: .medium)).lineLimit(2)
-                        Text(attachment.localURL == nil && attachment.providerAttachmentID == nil ? "Sample attachment · no file included" : attachment.detail)
+                        Text(attachment.localURL == nil && attachment.providerAttachmentID == nil ? "Attachment file unavailable" : attachment.detail)
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
@@ -500,12 +536,26 @@ struct ReaderView: View {
         }
     }
 
-    private func replyButton(_ message: MailMessage) -> some View {
+    @ViewBuilder
+    private func responseButtons(_ message: MailMessage) -> some View {
         Button { reply(to: message) } label: {
             PostmereLabel(primaryActionTitle(for: message),
                           symbol: message.isDraft ? "square.and.pencil" : "arrowshape.turn.up.left", size: 16)
         }
-        .disabled(store.isComposing)
+        .disabled(store.isComposing || (!message.isDraft && MailAccount.sendingAccounts.isEmpty))
+        if !message.isDraft {
+            Group {
+                if store.hasReplyAllRecipients(for: message) {
+                    Button { store.beginReplyAll(message) } label: {
+                        PostmereLabel("Reply All", symbol: "arrowshape.turn.up.left.2", size: 16)
+                    }
+                }
+                Button { store.beginForward(message) } label: {
+                    PostmereLabel("Forward", symbol: "arrowshape.turn.up.right", size: 16)
+                }
+            }
+            .disabled(store.isComposing || MailAccount.sendingAccounts.isEmpty)
+        }
     }
 
     @ToolbarContentBuilder
@@ -534,7 +584,9 @@ struct ReaderView: View {
                 if let message = store.selectedMessage {
                     if store.selectedMessageIDs.count <= 1 && !message.isDraft && message.mailbox != .outbox {
                         Button(message.workflow.needsReply ? "Mark Conversation Done" : "Needs Reply") { store.setNeedsReply(!message.workflow.needsReply, for: message.id) }
-                        Button("Snooze…") { runtime.schedulePurpose = .snooze }
+                        if !showsQuickActions(for: message) {
+                            Button("Snooze…") { runtime.schedulePurpose = .snooze }
+                        }
                         Button("Follow-up Reminder…") { runtime.schedulePurpose = .followUp }
                         Button("Private Note…") { runtime.showsPrivateNote = true }
                         Button("Sender Context…") { presentedSheet = .sender(message) }
@@ -553,15 +605,17 @@ struct ReaderView: View {
                             .disabled(store.isComposing)
                     } else if store.selectedMessageIDs.count <= 1 && !message.isDraft && message.mailbox != .outbox {
                         Button("Reply", action: replyToSelectedMessage)
-                            .disabled(store.isComposing)
+                            .disabled(store.isComposing || MailAccount.sendingAccounts.isEmpty)
                         Button("Reply All") { store.beginReplyAll(message) }
-                            .disabled(store.isComposing || !store.hasReplyAllRecipients(for: message))
+                            .disabled(store.isComposing || MailAccount.sendingAccounts.isEmpty || !store.hasReplyAllRecipients(for: message))
                         Button("Forward") { store.beginForward(message) }
-                            .disabled(store.isComposing)
+                            .disabled(store.isComposing || MailAccount.sendingAccounts.isEmpty)
                     }
                     Divider()
                     Button(message.isUnread ? "Mark as Read" : "Mark as Unread") { store.setRead(message.isUnread, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }
-                    Button(message.isStarred ? "Remove Star" : "Star Message") { store.setStarred(!message.isStarred, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }
+                    if store.selectedMessageIDs.count > 1 || !showsQuickActions(for: message) {
+                        Button(message.isStarred ? "Remove Star" : "Star Message") { store.setStarred(!message.isStarred, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }
+                    }
                     Menu("Move to") {
                         ForEach([Mailbox.inbox, .archive, .trash]) { destination in
                             Button(destination.title) { store.moveSelected(to: destination) }
@@ -584,7 +638,8 @@ struct ReaderView: View {
             .labelStyle(.titleAndIcon)
             .foregroundStyle(PostmereTheme.icon)
             .help("\(primaryActionTitle) · ⌘R")
-            .disabled(store.selectedMessage == nil || store.isComposing || store.selectedMessage?.mailbox == .outbox || store.selectedMessageIDs.count > 1)
+            .disabled(store.selectedMessage == nil || store.isComposing || store.selectedMessage?.mailbox == .outbox
+                      || store.selectedMessageIDs.count > 1 || (store.selectedMessage?.isDraft != true && MailAccount.sendingAccounts.isEmpty))
         }
     }
 

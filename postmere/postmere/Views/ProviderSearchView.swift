@@ -15,11 +15,7 @@ struct ProviderSearchView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Search all mail").font(PostmereTheme.sheetTitle)
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-            }.padding(22)
+            PostmereSheetHeader("Search online")
             VStack(alignment: .leading, spacing: 10) {
                 Picker("Account", selection: $accountID) {
                     Text("Choose account").tag(Optional<UUID>.none)
@@ -39,7 +35,7 @@ struct ProviderSearchView: View {
             if busy && messages.isEmpty { ProgressView("Searching…").frame(maxWidth: .infinity, maxHeight: .infinity) }
             else if messages.isEmpty {
                 ContentUnavailableView {
-                    PostmereLabel(didSearch ? "No results" : "Find older mail", symbol: "magnifyingglass", size: 34)
+                    PostmereLabel.emptyState(didSearch ? "No results" : "Find older mail", symbol: "magnifyingglass", size: 34)
                 } description: { Text(didSearch ? "Try another query." : "Choose an account and enter a search.") }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -58,7 +54,7 @@ struct ProviderSearchView: View {
                                     Spacer()
                                     Text(message.sentAt, format: .dateTime.month(.abbreviated).day().year()).font(.caption).foregroundStyle(.secondary)
                                 }
-                                Text(message.subject).lineLimit(1)
+                                Text(message.displaySubject).lineLimit(1)
                                 Text(message.preview).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                             }.padding(.vertical, 5).contentShape(Rectangle())
                         }.buttonStyle(.plain)

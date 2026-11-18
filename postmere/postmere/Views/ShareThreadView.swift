@@ -17,7 +17,7 @@ struct ShareThreadView: View {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
             }
-            Text(existing?.thread.subject ?? message?.subject ?? "Conversation").font(.headline).lineLimit(2)
+            Text(existing.map { MailMessage.displaySubject($0.thread.subject) } ?? message?.displaySubject ?? "Conversation").font(.headline).lineLimit(2)
             Text("Shares a snapshot of the synced conversation with the people you select. Bcc recipients and file contents are excluded. Publish an updated snapshot to include later messages.")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()

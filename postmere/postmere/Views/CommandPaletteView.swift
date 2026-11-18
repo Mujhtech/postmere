@@ -5,6 +5,7 @@ struct CommandPaletteView: View {
     let runtime: MailRuntime
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openSettings) private var openSettings
+    @AppStorage("settingsTab") private var settingsTab = "general"
     @State private var query = ""
     @State private var selection: String?
     @FocusState private var searchFocused: Bool
@@ -29,13 +30,13 @@ struct CommandPaletteView: View {
                 }))
             }
             if store.canMoveSelected(to: .archive) {
-                result.append(Action(id: "archive", title: "Archive message", symbol: "archivebox", shortcut: "E", run: { store.archiveSelected() }))
+                result.append(Action(id: "archive", title: "Archive message", symbol: "archivebox", shortcut: "⇧⌘A", run: { store.archiveSelected() }))
             }
             if store.canMoveSelected(to: .trash) {
                 result.append(Action(id: "trash", title: "Move to Trash", symbol: "trash", shortcut: "⌘⌫", run: { store.deleteSelected() }))
             }
-            result.append(Action(id: "read", title: message.isUnread ? "Mark as read" : "Mark as unread", symbol: "envelope", run: { store.setRead(message.isUnread, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }))
-            result.append(Action(id: "star", title: message.isStarred ? "Remove star" : "Star message", symbol: "star", shortcut: "S", run: { store.setStarred(!message.isStarred, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }))
+            result.append(Action(id: "read", title: message.isUnread ? "Mark as read" : "Mark as unread", symbol: "envelope", shortcut: "⇧⌘U", run: { store.setRead(message.isUnread, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }))
+            result.append(Action(id: "star", title: message.isStarred ? "Remove star" : "Star message", symbol: "star", shortcut: "⇧⌘L", run: { store.setStarred(!message.isStarred, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }))
             if !message.isDraft && message.mailbox != .outbox {
                 result.append(Action(id: "needsReply", title: message.workflow.needsReply ? "Mark conversation done" : "Add to Needs Reply", symbol: "arrowshape.turn.up.left", run: { store.setNeedsReply(!message.workflow.needsReply, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }))
                 if store.selectedMessageIDs.count <= 1 {
@@ -60,7 +61,7 @@ struct CommandPaletteView: View {
         result.append(Action(id: "organizeInbox", title: "Manage inbox tabs and VIPs…", symbol: "line.3.horizontal.decrease.circle", run: { runtime.showsInboxManager = true }))
         result.append(Action(id: "saveView", title: "Save current inbox view…", symbol: "plus.rectangle.on.folder", run: { runtime.showsSavedViewEditor = true }))
         result.append(Action(id: "attachments", title: "Open attachment library", symbol: "paperclip", run: { runtime.showsAttachmentLibrary = true }))
-        result.append(Action(id: "calendar", title: "Open calendar agenda", symbol: "calendar", run: { runtime.showsCalendar = true }))
+        result.append(Action(id: "calendar", title: "Open calendar", symbol: "calendar", shortcut: "⌥⌘C", run: { runtime.showsCalendar = true }))
         result.append(Action(id: "askMail", title: "Ask your mail…", symbol: "sparkles", run: { runtime.showsAIQuestion = true }))
         if runtime.backend.isConnected {
             result.append(Action(id: "workspace", title: "Open workspace and team templates…", symbol: "bubble.left.and.bubble.right", run: { runtime.showsWorkspace = true }))
@@ -68,6 +69,10 @@ struct CommandPaletteView: View {
                 result.append(Action(id: "sync", title: "Sync mail", symbol: "arrow.clockwise", run: { Task { await runtime.sync() } }))
             }
         }
+        result.append(Action(id: "accounts", title: runtime.backend.isConnected ? "Add or manage email accounts…" : "Sign in to workspace…", symbol: "person.crop.circle", run: {
+            settingsTab = "accounts"
+            openSettings()
+        }))
         result.append(Action(id: "settings", title: "Open settings", symbol: "gearshape", shortcut: "⌘,", run: { openSettings() }))
         return result.filter { query.isEmpty || $0.title.localizedStandardContains(query) }
     }
@@ -85,7 +90,10 @@ struct CommandPaletteView: View {
             }.padding(20)
             Divider()
             if actions.isEmpty {
-                ContentUnavailableView.search(text: query).frame(height: 280)
+                PostmereSearchEmptyState(query: query) {
+                    query = ""
+                    searchFocused = true
+                }.frame(height: 330)
             } else {
                 List(actions, selection: $selection) { action in
                     HStack(spacing: 12) {

@@ -17,22 +17,23 @@ struct AttachmentLibraryView: View {
         let message: MailMessage
     }
 
+    private var query: String { search.trimmingCharacters(in: .whitespacesAndNewlines) }
+
     private var entries: [Entry] {
         var seen: Set<UUID> = []
+        let query = self.query
         return store.messages.filter { store.isAccountVisible($0) && $0.mailbox != .trash && (account == nil || $0.account == account) }
             .flatMap { message in message.attachments.map { Entry(attachment: $0, message: message) } }
             .filter { entry in
-                seen.insert(entry.id).inserted && (search.isEmpty || [entry.attachment.name, entry.message.sender, entry.message.subject].contains { $0.localizedStandardContains(search) })
+                (query.isEmpty || [entry.attachment.name, entry.message.sender, entry.message.subject].contains { $0.localizedStandardContains(query) })
+                    && seen.insert(entry.id).inserted
             }
     }
 
     var body: some View {
+        let entries = self.entries
         VStack(spacing: 0) {
-            HStack {
-                Text("Attachments").font(PostmereTheme.sheetTitle)
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-            }.padding(24)
+            PostmereSheetHeader("Attachments")
             HStack {
                 TextField("Search files, senders, and subjects", text: $search).textFieldStyle(.roundedBorder)
                 Picker("Account", selection: $account) {
@@ -41,11 +42,17 @@ struct AttachmentLibraryView: View {
                 }.frame(width: 180).labelsHidden()
             }.padding(.horizontal, 24).padding(.bottom, 14)
             Divider()
-            if entries.isEmpty {
+            if entries.isEmpty && !query.isEmpty {
+                PostmereSearchEmptyState(query: query) { search = "" }
+            } else if entries.isEmpty {
                 ContentUnavailableView {
-                    PostmereLabel("No Attachments", symbol: "paperclip", size: 40)
+                    PostmereLabel.emptyState(account == nil ? "No attachments" : "No attachments in this account", symbol: "paperclip", size: 40)
                 } description: {
                     Text("Files from your messages will appear here.")
+                } actions: {
+                    if account != nil {
+                        Button("Show All Accounts") { account = nil }
+                    }
                 }
             } else {
                 List(entries) { entry in
@@ -53,7 +60,7 @@ struct AttachmentLibraryView: View {
                         AttachmentIconView(attachment: entry.attachment, size: 40)
                         VStack(alignment: .leading, spacing: 5) {
                             Text(entry.attachment.name).fontWeight(.medium).lineLimit(1)
-                            Text("\(entry.message.sender) · \(entry.message.subject)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            Text("\(entry.message.sender) · \(entry.message.displaySubject)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             Text(entry.attachment.localURL == nil && entry.attachment.providerAttachmentID == nil ? "Sample · no file included" : entry.attachment.detail).font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                         Spacer()
