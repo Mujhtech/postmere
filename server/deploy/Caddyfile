@@ -1,0 +1,29 @@
+{
+    email {$POSTMERE_ACME_EMAIL}
+    admin off
+    log default {
+        format filter {
+            wrap json
+            fields {
+                request>uri delete
+                request>headers delete
+            }
+        }
+    }
+}
+
+{$POSTMERE_HOST} {
+    # Access logging is deliberately omitted: OAuth callback URLs contain codes.
+    request_body {
+        max_size 30MB
+    }
+
+    reverse_proxy app:8080 {
+        # Preserve Host/Authorization. Caddy flushes text/event-stream responses
+        # immediately while retaining upstream cancellation on disconnect.
+        transport http {
+            dial_timeout 5s
+            response_header_timeout 30s
+        }
+    }
+}

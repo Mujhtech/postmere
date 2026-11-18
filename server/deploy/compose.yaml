@@ -1,0 +1,113 @@
+name: postmere
+
+x-environment: &environment
+  DATABASE_URL: postgres://postmere_runtime:${POSTMERE_RUNTIME_DB_PASSWORD:?Set the runtime database password}@localhost/postmere?host=/var/run/postgresql
+  POSTMERE_BIND: 0.0.0.0:8080
+  POSTMERE_PUBLIC_URL: https://${POSTMERE_HOST:?Set POSTMERE_HOST in .env}
+  POSTMERE_CREDENTIAL_KEYS: ${POSTMERE_CREDENTIAL_KEYS:?Set the encryption keyring}
+  POSTMERE_ACTIVE_CREDENTIAL_KEY: ${POSTMERE_ACTIVE_CREDENTIAL_KEY:-1}
+  POSTMERE_RATE_LIMIT_KEY: ${POSTMERE_RATE_LIMIT_KEY:?Set the rate-limit key}
+  POSTMERE_MCP_REDIRECT_URIS: ${POSTMERE_MCP_REDIRECT_URIS:?Set the exact OAuth callback allowlist}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+  MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+  MICROSOFT_TENANT: ${MICROSOFT_TENANT:-common}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  POSTMERE_AI_MODEL: ${POSTMERE_AI_MODEL:-gpt-4.1-mini}
+  POSTMERE_GMAIL_PUBSUB_TOPIC: ${POSTMERE_GMAIL_PUBSUB_TOPIC:-}
+  POSTMERE_GMAIL_PUBSUB_SUBSCRIPTION: ${POSTMERE_GMAIL_PUBSUB_SUBSCRIPTION:-}
+  POSTMERE_GMAIL_PUSH_AUDIENCE: ${POSTMERE_GMAIL_PUSH_AUDIENCE:-}
+  POSTMERE_GMAIL_PUSH_SERVICE_ACCOUNT: ${POSTMERE_GMAIL_PUSH_SERVICE_ACCOUNT:-}
+  POSTMERE_MICROSOFT_WEBHOOKS: ${POSTMERE_MICROSOFT_WEBHOOKS:-false}
+  POSTMERE_APNS_KEY_FILE: ${POSTMERE_APNS_KEY_FILE:-}
+  POSTMERE_APNS_KEY_ID: ${POSTMERE_APNS_KEY_ID:-}
+  POSTMERE_APNS_TEAM_ID: ${POSTMERE_APNS_TEAM_ID:-}
+  POSTMERE_APNS_TOPIC: ${POSTMERE_APNS_TOPIC:-}
+  POSTMERE_APNS_ENVIRONMENT: ${POSTMERE_APNS_ENVIRONMENT:-}
+
+x-server: &server
+  image: postmere-server:${POSTMERE_IMAGE_TAG:-local}
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  environment: *environment
+  volumes:
+    - ./secrets:/run/secrets:ro
+    - postgres_socket:/var/run/postgresql
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postmere
+      POSTGRES_USER: postmere_admin
+      POSTGRES_PASSWORD: ${POSTMERE_ADMIN_DB_PASSWORD:?Set the database administrator password}
+      POSTGRES_INITDB_ARGS: --auth-local=scram-sha-256 --auth-host=scram-sha-256
+      POSTMERE_OWNER_DB_PASSWORD: ${POSTMERE_OWNER_DB_PASSWORD:?Set the migration-owner password}
+      POSTMERE_RUNTIME_DB_PASSWORD: ${POSTMERE_RUNTIME_DB_PASSWORD:?Set the runtime database password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - postgres_socket:/var/run/postgresql
+      - ./postgres-init.sh:/docker-entrypoint-initdb.d/10-postmere.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postmere_admin -d postmere"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    security_opt:
+      - no-new-privileges:true
+
+  app:
+    <<: *server
+    command: [serve]
+    restart: unless-stopped
+    expose:
+      - "8080"
+    stop_grace_period: 35s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  migrate:
+    <<: *server
+    command: [migrate]
+    environment:
+      <<: *environment
+      DATABASE_URL: postgres://postmere_owner:${POSTMERE_OWNER_DB_PASSWORD:?Set the migration-owner password}@localhost/postmere?host=/var/run/postgresql
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    restart: unless-stopped
+    environment:
+      POSTMERE_HOST: ${POSTMERE_HOST:?Set POSTMERE_HOST in .env}
+      POSTMERE_ACME_EMAIL: ${POSTMERE_ACME_EMAIL:?Set an ACME contact email in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  postgres_data:
+  postgres_socket:
+  caddy_data:
+  caddy_config:
