@@ -17,12 +17,16 @@ base64 = "0.22.1"
 chrono = { version = "0.4.42", features = ["serde"] }
 chrono-tz = "0.10.4"
 getrandom = "0.4.3"
+futures-util = "0.3.34"
 mailparse = "0.16"
 # Newer mail-auth releases require Rust 1.98 through mail-parser 1.x.
 mail-auth = { version = "=0.13.3", default-features = false, features = ["ring"] }
 html-escape = "0.2"
 hmac = "0.12.1"
-reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "form", "query", "stream"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "form", "query", "stream", "http2"] }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
+ring = "0.17"
+rmcp = { version = "=3.11.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10.9"
@@ -45,6 +49,9 @@ postmere-calendar = { path = "crates/postmere-calendar" }
 postmere-collaboration = { path = "crates/postmere-collaboration" }
 postmere-ai = { path = "crates/postmere-ai" }
 postmere-unsubscribe = { path = "crates/postmere-unsubscribe" }
+postmere-mcp-auth = { path = "crates/postmere-mcp-auth" }
+postmere-mcp-operations = { path = "crates/postmere-mcp-operations" }
+postmere-mcp = { path = "crates/postmere-mcp" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -64,6 +71,8 @@ postmere-calendar.workspace = true
 postmere-collaboration.workspace = true
 postmere-ai.workspace = true
 postmere-unsubscribe.workspace = true
+postmere-mcp.workspace = true
+postmere-mcp-auth.workspace = true
 axum.workspace = true
 serde.workspace = true
 sqlx.workspace = true
@@ -75,11 +84,14 @@ uuid.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+ring.workspace = true
 postmere-providers.workspace = true
+postmere-mcp-operations.workspace = true
 base64.workspace = true
 chrono.workspace = true
 getrandom.workspace = true
 http-body-util.workspace = true
+futures-util.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

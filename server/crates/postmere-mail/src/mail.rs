@@ -84,14 +84,18 @@ async fn accounts(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Vec<Account>>, AppError> {
-    let mut tx = auth.begin(&state.pool).await?;
+    Ok(Json(list_accounts(&state, &auth).await?))
+}
+
+pub async fn list_accounts(state: &AppState, auth: &AuthContext) -> Result<Vec<Account>, AppError> {
+    let mut tx = auth.begin_authorized(&state.pool).await?;
     let rows=sqlx::query("SELECT id,provider,email,display_name,status,last_synced_at,capabilities FROM provider_accounts WHERE disabled_at IS NULL ORDER BY created_at,id").fetch_all(&mut *tx).await?;
     let result = rows
         .iter()
         .map(account_row)
         .collect::<Result<Vec<_>, _>>()?;
     tx.commit().await?;
-    Ok(Json(result))
+    Ok(result)
 }
 
 async fn disconnect(
@@ -99,22 +103,37 @@ async fn disconnect(
     auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, AppError> {
-    let mut tx = auth.begin(&state.pool).await?;
-    let changed=sqlx::query("UPDATE provider_accounts SET disabled_at=now(),updated_at=now() WHERE id=$1 AND disabled_at IS NULL").bind(id).execute(&mut *tx).await?;
+    let mut tx = auth.begin_authorized(&state.pool).await?;
+    disconnect_in_transaction(&mut tx, &auth, id).await?;
+    tx.commit().await?;
+    Ok(Json(json!({})))
+}
+
+/// Hold current authorization and serialize with mailbox synchronization before
+/// locking account/wakeup rows. Callers which inspect the account FOR UPDATE
+/// first must acquire the same account-operation lock before that inspection.
+pub async fn disconnect_in_transaction(
+    tx: &mut Transaction<'_, Postgres>,
+    auth: &AuthContext,
+    id: Uuid,
+) -> Result<(), AppError> {
+    auth.authorize_in_transaction(tx).await?;
+    crate::mail_sync::account_operation_lock(tx, auth.workspace_id, auth.user_id, id).await?;
+    auth.authorize_in_transaction(tx).await?;
+    let changed=sqlx::query("UPDATE provider_accounts SET disabled_at=now(),updated_at=now() WHERE id=$1 AND disabled_at IS NULL").bind(id).execute(&mut **tx).await?;
     if changed.rows_affected() == 0 {
         return Err(AppError::not_found());
     }
-    sqlx::query("UPDATE mail_outbox SET status='cancelled',updated_at=now() WHERE account_id=$1 AND status='pending'").bind(id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE mail_outbox SET status='cancelled',updated_at=now() WHERE account_id=$1 AND status='pending'").bind(id).execute(&mut **tx).await?;
     sqlx::query("UPDATE calendar_sharing SET enabled=false,updated_at=now() WHERE account_id=$1")
         .bind(id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     sqlx::query("DELETE FROM mail_sync_wakeups WHERE account_id=$1")
         .bind(id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
-    tx.commit().await?;
-    Ok(Json(json!({})))
+    Ok(())
 }
 
 /// Called only after the bearer session has been authenticated.
@@ -225,6 +244,12 @@ async fn oauth_start(
         .crypto
         .seal(auth.workspace_id, id, verifier.as_bytes())?;
     let mut tx = auth.begin(&state.pool).await?;
+    // Serialize only this user's unfinished handshakes. This bounds concurrent
+    // OAuth work without imposing any limit on connected mail accounts.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("mail-oauth:{}:{}", auth.workspace_id, auth.user_id))
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM mail_oauth_connections WHERE expires_at<now()-interval '1 day'")
         .execute(&mut *tx)
         .await?;
@@ -335,6 +360,11 @@ pub async fn complete_oauth_with(
             .bind(format!("mail-account:{workspace}:{user}:{}:{}",provider.as_str(),identity.email))
             .execute(&mut *tx).await?;
         let existing:Option<Uuid>=sqlx::query_scalar("SELECT id FROM provider_accounts WHERE provider=$1 AND email=$2 FOR UPDATE").bind(provider.as_str()).bind(&identity.email).fetch_optional(&mut *tx).await?;
+        // Authorization may change while either identity or account locks wait.
+        // Hold the current membership through commit so revocation cannot race
+        // the final credential installation.
+        let active:Option<Uuid>=sqlx::query_scalar("SELECT m.user_id FROM memberships m JOIN users u ON u.id=m.user_id JOIN workspaces w ON w.id=m.workspace_id WHERE m.workspace_id=$1 AND m.user_id=$2 AND m.revoked_at IS NULL AND u.disabled_at IS NULL AND w.disabled_at IS NULL FOR SHARE OF m,u,w").bind(workspace).bind(user).fetch_optional(&mut *tx).await?;
+        if active.is_none(){return Err(AppError::forbidden())}
         let account_id=existing.unwrap_or_else(Uuid::new_v4);
         let encoded=Zeroizing::new(serde_json::to_vec(&credentials).map_err(|_|AppError::internal("provider_credentials_encode"))?);
         let sealed=state.crypto.seal(workspace,account_id,&encoded)?;
@@ -383,6 +413,9 @@ async fn oauth_status(
 struct SyncRequest {
     cursor: Option<String>,
     limit: Option<usize>,
+    /// False consumes durable cache changes without starting another provider
+    /// request. Realtime invalidations use this path to avoid refresh loops.
+    refresh_provider: Option<bool>,
 }
 #[derive(Deserialize)]
 struct SearchRequest {
@@ -398,10 +431,12 @@ async fn sync(
 ) -> Result<Json<ChangePage>, AppError> {
     // A client cache cursor is independent of the server's provider checkpoint.
     // It catches changes already fetched while the desktop app was closed.
-    match crate::mail_sync::sync_account(&state, auth.workspace_id, auth.user_id, id).await {
-        Ok(_) => {}
-        Err(error) if error.status == axum::http::StatusCode::CONFLICT => {}
-        Err(error) => return Err(error),
+    if request.refresh_provider.unwrap_or(true) {
+        match crate::mail_sync::sync_account(&state, auth.workspace_id, auth.user_id, id).await {
+            Ok(_) => {}
+            Err(error) if error.status == axum::http::StatusCode::CONFLICT => {}
+            Err(error) => return Err(error),
+        }
     }
     Ok(Json(
         cached_changes(
@@ -556,7 +591,7 @@ pub async fn cached_changes(
             upper: None,
         }
     };
-    let mut tx = auth.begin(&state.pool).await?;
+    let mut tx = auth.begin_authorized(&state.pool).await?;
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM provider_accounts WHERE id=$1 AND disabled_at IS NULL)",
     )
@@ -567,6 +602,12 @@ pub async fn cached_changes(
         return Err(AppError::not_found());
     }
     crate::mail_sync::cache_write_lock(&mut tx, auth.workspace_id, auth.user_id, account).await?;
+    let active:bool=sqlx::query_scalar("SELECT (expires_at IS NULL OR expires_at>clock_timestamp()) AND (absolute_expires_at IS NULL OR absolute_expires_at>clock_timestamp()) FROM sessions WHERE id=$1")
+        .bind(auth.session_id).fetch_one(&mut *tx).await?;
+    if !active {
+        return Err(AppError::unauthorized());
+    }
+
     let upper = if let Some(upper) = decoded.upper {
         upper
     } else {
@@ -622,12 +663,12 @@ pub async fn cached_changes(
     })
 }
 
-#[derive(Deserialize)]
-struct ListRequest {
-    account_id: Option<Uuid>,
-    query: Option<String>,
-    cursor: Option<String>,
-    limit: Option<i64>,
+#[derive(Default, Deserialize)]
+pub struct ListRequest {
+    pub account_id: Option<Uuid>,
+    pub query: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: Option<i64>,
 }
 #[derive(Serialize, Deserialize)]
 struct PageCursor {
@@ -639,31 +680,18 @@ async fn list_messages(
     auth: AuthContext,
     Query(request): Query<ListRequest>,
 ) -> Result<Json<MessagePage>, AppError> {
-    let cursor = match request.cursor {
-        Some(c) if c.len() <= 1024 => Some(
-            serde_json::from_slice::<PageCursor>(
-                &URL_SAFE_NO_PAD
-                    .decode(c)
-                    .map_err(|_| AppError::bad_request("Invalid page cursor."))?,
-            )
-            .map_err(|_| AppError::bad_request("Invalid page cursor."))?,
-        ),
-        Some(_) => return Err(AppError::bad_request("Invalid page cursor.")),
-        None => None,
-    };
+    Ok(Json(cached_messages(&state, &auth, request).await?))
+}
+
+pub async fn cached_messages(
+    state: &AppState,
+    auth: &AuthContext,
+    request: ListRequest,
+) -> Result<MessagePage, AppError> {
+    let cursor = page_cursor(request.cursor.as_deref())?;
     let limit = request.limit.unwrap_or(50).clamp(1, 200);
-    let query = request.query.unwrap_or_default();
-    if query.len() > 4_096 {
-        return Err(AppError::bad_request("Use a shorter search."));
-    }
-    let pattern = format!(
-        "%{}%",
-        query
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-    );
-    let mut tx = auth.begin(&state.pool).await?;
+    let pattern = search_pattern(request.query.as_deref().unwrap_or_default())?;
+    let mut tx = auth.begin_authorized(&state.pool).await?;
     let rows=sqlx::query("SELECT normalized FROM mail_messages WHERE deleted_at IS NULL AND ($1::uuid IS NULL OR account_id=$1) AND search_text ILIKE $2 AND ($3::timestamptz IS NULL OR (sent_at,id)<($3,$4)) ORDER BY sent_at DESC,id DESC LIMIT $5")
         .bind(request.account_id).bind(pattern).bind(cursor.as_ref().map(|c|c.date)).bind(cursor.as_ref().map(|c|c.id)).bind(limit+1).fetch_all(&mut *tx).await?;
     let mut messages = rows
@@ -688,11 +716,113 @@ async fn list_messages(
         None
     };
     tx.commit().await?;
-    Ok(Json(MessagePage {
+    Ok(MessagePage {
         messages,
         next_cursor,
         has_more,
-    }))
+    })
+}
+fn page_cursor(value: Option<&str>) -> Result<Option<PageCursor>, AppError> {
+    match value {
+        Some(c) if c.len() <= 1024 => Ok(Some(
+            serde_json::from_slice(
+                &URL_SAFE_NO_PAD
+                    .decode(c)
+                    .map_err(|_| AppError::bad_request("Invalid page cursor."))?,
+            )
+            .map_err(|_| AppError::bad_request("Invalid page cursor."))?,
+        )),
+        Some(_) => Err(AppError::bad_request("Invalid page cursor.")),
+        None => Ok(None),
+    }
+}
+fn search_pattern(query: &str) -> Result<String, AppError> {
+    if query.len() > 4096 {
+        return Err(AppError::bad_request("Use a shorter search."));
+    }
+    Ok(format!(
+        "%{}%",
+        query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    ))
+}
+#[derive(Serialize)]
+pub struct MessageSummary {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    pub subject: String,
+    pub from: provider::Address,
+    pub preview: String,
+    pub sent_at: DateTime<Utc>,
+    pub is_read: bool,
+    pub is_starred: bool,
+    pub mailbox: String,
+    pub attachment_count: usize,
+}
+#[derive(Serialize)]
+pub struct MessageSummaryPage {
+    pub messages: Vec<MessageSummary>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}
+/// Project only bounded metadata in PostgreSQL. A summary page must never load
+/// whole bodies or inline attachment blobs for every message into server memory.
+pub async fn cached_message_summaries(
+    state: &AppState,
+    auth: &AuthContext,
+    request: ListRequest,
+) -> Result<MessageSummaryPage, AppError> {
+    let cursor = page_cursor(request.cursor.as_deref())?;
+    let limit = request.limit.unwrap_or(25).clamp(1, 50);
+    let pattern = search_pattern(request.query.as_deref().unwrap_or_default())?;
+    let mut tx = auth.begin_authorized(&state.pool).await?;
+    let rows=sqlx::query("SELECT id,account_id,sent_at,left(normalized->>'subject',500) AS subject,left(normalized->>'preview',1000) AS preview,left(normalized#>>'{from,email}',320) AS sender_email,left(normalized#>>'{from,name}',200) AS sender_name,(normalized->>'is_read')::boolean AS is_read,(normalized->>'is_starred')::boolean AS is_starred,left(normalized->>'mailbox',100) AS mailbox,jsonb_array_length(normalized->'attachments') AS attachment_count FROM mail_messages WHERE deleted_at IS NULL AND ($1::uuid IS NULL OR account_id=$1) AND search_text ILIKE $2 AND ($3::timestamptz IS NULL OR (sent_at,id)<($3,$4)) ORDER BY sent_at DESC,id DESC LIMIT $5")
+        .bind(request.account_id).bind(pattern).bind(cursor.as_ref().map(|c|c.date)).bind(cursor.as_ref().map(|c|c.id)).bind(limit+1).fetch_all(&mut *tx).await?;
+    let messages = rows
+        .iter()
+        .take(limit as usize)
+        .map(|row| {
+            Ok(MessageSummary {
+                id: row.try_get("id")?,
+                account_id: row.try_get("account_id")?,
+                sent_at: row.try_get("sent_at")?,
+                subject: row.try_get("subject")?,
+                preview: row.try_get("preview")?,
+                from: provider::Address {
+                    email: row.try_get("sender_email")?,
+                    name: row.try_get("sender_name")?,
+                },
+                is_read: row.try_get("is_read")?,
+                is_starred: row.try_get("is_starred")?,
+                mailbox: row.try_get("mailbox")?,
+                attachment_count: row.try_get::<i32, _>("attachment_count")? as usize,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    let has_more = rows.len() > limit as usize;
+    let next_cursor = if has_more {
+        messages
+            .last()
+            .map(|m| {
+                serde_json::to_vec(&PageCursor {
+                    date: m.sent_at,
+                    id: m.id,
+                })
+                .map(|b| URL_SAFE_NO_PAD.encode(b))
+            })
+            .transpose()
+            .map_err(|_| AppError::internal("page_cursor_encode"))?
+    } else {
+        None
+    };
+    tx.commit().await?;
+    Ok(MessageSummaryPage {
+        messages,
+        next_cursor,
+        has_more,
+    })
 }
 fn decode_message(row: &sqlx::postgres::PgRow) -> Result<Message, AppError> {
     serde_json::from_value(row.try_get("normalized")?)
@@ -727,13 +857,95 @@ async fn mutate_message(
     Path(id): Path<Uuid>,
     Json(mutation): Json<Mutation>,
 ) -> Result<Json<Value>, AppError> {
-    if mutation.is_read.is_none() && mutation.is_starred.is_none() && mutation.mailbox.is_none() {
-        return Ok(Json(json!({})));
+    apply_message_mutation(&state, &auth, id, None, mutation).await?;
+    Ok(Json(json!({})))
+}
+
+/// Apply a message operation with current authorization held across provider I/O.
+/// An approval may bind the exact provider target to prevent a moved/replaced
+/// cached message from changing what the user reviewed.
+pub async fn apply_message_mutation(
+    state: &AppState,
+    auth: &AuthContext,
+    id: Uuid,
+    expected_provider_id: Option<&str>,
+    mutation: Mutation,
+) -> Result<Message, AppError> {
+    apply_message_mutation_with(
+        state,
+        auth,
+        id,
+        expected_provider_id,
+        mutation,
+        &HttpMessageMutation,
+    )
+    .await
+}
+
+pub type MessageMutationFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Message, AppError>> + Send + 'a>>;
+/// Fixtures replace only provider I/O; authorization, target binding, locks,
+/// and cache persistence follow the production operation.
+pub trait MessageMutationTransport: Send + Sync {
+    fn apply<'a>(
+        &'a self,
+        state: &'a AppState,
+        session: &'a AccountSession,
+        old: &'a Message,
+        mutation: &'a Mutation,
+    ) -> MessageMutationFuture<'a>;
+}
+pub struct HttpMessageMutation;
+impl MessageMutationTransport for HttpMessageMutation {
+    fn apply<'a>(
+        &'a self,
+        state: &'a AppState,
+        session: &'a AccountSession,
+        old: &'a Message,
+        mutation: &'a Mutation,
+    ) -> MessageMutationFuture<'a> {
+        Box::pin(async move {
+            let provider = Provider::parse(&session.account.provider)?;
+            let new_id = provider::mutate(
+                state,
+                provider,
+                &session.credentials.access_token,
+                &old.provider_message_id,
+                mutation,
+            )
+            .await?;
+            let mut updated = provider::fetch_message(
+                state,
+                provider,
+                old.account_id,
+                &session.credentials.access_token,
+                new_id.as_deref().unwrap_or(&old.provider_message_id),
+            )
+            .await?;
+            classify_graph(state, session, std::slice::from_mut(&mut updated)).await?;
+            Ok(updated)
+        })
     }
-    let old = cached_message(&state, &auth, id).await?;
-    let session = account_session(&state, &auth, old.account_id).await?;
-    let provider = Provider::parse(&session.account.provider)?;
-    let mut tx = auth.begin(&state.pool).await?;
+}
+pub async fn apply_message_mutation_with(
+    state: &AppState,
+    auth: &AuthContext,
+    id: Uuid,
+    expected_provider_id: Option<&str>,
+    mutation: Mutation,
+    transport: &(impl MessageMutationTransport + ?Sized),
+) -> Result<Message, AppError> {
+    let mut tx = auth.begin_authorized(&state.pool).await?;
+    let old = cached_message(state, auth, id).await?;
+    if expected_provider_id.is_some_and(|expected| expected != old.provider_message_id) {
+        return Err(AppError::conflict(
+            "This message changed. Review a new approval request.",
+        ));
+    }
+    if mutation.is_read.is_none() && mutation.is_starred.is_none() && mutation.mailbox.is_none() {
+        return Ok(old);
+    }
+    let session = account_session(state, auth, old.account_id).await?;
     crate::mail_sync::account_operation_lock(
         &mut tx,
         auth.workspace_id,
@@ -741,27 +953,35 @@ async fn mutate_message(
         old.account_id,
     )
     .await?;
-    let new_id = provider::mutate(
-        &state,
-        provider,
-        &session.credentials.access_token,
-        &old.provider_message_id,
-        &mutation,
+    let available:Option<Uuid> = sqlx::query_scalar("SELECT id FROM provider_accounts WHERE id=$1 AND disabled_at IS NULL AND status='connected' FOR SHARE")
+        .bind(old.account_id).fetch_optional(&mut *tx).await?;
+    available.ok_or_else(AppError::not_found)?;
+    let current: Option<String> = sqlx::query_scalar(
+        "SELECT provider_message_id FROM mail_messages WHERE id=$1 AND deleted_at IS NULL",
     )
+    .bind(id)
+    .fetch_optional(&mut *tx)
     .await?;
-    let mut updated = provider::fetch_message(
-        &state,
-        provider,
-        old.account_id,
-        &session.credentials.access_token,
-        new_id.as_deref().unwrap_or(&old.provider_message_id),
-    )
-    .await?;
+    if current.as_deref() != Some(old.provider_message_id.as_str()) {
+        return Err(AppError::conflict(
+            "This message changed. Try again with its current state.",
+        ));
+    }
+    let active:bool=sqlx::query_scalar("SELECT (expires_at IS NULL OR expires_at>clock_timestamp()) AND (absolute_expires_at IS NULL OR absolute_expires_at>clock_timestamp()) FROM sessions WHERE id=$1")
+        .bind(auth.session_id).fetch_one(&mut *tx).await?;
+    if !active {
+        return Err(AppError::unauthorized());
+    }
+    let mut updated = transport.apply(state, &session, &old, &mutation).await?;
+    if updated.account_id != old.account_id {
+        return Err(AppError::internal("provider_account_mismatch"));
+    }
     updated.id = old.id;
-    classify_graph(&state, &session, std::slice::from_mut(&mut updated)).await?;
+    crate::mail_sync::cache_write_lock(&mut tx, auth.workspace_id, auth.user_id, old.account_id)
+        .await?;
     persist_message(&mut tx, auth.workspace_id, auth.user_id, &updated).await?;
     tx.commit().await?;
-    Ok(Json(json!({})))
+    Ok(updated)
 }
 async fn attachment(
     State(state): State<AppState>,
@@ -825,7 +1045,7 @@ pub struct OutboxItem {
     pub error_code: Option<String>,
     pub created_at: DateTime<Utc>,
 }
-fn outbox_row(row: &sqlx::postgres::PgRow) -> Result<OutboxItem, AppError> {
+pub fn outbox_row(row: &sqlx::postgres::PgRow) -> Result<OutboxItem, AppError> {
     Ok(OutboxItem {
         id: row.try_get("id")?,
         client_id: row.try_get("client_id")?,
@@ -918,12 +1138,25 @@ async fn queue_message(
     auth: AuthContext,
     Json(message): Json<Outgoing>,
 ) -> Result<Json<OutboxItem>, AppError> {
+    let mut tx = auth.begin(&state.pool).await?;
+    let item = queue_in_transaction(&state, &auth, &mut tx, &message).await?;
+    tx.commit().await?;
+    Ok(Json(item))
+}
+
+/// Caller must hold current authorization in the supplied RLS transaction.
+/// Persist only: provider delivery is handled by the durable background worker.
+pub async fn queue_in_transaction(
+    state: &AppState,
+    auth: &AuthContext,
+    tx: &mut Transaction<'_, Postgres>,
+    message: &Outgoing,
+) -> Result<OutboxItem, AppError> {
     validate_outgoing(&message)?;
     let encoded = Zeroizing::new(
         serde_json::to_vec(&message).map_err(|_| AppError::internal("outbox_encode"))?,
     );
     let hash = Sha256::digest(&*encoded).to_vec();
-    let mut tx = auth.begin(&state.pool).await?;
     // A transaction-scoped advisory lock makes simultaneous retries of the same
     // client UUID observe one job. A reused key with a different body is rejected.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
@@ -931,11 +1164,11 @@ async fn queue_message(
             "{}:{}:{}",
             auth.workspace_id, auth.user_id, message.client_id
         ))
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     if let Some(row) = sqlx::query("SELECT * FROM mail_outbox WHERE client_id=$1")
         .bind(message.client_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?
     {
         let old: Vec<u8> = row.try_get("payload_hash")?;
@@ -945,15 +1178,14 @@ async fn queue_message(
             ));
         }
         let item = outbox_row(&row)?;
-        tx.commit().await?;
-        return Ok(Json(item));
+        return Ok(item);
     }
-    let available:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM provider_accounts WHERE id=$1 AND disabled_at IS NULL AND status='connected')").bind(message.account_id).fetch_one(&mut *tx).await?;
+    let available:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM provider_accounts WHERE id=$1 AND disabled_at IS NULL AND status='connected')").bind(message.account_id).fetch_one(&mut **tx).await?;
     if !available {
         return Err(AppError::not_found());
     }
     if let Some(thread) = &message.provider_thread_id {
-        let owned:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mail_messages WHERE account_id=$1 AND provider_thread_id=$2)").bind(message.account_id).bind(thread).fetch_one(&mut *tx).await?;
+        let owned:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mail_messages WHERE account_id=$1 AND provider_thread_id=$2)").bind(message.account_id).bind(thread).fetch_one(&mut **tx).await?;
         if !owned {
             return Err(AppError::not_found());
         }
@@ -961,7 +1193,7 @@ async fn queue_message(
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mail_outbox WHERE status IN ('pending','delivering')",
     )
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
     if count >= 1_000 {
         return Err(AppError::rate_limited());
@@ -971,7 +1203,7 @@ async fn queue_message(
         Utc::now() + Duration::seconds(message.undo_seconds.unwrap_or(10).clamp(5, 60));
     let scheduled_at = message.scheduled_at.unwrap_or(undo_until).max(undo_until);
     let encrypted = state.crypto.seal(auth.workspace_id, id, &encoded)?;
-    let row=sqlx::query("INSERT INTO mail_outbox(id,client_id,workspace_id,user_id,account_id,encrypted_payload,payload_hash,scheduled_at,undo_until) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *").bind(id).bind(message.client_id).bind(auth.workspace_id).bind(auth.user_id).bind(message.account_id).bind(encrypted).bind(hash).bind(scheduled_at).bind(undo_until).fetch_one(&mut *tx).await?;
+    let row=sqlx::query("INSERT INTO mail_outbox(id,client_id,workspace_id,user_id,account_id,encrypted_payload,payload_hash,scheduled_at,undo_until) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *").bind(id).bind(message.client_id).bind(auth.workspace_id).bind(auth.user_id).bind(message.account_id).bind(encrypted).bind(hash).bind(scheduled_at).bind(undo_until).fetch_one(&mut **tx).await?;
     sqlx::query(
         "INSERT INTO mail_delivery_wakeups(job_id,workspace_id,user_id,due_at) VALUES($1,$2,$3,$4)",
     )
@@ -979,11 +1211,10 @@ async fn queue_message(
     .bind(auth.workspace_id)
     .bind(auth.user_id)
     .bind(scheduled_at)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
     let item = outbox_row(&row)?;
-    tx.commit().await?;
-    Ok(Json(item))
+    Ok(item)
 }
 async fn outbox(State(state): State<AppState>, auth: AuthContext) -> Result<Json<Value>, AppError> {
     let mut tx = auth.begin(&state.pool).await?;
@@ -1000,16 +1231,25 @@ async fn cancel(
     Path(id): Path<Uuid>,
 ) -> Result<Json<OutboxItem>, AppError> {
     let mut tx = auth.begin(&state.pool).await?;
+    let item = cancel_in_transaction(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(Json(item))
+}
+
+/// Caller must hold current authorization in the supplied RLS transaction.
+pub async fn cancel_in_transaction(
+    tx: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<OutboxItem, AppError> {
     let row = sqlx::query("SELECT * FROM mail_outbox WHERE id=$1 FOR UPDATE")
         .bind(id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(AppError::not_found)?;
     let status: String = row.try_get("status")?;
     if status == "cancelled" {
         let item = outbox_row(&row)?;
-        tx.commit().await?;
-        return Ok(Json(item));
+        return Ok(item);
     }
     if status != "pending" && status != "failed" {
         return Err(AppError::conflict(
@@ -1020,15 +1260,14 @@ async fn cancel(
         "UPDATE mail_outbox SET status='cancelled',updated_at=now() WHERE id=$1 RETURNING *",
     )
     .bind(id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
     sqlx::query("DELETE FROM mail_delivery_wakeups WHERE job_id=$1")
         .bind(id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     let item = outbox_row(&row)?;
-    tx.commit().await?;
-    Ok(Json(item))
+    Ok(item)
 }
 async fn retry(
     State(state): State<AppState>,

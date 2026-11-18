@@ -303,7 +303,7 @@ async fn real_database_authentication_rls_revocation_rotation_and_rate_limits() 
         StatusCode::UNAUTHORIZED
     );
     let session3 = login(&app, &email, ws).await;
-    sqlx::query("UPDATE sessions SET created_at=now()-interval '2 days',expires_at=now()-interval '1 second' WHERE id=$1").bind(session3.session_id).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE sessions SET created_at=now()-interval '2 days',expires_at=now()-interval '1 second',absolute_expires_at=now()+interval '1 day' WHERE id=$1").bind(session3.session_id).execute(&pool).await.unwrap();
     assert_eq!(
         request(
             &app,

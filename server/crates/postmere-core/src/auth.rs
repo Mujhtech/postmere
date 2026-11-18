@@ -31,6 +31,72 @@ impl AuthContext {
     pub async fn begin(&self, pool: &PgPool) -> Result<Transaction<'static, Postgres>, AppError> {
         db::tenant_transaction(pool, self).await
     }
+
+    /// Revalidate a previously authenticated principal after connection/lock
+    /// waits and hold identity state through a sensitive scoped operation.
+    /// Lock order follows membership revocation and logout-all: user, membership,
+    /// session, then workspace. Merely setting the RLS scope is not authorization.
+    pub async fn begin_authorized(
+        &self,
+        pool: &PgPool,
+    ) -> Result<Transaction<'static, Postgres>, AppError> {
+        let mut tx = self.begin(pool).await?;
+        self.authorize_in_transaction(&mut tx).await?;
+        Ok(tx)
+    }
+
+    /// Recheck identity within an existing scoped transaction. Callers with
+    /// additional authorization rows (such as MCP grants) lock those first so
+    /// every route follows one grant -> identity lock order.
+    pub async fn authorize_in_transaction(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<(), AppError> {
+        let user: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM users WHERE id=$1 AND disabled_at IS NULL FOR SHARE",
+        )
+        .bind(self.user_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        user.ok_or_else(AppError::unauthorized)?;
+        let role: Option<String> = sqlx::query_scalar(
+            "SELECT role FROM memberships WHERE workspace_id=$1 AND user_id=$2 AND revoked_at IS NULL FOR SHARE",
+        )
+        .bind(self.workspace_id)
+        .bind(self.user_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if role.as_deref() != Some(self.role.as_str()) {
+            return Err(AppError::unauthorized());
+        }
+        let session: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM sessions WHERE id=$1 AND user_id=$2 AND workspace_id=$3 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>clock_timestamp()) AND (absolute_expires_at IS NULL OR absolute_expires_at>clock_timestamp()) FOR SHARE",
+        )
+        .bind(self.session_id)
+        .bind(self.user_id)
+        .bind(self.workspace_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        session.ok_or_else(AppError::unauthorized)?;
+        let workspace: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM workspaces WHERE id=$1 AND disabled_at IS NULL FOR SHARE",
+        )
+        .bind(self.workspace_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        workspace.ok_or_else(AppError::unauthorized)?;
+        // A workspace-row wait may outlast the token's expiry.
+        let unexpired: bool = sqlx::query_scalar(
+            "SELECT (expires_at IS NULL OR expires_at>clock_timestamp()) AND (absolute_expires_at IS NULL OR absolute_expires_at>clock_timestamp()) FROM sessions WHERE id=$1",
+        )
+        .bind(self.session_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if !unexpired {
+            return Err(AppError::unauthorized());
+        }
+        Ok(())
+    }
     pub fn require_admin(&self) -> Result<(), AppError> {
         if matches!(self.role.as_str(), "owner" | "admin") {
             Ok(())
@@ -71,8 +137,9 @@ pub struct AuthService {
 #[derive(Serialize, Deserialize)]
 pub struct SessionResponse {
     pub token: String,
-    pub expires_at: DateTime<Utc>,
-    pub absolute_expires_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub absolute_expires_at: Option<DateTime<Utc>>,
+    pub persistent: bool,
     pub session_id: Uuid,
     pub user_id: Uuid,
     pub workspace_id: Uuid,
@@ -108,7 +175,7 @@ impl AuthService {
     }
     pub async fn authenticate(&self, token: &str) -> Result<AuthContext, AppError> {
         let hash = token_hash(token)?;
-        let row = sqlx::query("SELECT s.id,s.user_id,s.workspace_id,m.role FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN workspaces w ON w.id=s.workspace_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND s.absolute_expires_at>now() AND u.disabled_at IS NULL AND m.revoked_at IS NULL AND w.disabled_at IS NULL")
+        let row = sqlx::query("SELECT s.id,s.user_id,s.workspace_id,m.role FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN workspaces w ON w.id=s.workspace_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at>clock_timestamp()) AND (s.absolute_expires_at IS NULL OR s.absolute_expires_at>clock_timestamp()) AND u.disabled_at IS NULL AND m.revoked_at IS NULL AND w.disabled_at IS NULL")
             .bind(hash).fetch_optional(&self.pool).await?.ok_or_else(AppError::unauthorized)?;
         Ok(AuthContext {
             session_id: row.get("id"),
@@ -117,7 +184,31 @@ impl AuthService {
             role: row.get("role"),
         })
     }
-    async fn login(&self, input: LoginRequest, client: &str) -> Result<SessionResponse, AppError> {
+    pub async fn login(
+        &self,
+        input: LoginRequest,
+        client: &str,
+    ) -> Result<SessionResponse, AppError> {
+        self.login_with_lifetime(input, client, true, "native")
+            .await
+    }
+    /// Browser authorization keeps bounded sessions independently of the
+    /// native app's persistent sign-in and notification registration.
+    pub async fn login_browser(
+        &self,
+        input: LoginRequest,
+        client: &str,
+    ) -> Result<SessionResponse, AppError> {
+        self.login_with_lifetime(input, client, false, "mcp_browser")
+            .await
+    }
+    async fn login_with_lifetime(
+        &self,
+        input: LoginRequest,
+        client: &str,
+        persistent: bool,
+        kind: &str,
+    ) -> Result<SessionResponse, AppError> {
         let password = Zeroizing::new(input.password);
         let email = input.email.trim().to_lowercase();
         if email.len() > 254 || password.is_empty() || password.len() > 1024 {
@@ -164,7 +255,8 @@ impl AuthService {
             .issue(
                 &mut tx,
                 &auth,
-                Utc::now() + Duration::days(self.absolute_days),
+                (!persistent).then(|| Utc::now() + Duration::days(self.absolute_days)),
+                kind,
             )
             .await?;
         tx.commit().await?;
@@ -174,19 +266,22 @@ impl AuthService {
         &self,
         tx: &mut Transaction<'_, Postgres>,
         auth: &AuthContext,
-        absolute: DateTime<Utc>,
+        absolute: Option<DateTime<Utc>>,
+        kind: &str,
     ) -> Result<SessionResponse, AppError> {
         let mut bytes = [0u8; 32];
         getrandom::fill(&mut bytes).map_err(|_| AppError::internal("secure_random"))?;
         let token = URL_SAFE_NO_PAD.encode(bytes);
-        let expires = (Utc::now() + Duration::hours(self.session_hours)).min(absolute);
+        let expires =
+            absolute.map(|limit| (Utc::now() + Duration::hours(self.session_hours)).min(limit));
         let session_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO sessions (id,workspace_id,user_id,token_hash,expires_at,absolute_expires_at) VALUES ($1,$2,$3,$4,$5,$6)")
-            .bind(session_id).bind(auth.workspace_id).bind(auth.user_id).bind(Sha256::digest(token.as_bytes()).as_slice()).bind(expires).bind(absolute).execute(&mut **tx).await?;
+        sqlx::query("INSERT INTO sessions (id,workspace_id,user_id,token_hash,expires_at,absolute_expires_at,kind) VALUES ($1,$2,$3,$4,$5,$6,$7)")
+            .bind(session_id).bind(auth.workspace_id).bind(auth.user_id).bind(Sha256::digest(token.as_bytes()).as_slice()).bind(expires).bind(absolute).bind(kind).execute(&mut **tx).await?;
         Ok(SessionResponse {
             token,
             expires_at: expires,
             absolute_expires_at: absolute,
+            persistent: absolute.is_none(),
             session_id,
             user_id: auth.user_id,
             workspace_id: auth.workspace_id,
@@ -194,22 +289,38 @@ impl AuthService {
         })
     }
     async fn rotate(&self, auth: &AuthContext) -> Result<SessionResponse, AppError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = auth.begin(&self.pool).await?;
         // Serialize rotation and logout-all, including sessions created by a
         // rotation that was already in flight when logout-all began.
         sqlx::query("SELECT id FROM users WHERE id=$1 FOR UPDATE")
             .bind(auth.user_id)
             .fetch_one(&mut *tx)
             .await?;
-        let row = sqlx::query("SELECT s.absolute_expires_at,m.role FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=$1 AND s.user_id=$2 AND s.workspace_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND s.absolute_expires_at>now() AND u.disabled_at IS NULL AND m.revoked_at IS NULL AND w.disabled_at IS NULL FOR UPDATE OF s")
+        auth.authorize_in_transaction(&mut tx).await?;
+        let row = sqlx::query("SELECT s.absolute_expires_at,s.kind,m.role FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=$1 AND s.user_id=$2 AND s.workspace_id=$3 AND s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at>clock_timestamp()) AND (s.absolute_expires_at IS NULL OR s.absolute_expires_at>clock_timestamp()) AND u.disabled_at IS NULL AND m.revoked_at IS NULL AND w.disabled_at IS NULL FOR UPDATE OF s")
             .bind(auth.session_id).bind(auth.user_id).bind(auth.workspace_id).fetch_optional(&mut *tx).await?.ok_or_else(AppError::unauthorized)?;
         let current_auth = AuthContext {
             role: row.get("role"),
             ..auth.clone()
         };
         let result = self
-            .issue(&mut tx, &current_auth, row.get("absolute_expires_at"))
+            .issue(
+                &mut tx,
+                &current_auth,
+                row.get("absolute_expires_at"),
+                row.get::<String, _>("kind").as_str(),
+            )
             .await?;
+        // A token rotation is still the same sign-in. Preserve its device
+        // consent and queued alerts when replacing the credential.
+        sqlx::query("UPDATE push_devices SET session_id=$1 WHERE session_id=$2 AND user_id=$3 AND workspace_id=$4")
+            .bind(result.session_id)
+            .bind(auth.session_id)
+            .bind(auth.user_id)
+            .bind(auth.workspace_id)
+            .execute(&mut *tx)
+            .await?;
+        auth.authorize_in_transaction(&mut tx).await?;
         sqlx::query("UPDATE sessions SET revoked_at=now(),replaced_by=$1 WHERE id=$2")
             .bind(result.session_id)
             .bind(auth.session_id)
@@ -264,10 +375,10 @@ fn token_hash(token: &str) -> Result<Vec<u8>, AppError> {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LoginRequest {
-    email: String,
-    password: String,
-    workspace_id: Uuid,
+pub struct LoginRequest {
+    pub email: String,
+    pub password: String,
+    pub workspace_id: Uuid,
 }
 
 pub fn router() -> Router<AppState> {
@@ -277,7 +388,10 @@ pub fn router() -> Router<AppState> {
             post(login).layer(DefaultBodyLimit::max(4096)),
         )
         .route("/v1/auth/rotate", post(rotate))
-        .route("/v1/auth/logout", post(logout))
+        .route(
+            "/v1/auth/logout",
+            post(logout).layer(DefaultBodyLimit::max(4096)),
+        )
         .route("/v1/auth/logout-all", post(logout_all))
         .route("/v1/auth/me", get(me))
 }
@@ -297,8 +411,51 @@ async fn rotate(
 ) -> Result<Json<SessionResponse>, AppError> {
     state.auth.rotate(&auth).await.map(Json)
 }
-async fn logout(auth: AuthContext, State(state): State<AppState>) -> Result<StatusCode, AppError> {
-    sqlx::query("UPDATE sessions SET revoked_at=now() WHERE id=$1 AND user_id=$2 AND workspace_id=$3 AND revoked_at IS NULL").bind(auth.session_id).bind(auth.user_id).bind(auth.workspace_id).execute(&state.pool).await?;
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LogoutRequest {
+    signed_out_at: Option<DateTime<Utc>>,
+    revoke_mcp: Option<bool>,
+}
+
+/// Revoke this sign-in and the workspace's assistant connections established
+/// before the sign-out intent. A delayed offline sign-out cannot disconnect a
+/// later authorization. Only identity/session rows are locked, in normal order.
+pub async fn sign_out(
+    state: &AppState,
+    auth: &AuthContext,
+    signed_out_at: Option<DateTime<Utc>>,
+    revoke_mcp: bool,
+) -> Result<(), AppError> {
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM users WHERE id=$1 FOR UPDATE")
+        .bind(auth.user_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    auth.authorize_in_transaction(&mut tx).await?;
+    if revoke_mcp {
+        let cutoff = signed_out_at.unwrap_or_else(Utc::now).min(Utc::now());
+        sqlx::query("UPDATE sessions SET revoked_at=clock_timestamp() WHERE user_id=$1 AND workspace_id=$2 AND kind IN ('mcp_browser','mcp_grant') AND created_at<=$3 AND revoked_at IS NULL")
+            .bind(auth.user_id).bind(auth.workspace_id).bind(cutoff).execute(&mut *tx).await?;
+    }
+    sqlx::query("UPDATE sessions SET revoked_at=clock_timestamp() WHERE id=$1 AND user_id=$2 AND workspace_id=$3 AND revoked_at IS NULL")
+        .bind(auth.session_id).bind(auth.user_id).bind(auth.workspace_id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+async fn logout(
+    auth: AuthContext,
+    State(state): State<AppState>,
+    input: Option<Json<Option<LogoutRequest>>>,
+) -> Result<StatusCode, AppError> {
+    let input = input.and_then(|Json(value)| value).unwrap_or_default();
+    sign_out(
+        &state,
+        &auth,
+        input.signed_out_at,
+        input.revoke_mcp.unwrap_or(true),
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 async fn logout_all(
@@ -321,11 +478,16 @@ async fn me(
     auth: AuthContext,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id=$1")
-        .bind(auth.user_id)
-        .fetch_one(&state.pool)
+    let mut tx = auth.begin_authorized(&state.pool).await?;
+    let row = sqlx::query("SELECT u.email,s.expires_at,s.absolute_expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=$1")
+        .bind(auth.session_id)
+        .fetch_one(&mut *tx)
         .await?;
+    let email: String = row.get("email");
+    let expires_at: Option<DateTime<Utc>> = row.get("expires_at");
+    let absolute_expires_at: Option<DateTime<Utc>> = row.get("absolute_expires_at");
+    tx.commit().await?;
     Ok(Json(
-        serde_json::json!({"session_id":auth.session_id,"user_id":auth.user_id,"workspace_id":auth.workspace_id,"role":auth.role,"email":email}),
+        serde_json::json!({"session_id":auth.session_id,"user_id":auth.user_id,"workspace_id":auth.workspace_id,"role":auth.role,"email":email,"expires_at":expires_at,"absolute_expires_at":absolute_expires_at,"persistent":absolute_expires_at.is_none()}),
     ))
 }

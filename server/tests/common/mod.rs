@@ -9,6 +9,7 @@ pub fn config(database_url: String) -> Config {
         database_url,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         public_base_url: "http://127.0.0.1:8080".parse().unwrap(),
+        mcp_redirect_uris: Vec::new(),
         max_body_bytes: 30 * 1024 * 1024,
         session_hours: 24,
         session_absolute_days: 30,

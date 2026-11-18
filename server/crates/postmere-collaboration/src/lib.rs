@@ -185,7 +185,7 @@ async fn revoke_member(
         .bind(auth.workspace_id).bind(&identities).fetch_all(&mut *tx).await?;
     // Authentication may have happened before a target-row wait. Recheck the
     // actor AFTER those waits, and hold the session/workspace state until commit.
-    let role:Option<String>=sqlx::query_scalar("SELECT m.role FROM memberships m JOIN users u ON u.id=m.user_id JOIN workspaces w ON w.id=m.workspace_id JOIN sessions s ON s.workspace_id=m.workspace_id AND s.user_id=m.user_id WHERE m.workspace_id=$1 AND m.user_id=$2 AND s.id=$3 AND m.revoked_at IS NULL AND u.disabled_at IS NULL AND w.disabled_at IS NULL AND s.revoked_at IS NULL AND s.expires_at>now() AND s.absolute_expires_at>now() FOR SHARE OF s,w")
+    let role:Option<String>=sqlx::query_scalar("SELECT m.role FROM memberships m JOIN users u ON u.id=m.user_id JOIN workspaces w ON w.id=m.workspace_id JOIN sessions s ON s.workspace_id=m.workspace_id AND s.user_id=m.user_id WHERE m.workspace_id=$1 AND m.user_id=$2 AND s.id=$3 AND m.revoked_at IS NULL AND u.disabled_at IS NULL AND w.disabled_at IS NULL AND s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at>now()) AND (s.absolute_expires_at IS NULL OR s.absolute_expires_at>now()) FOR SHARE OF s,w")
         .bind(auth.workspace_id).bind(auth.user_id).bind(auth.session_id).fetch_optional(&mut *tx).await?;
     let role = role
         .filter(|role| matches!(role.as_str(), "owner" | "admin"))
