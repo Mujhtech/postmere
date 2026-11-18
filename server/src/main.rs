@@ -14,7 +14,9 @@ async fn main() {
                 concat!(
                     "postmere_server=info,postmere_core=info,postmere_providers=info,",
                     "postmere_mail=info,postmere_tracking=info,postmere_calendar=info,",
-                    "postmere_collaboration=info,postmere_ai=info,postmere_unsubscribe=info"
+                    "postmere_collaboration=info,postmere_ai=info,postmere_unsubscribe=info,",
+                    "postmere_mcp=info,postmere_mcp_auth=info,postmere_mcp_operations=info,",
+                    "postmere_realtime=info,postmere_push=info,postmere_webhooks=info"
                 )
                 .into()
             }),
@@ -98,19 +100,27 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let pool = db::connect(&config.database_url).await?;
             let addr = config.bind_addr;
             let state = AppState::new(pool, config).await?;
+            let listener = tokio::net::TcpListener::bind(addr).await?;
             let worker = mail::spawn_delivery_worker(state.clone());
             let sync_worker = mail_sync::spawn_sync_worker(state.clone());
-            let app = application(state, feature_routes());
-            let listener = tokio::net::TcpListener::bind(addr).await?;
+            let (shutdown_sender, shutdown_signal) = postmere_realtime::shutdown_channel();
+            let app = application(state, feature_routes())
+                .layer(axum::Extension(shutdown_signal));
             tracing::info!(%addr, "Postmere API listening");
-            axum::serve(
+            let result = axum::serve(
                 listener,
                 app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
-            .with_graceful_shutdown(shutdown())
-            .await?;
+            .with_graceful_shutdown(async move {
+                shutdown().await;
+                let _ = shutdown_sender.send(true);
+            })
+            .await;
             worker.abort();
             sync_worker.abort();
+            let _ = worker.await;
+            let _ = sync_worker.await;
+            result?;
         }
         _ => {
             return Err(

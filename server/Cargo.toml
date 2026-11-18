@@ -52,6 +52,7 @@ postmere-unsubscribe = { path = "crates/postmere-unsubscribe" }
 postmere-mcp-auth = { path = "crates/postmere-mcp-auth" }
 postmere-mcp-operations = { path = "crates/postmere-mcp-operations" }
 postmere-mcp = { path = "crates/postmere-mcp" }
+postmere-realtime = { path = "crates/postmere-realtime" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -73,6 +74,7 @@ postmere-ai.workspace = true
 postmere-unsubscribe.workspace = true
 postmere-mcp.workspace = true
 postmere-mcp-auth.workspace = true
+postmere-realtime.workspace = true
 axum.workspace = true
 serde.workspace = true
 sqlx.workspace = true

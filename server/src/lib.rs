@@ -22,6 +22,7 @@ pub fn feature_routes() -> Router<AppState> {
         .merge(postmere_unsubscribe::router())
         .merge(postmere_calendar::router())
         .merge(postmere_mcp::router())
+        .merge(postmere_realtime::router())
 }
 
 pub fn router() -> Router<AppState> {
