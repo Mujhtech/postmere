@@ -1,7 +1,11 @@
 //! Explicit calendar sharing and nonce-authorized bookings. Guest details and
 //! reusable link secrets are encrypted. Reservations are durable before network
 //! writes, and uncertain writes are never retried or released automatically.
+pub mod availability;
 pub mod calendar_provider;
+mod lifecycle;
+use availability::WeeklyAvailability;
+pub use lifecycle::{cancel_with, reconcile_with};
 
 use axum::{
     Extension, Json, Router,
@@ -40,6 +44,18 @@ pub fn router() -> Router<AppState> {
             axum::routing::delete(revoke_link),
         )
         .route("/v1/calendar/bookings", get(list_bookings))
+        .route(
+            "/v1/calendar/bookings/{id}/cancel",
+            post(lifecycle::cancel_booking),
+        )
+        .route(
+            "/v1/calendar/bookings/{id}/reconcile",
+            post(lifecycle::reconcile_booking),
+        )
+        .route(
+            "/v1/calendar/accounts/{id}/calendars",
+            get(list_provider_calendars),
+        )
         .route("/v1/calendar/sharing", get(list_sharing))
         .route("/v1/calendar/sharing/{id}", axum::routing::put(set_sharing))
         .route("/v1/calendar/free-busy", post(free_busy))
@@ -69,7 +85,7 @@ impl Slot {
     }
 }
 #[derive(Serialize)]
-struct Link {
+pub struct Link {
     id: Uuid,
     account_id: Uuid,
     title: String,
@@ -81,10 +97,13 @@ struct Link {
     disabled_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     slots: Vec<Slot>,
+    calendar_id: String,
+    conflict_calendar_ids: Vec<String>,
+    availability: Option<WeeklyAvailability>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct NewLink {
+pub struct NewLink {
     account_id: Uuid,
     title: String,
     #[serde(default)]
@@ -92,8 +111,21 @@ struct NewLink {
     time_zone: String,
     duration_minutes: i32,
     expires_at: DateTime<Utc>,
+    #[serde(default)]
     slots: Vec<Interval>,
+    #[serde(default = "primary_calendar")]
+    calendar_id: String,
+    #[serde(default = "primary_calendars")]
+    conflict_calendar_ids: Vec<String>,
+    availability: Option<WeeklyAvailability>,
 }
+fn primary_calendar() -> String {
+    "primary".into()
+}
+fn primary_calendars() -> Vec<String> {
+    vec![primary_calendar()]
+}
+
 #[derive(Clone)]
 struct PublicLink {
     id: Uuid,
@@ -104,6 +136,8 @@ struct PublicLink {
     description: String,
     time_zone: String,
     duration_minutes: i32,
+    calendar_id: String,
+    conflict_calendar_ids: Vec<String>,
 }
 
 fn slot_row(row: &PgRow) -> Result<Slot, AppError> {
@@ -146,8 +180,100 @@ async fn link_output(
         disabled_at: row.try_get("disabled_at")?,
         created_at: row.try_get("created_at")?,
         slots,
+        calendar_id: row.try_get("calendar_id")?,
+        conflict_calendar_ids: row.try_get("conflict_calendar_ids")?,
+        availability: row
+            .try_get::<Option<sqlx::types::Json<WeeklyAvailability>>, _>("availability")?
+            .map(|v| v.0),
     })
 }
+fn valid_calendar_selection(ids: &[String]) -> bool {
+    !ids.is_empty()
+        && ids.len() <= 8
+        && ids
+            .iter()
+            .all(|id| calendar_provider::valid_calendar_id(id))
+        && ids.iter().collect::<HashSet<_>>().len() == ids.len()
+}
+async fn validate_selection(
+    state: &AppState,
+    session: &mail::AccountSession,
+    target: &str,
+    conflicts: &[String],
+    transport: &dyn CalendarTransport,
+) -> Result<(), AppError> {
+    if !valid_calendar_selection(conflicts) || !conflicts.iter().any(|id| id == target) {
+        return Err(AppError::bad_request(
+            "Choose up to eight conflict calendars, including the booking calendar.",
+        ));
+    }
+    if target == "primary" && conflicts == ["primary"] {
+        return Ok(());
+    }
+    if !calendar_provider::has_calendar_list_scope(session) {
+        return Err(AppError::conflict(
+            "Reconnect calendar access in Settings to select additional calendars. Your primary calendar is still available.",
+        ));
+    }
+    let listed = transport.calendars(state, session).await?;
+    if !listed
+        .iter()
+        .any(|item| item.id == target && item.can_write)
+        || conflicts
+            .iter()
+            .any(|id| !listed.iter().any(|item| &item.id == id))
+    {
+        return Err(AppError::bad_request(
+            "Choose calendars you can read and a booking calendar you can edit.",
+        ));
+    }
+    Ok(())
+}
+async fn lock_active_account(
+    tx: &mut Transaction<'_, Postgres>,
+    account: Uuid,
+) -> Result<(), AppError> {
+    let active: Option<Uuid> = sqlx::query_scalar("SELECT id FROM provider_accounts WHERE id=$1 AND disabled_at IS NULL AND status='connected' AND 'calendar'=ANY(capabilities) FOR SHARE")
+        .bind(account).fetch_optional(&mut **tx).await?;
+    active.ok_or_else(AppError::not_found)?;
+    Ok(())
+}
+async fn selected_busy(
+    state: &AppState,
+    session: &mail::AccountSession,
+    ids: &[String],
+    range: &Interval,
+    transport: &dyn CalendarTransport,
+) -> Result<Vec<Interval>, CalendarError> {
+    let mut busy = vec![];
+    for id in ids {
+        busy.extend(transport.busy_selected(state, session, id, range).await?);
+    }
+    Ok(busy)
+}
+async fn list_provider_calendars(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, AppError> {
+    state
+        .auth
+        .rate_limit("calendar_list", &auth.user_id.to_string(), 60)
+        .await?;
+    let session = mail::account_session(&state, &auth, id).await?;
+    calendar_provider::require_calendar(&session)?;
+    if !calendar_provider::has_calendar_list_scope(&session) {
+        return Ok(Json(
+            json!({"items":[{"id":"primary","name":"Primary calendar","is_primary":true,"can_write":true}],"requires_reconnect":true}),
+        ));
+    }
+    let items = LiveCalendar.calendars(&state, &session).await?;
+    let mut tx = auth.begin_authorized(&state.pool).await?;
+    lock_active_account(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"items":items,"requires_reconnect":false})))
+}
+
 fn valid_text(text: &str, max: usize, multiline: bool) -> bool {
     !text.trim().is_empty()
         && text.chars().count() <= max
@@ -167,7 +293,15 @@ fn validate_link(input: &NewLink) -> Result<(), AppError> {
         || input.time_zone.parse::<Tz>().is_err()
         || !(15..=240).contains(&input.duration_minutes)
         || input.slots.is_empty()
-        || input.slots.len() > 100
+        || input.slots.len()
+            > if input.availability.is_some() {
+                1000
+            } else {
+                100
+            }
+        || !calendar_provider::valid_calendar_id(&input.calendar_id)
+        || !valid_calendar_selection(&input.conflict_calendar_ids)
+        || !input.conflict_calendar_ids.contains(&input.calendar_id)
         || input.expires_at <= now
         || input.expires_at > now + Duration::days(90)
     {
@@ -179,6 +313,7 @@ fn validate_link(input: &NewLink) -> Result<(), AppError> {
     for slot in &input.slots {
         if slot.start <= now + Duration::minutes(5)
             || slot.end > now + Duration::days(90)
+            || slot.end > input.expires_at
             || slot.end - slot.start != Duration::minutes(i64::from(input.duration_minutes))
             || !starts.insert(slot.start)
         {
@@ -197,8 +332,36 @@ fn validate_link(input: &NewLink) -> Result<(), AppError> {
 async fn create_link(
     State(state): State<AppState>,
     auth: AuthContext,
-    Json(mut input): Json<NewLink>,
+    Json(input): Json<NewLink>,
 ) -> Result<Json<Link>, AppError> {
+    create_link_with(&state, &auth, input, &LiveCalendar)
+        .await
+        .map(Json)
+}
+pub async fn create_link_with(
+    state: &AppState,
+    auth: &AuthContext,
+    mut input: NewLink,
+    transport: &dyn CalendarTransport,
+) -> Result<Link, AppError> {
+    if let Some(rule) = &input.availability {
+        if !input.slots.is_empty() {
+            return Err(AppError::bad_request(
+                "Choose either individual times or recurring availability.",
+            ));
+        }
+        let zone = input
+            .time_zone
+            .parse::<Tz>()
+            .map_err(|_| AppError::bad_request("Choose a valid time zone."))?;
+        input.slots = availability::expand(
+            rule,
+            zone,
+            input.duration_minutes,
+            input.expires_at,
+            Utc::now(),
+        )?;
+    }
     input.title = input.title.trim().into();
     input.description = input.description.trim().into();
     // Both providers store whole-second meeting times; normalize once before
@@ -216,30 +379,40 @@ async fn create_link(
         .await?;
     let session = mail::account_session(&state, &auth, input.account_id).await?;
     calendar_provider::require_calendar(&session)?;
+    validate_selection(
+        state,
+        &session,
+        &input.calendar_id,
+        &input.conflict_calendar_ids,
+        transport,
+    )
+    .await?;
     let id = Uuid::new_v4();
     let token = tokens::scoped_token(auth.workspace_id, auth.user_id, id)?;
     let sealed = state.crypto.seal(auth.workspace_id, id, token.as_bytes())?;
-    let mut tx = auth.begin(&state.pool).await?;
+    let mut tx = auth.begin_authorized(&state.pool).await?;
+    lock_active_account(&mut tx, input.account_id).await?;
+    auth.authorize_in_transaction(&mut tx).await?;
     let active:i64=sqlx::query_scalar("SELECT count(*) FROM calendar_booking_links WHERE disabled_at IS NULL AND expires_at>now()").fetch_one(&mut *tx).await?;
     if active >= 30 {
         return Err(AppError::conflict(
             "Revoke an existing booking link before creating another.",
         ));
     }
-    let row=sqlx::query("INSERT INTO calendar_booking_links(id,workspace_id,user_id,account_id,token_hash,encrypted_token,title,description,time_zone,duration_minutes,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *")
-        .bind(id).bind(auth.workspace_id).bind(auth.user_id).bind(input.account_id).bind(tokens::token_hash(&token)).bind(sealed).bind(input.title).bind(input.description).bind(input.time_zone).bind(input.duration_minutes).bind(input.expires_at).fetch_one(&mut *tx).await?;
+    let row=sqlx::query("INSERT INTO calendar_booking_links(id,workspace_id,user_id,account_id,token_hash,encrypted_token,title,description,time_zone,duration_minutes,expires_at,calendar_id,conflict_calendar_ids,availability) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *")
+        .bind(id).bind(auth.workspace_id).bind(auth.user_id).bind(input.account_id).bind(tokens::token_hash(&token)).bind(sealed).bind(input.title).bind(input.description).bind(input.time_zone).bind(input.duration_minutes).bind(input.expires_at).bind(input.calendar_id).bind(input.conflict_calendar_ids).bind(input.availability.map(sqlx::types::Json)).fetch_one(&mut *tx).await?;
     for slot in input.slots {
         sqlx::query("INSERT INTO calendar_booking_slots(id,workspace_id,user_id,account_id,link_id,starts_at,ends_at) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(Uuid::new_v4()).bind(auth.workspace_id).bind(auth.user_id).bind(input.account_id).bind(id).bind(slot.start).bind(slot.end).execute(&mut *tx).await?;
     }
     let link = link_output(&state, &mut tx, &row, auth.workspace_id).await?;
     tx.commit().await?;
-    Ok(Json(link))
+    Ok(link)
 }
 async fn list_links(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Value>, AppError> {
-    let mut tx = auth.begin(&state.pool).await?;
+    let mut tx = auth.begin_authorized(&state.pool).await?;
     let rows =
         sqlx::query("SELECT * FROM calendar_booking_links ORDER BY created_at DESC LIMIT 100")
             .fetch_all(&mut *tx)
@@ -256,7 +429,7 @@ async fn revoke_link(
     auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, AppError> {
-    let mut tx = auth.begin(&state.pool).await?;
+    let mut tx = auth.begin_authorized(&state.pool).await?;
     if sqlx::query(
         "UPDATE calendar_booking_links SET disabled_at=coalesce(disabled_at,now()) WHERE id=$1",
     )
@@ -279,7 +452,7 @@ async fn verified_link(
     id: Uuid,
     token: &str,
 ) -> Result<PublicLink, AppError> {
-    let row=sqlx::query("SELECT l.id,l.account_id,l.title,l.description,l.time_zone,l.duration_minutes FROM calendar_booking_links l JOIN provider_accounts a ON a.id=l.account_id JOIN memberships m ON m.workspace_id=l.workspace_id AND m.user_id=l.user_id JOIN users u ON u.id=l.user_id JOIN workspaces w ON w.id=l.workspace_id WHERE l.id=$1 AND l.token_hash=$2 AND l.disabled_at IS NULL AND l.expires_at>now() AND a.disabled_at IS NULL AND 'calendar'=ANY(a.capabilities) AND m.revoked_at IS NULL AND u.disabled_at IS NULL AND w.disabled_at IS NULL FOR SHARE OF l,a,m,u,w")
+    let row=sqlx::query("SELECT l.id,l.account_id,l.title,l.description,l.time_zone,l.duration_minutes,l.calendar_id,l.conflict_calendar_ids FROM calendar_booking_links l JOIN provider_accounts a ON a.id=l.account_id JOIN memberships m ON m.workspace_id=l.workspace_id AND m.user_id=l.user_id JOIN users u ON u.id=l.user_id JOIN workspaces w ON w.id=l.workspace_id WHERE l.id=$1 AND l.token_hash=$2 AND l.disabled_at IS NULL AND l.expires_at>clock_timestamp() AND a.disabled_at IS NULL AND 'calendar'=ANY(a.capabilities) AND m.revoked_at IS NULL AND u.disabled_at IS NULL AND w.disabled_at IS NULL FOR SHARE OF l,a,m,u,w")
         .bind(id).bind(tokens::token_hash(token)).fetch_optional(&mut **tx).await?.ok_or_else(AppError::not_found)?;
     Ok(PublicLink {
         id,
@@ -290,6 +463,8 @@ async fn verified_link(
         description: row.try_get("description")?,
         time_zone: row.try_get("time_zone")?,
         duration_minutes: row.try_get("duration_minutes")?,
+        calendar_id: row.try_get("calendar_id")?,
+        conflict_calendar_ids: row.try_get("conflict_calendar_ids")?,
     })
 }
 async fn public_link(state: &AppState, token: &str) -> Result<PublicLink, AppError> {
@@ -311,6 +486,7 @@ async fn reservation_lock(
         .await?;
     sqlx::query("UPDATE calendar_bookings SET status='failed',error_code='check_interrupted',updated_at=now() WHERE account_id=$1 AND status='checking' AND updated_at<now()-interval '5 minutes'").bind(account).execute(&mut **tx).await?;
     sqlx::query("UPDATE calendar_bookings SET status='uncertain',error_code='creation_interrupted',updated_at=now() WHERE account_id=$1 AND status='creating' AND updated_at<now()-interval '5 minutes'").bind(account).execute(&mut **tx).await?;
+    sqlx::query("UPDATE calendar_bookings SET status='cancel_uncertain',error_code='cancellation_interrupted',updated_at=now() WHERE account_id=$1 AND status='cancelling' AND updated_at<now()-interval '5 minutes'").bind(account).execute(&mut **tx).await?;
     Ok(())
 }
 async fn available_slots(
@@ -323,7 +499,7 @@ async fn available_slots(
     calendar_provider::require_calendar(&session)?;
     let mut tx = db::scoped_transaction(&state.pool, link.workspace, link.user).await?;
     reservation_lock(&mut tx, link.account).await?;
-    let rows=sqlx::query("SELECT s.id,s.starts_at,s.ends_at FROM calendar_booking_slots s JOIN calendar_booking_links l ON l.id=s.link_id WHERE s.link_id=$1 AND s.starts_at>now()+interval '2 minutes' AND s.starts_at<l.expires_at AND NOT EXISTS(SELECT 1 FROM calendar_bookings b WHERE b.account_id=s.account_id AND b.status<>'failed' AND b.starts_at<s.ends_at AND s.starts_at<b.ends_at) ORDER BY s.starts_at")
+    let rows=sqlx::query("SELECT s.id,s.starts_at,s.ends_at FROM calendar_booking_slots s JOIN calendar_booking_links l ON l.id=s.link_id WHERE s.link_id=$1 AND s.starts_at>now()+interval '2 minutes' AND s.starts_at<l.expires_at AND NOT EXISTS(SELECT 1 FROM calendar_bookings b WHERE b.account_id=s.account_id AND b.status NOT IN ('failed','cancelled') AND b.starts_at<s.ends_at AND s.starts_at<b.ends_at) ORDER BY s.starts_at")
         .bind(link.id).fetch_all(&mut *tx).await?;
     let slots = rows.iter().map(slot_row).collect::<Result<Vec<_>, _>>()?;
     tx.commit().await?;
@@ -334,7 +510,14 @@ async fn available_slots(
         start: first.start,
         end: slots.iter().map(|s| s.end).max().unwrap_or(first.end),
     };
-    let busy = transport.busy(state, &session, &range).await?;
+    let busy = selected_busy(
+        state,
+        &session,
+        &link.conflict_calendar_ids,
+        &range,
+        transport,
+    )
+    .await?;
     Ok(slots
         .into_iter()
         .filter(|slot| !busy.iter().any(|b| slot.interval().overlaps(b)))
@@ -376,7 +559,7 @@ pub async fn public_availability_with(
     // the host's remaining offered times, just as it prevents a new booking.
     public_link(state, token).await?;
     Ok(
-        json!({"title":link.title,"description":link.description,"time_zone":link.time_zone,"duration_minutes":link.duration_minutes,"slots":slots,"calendar_scope":"primary"}),
+        json!({"title":link.title,"description":link.description,"time_zone":link.time_zone,"duration_minutes":link.duration_minutes,"slots":slots,"calendar_scope":"selected"}),
     )
 }
 
@@ -404,13 +587,20 @@ pub struct BookingResult {
 fn result(row: &PgRow) -> Result<BookingResult, AppError> {
     let mut status: String = row.try_get("status")?;
     let updated: DateTime<Utc> = row.try_get("updated_at")?;
-    if status == "creating" && updated < Utc::now() - Duration::minutes(5) {
-        status = "uncertain".into()
+    if updated < Utc::now() - Duration::minutes(5) {
+        if status == "creating" {
+            status = "uncertain".into();
+        }
+        if status == "cancelling" {
+            status = "cancel_uncertain".into();
+        }
     }
     let message=match status.as_str(){
         "confirmed"=>"Your meeting is confirmed. The calendar provider has sent an invitation.",
         "uncertain"=>"The calendar provider did not confirm the result. This time remains reserved. Contact the host before booking again.",
         "failed"=>"This meeting was not booked. Refresh the available times before choosing another.",
+        "cancelled"=>"This meeting has been cancelled.",
+        "cancelling" | "cancel_uncertain"=>"Cancellation is being checked with the calendar provider. This time remains reserved until cancellation is confirmed.",
         _=>"Your booking is being checked. Keep this page open; do not submit another booking.",
     }.into();
     Ok(BookingResult {
@@ -459,7 +649,7 @@ async fn reserve(
         start: slot.try_get("starts_at")?,
         end: slot.try_get("ends_at")?,
     };
-    let occupied:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM calendar_bookings WHERE account_id=$1 AND status<>'failed' AND starts_at<$3 AND $2<ends_at)").bind(link.account).bind(interval.start).bind(interval.end).fetch_one(&mut *tx).await?;
+    let occupied:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM calendar_bookings WHERE account_id=$1 AND status NOT IN ('failed','cancelled') AND starts_at<$3 AND $2<ends_at)").bind(link.account).bind(interval.start).bind(interval.end).fetch_one(&mut *tx).await?;
     if occupied {
         return Err(AppError::conflict(
             "That time is no longer available. Choose another time.",
@@ -544,7 +734,15 @@ pub async fn book_with(
         .await?;
         return Err(error);
     }
-    let busy = match transport.busy(state, &session, &interval).await {
+    let busy = match selected_busy(
+        state,
+        &session,
+        &link.conflict_calendar_ids,
+        &interval,
+        transport,
+    )
+    .await
+    {
         Ok(busy) => busy,
         Err(error) => {
             finish(
@@ -568,7 +766,14 @@ pub async fn book_with(
     // Recheck link, account and membership after availability I/O. Committing
     // creating before the external write is what makes cancellation safe.
     let mut tx = db::scoped_transaction(&state.pool, link.workspace, link.user).await?;
+    // Match reserve/cancellation: identity locks precede the reservation lock.
+    if let Err(error) = verified_link(&mut tx, link.workspace, link.user, link.id, token).await {
+        tx.rollback().await?;
+        finish(state, &link, id, "failed", None, Some("link_revoked")).await?;
+        return Err(error);
+    }
     reservation_lock(&mut tx, link.account).await?;
+    // The link can expire while waiting even though its row cannot be changed.
     if let Err(error) = verified_link(&mut tx, link.workspace, link.user, link.id, token).await {
         tx.rollback().await?;
         finish(state, &link, id, "failed", None, Some("link_revoked")).await?;
@@ -589,7 +794,10 @@ pub async fn book_with(
         guest_email: input.email,
         interval,
     };
-    match transport.create(state, &session, &event).await {
+    match transport
+        .create_selected(state, &session, &link.calendar_id, &event)
+        .await
+    {
         Ok(event_id) => finish(state, &link, id, "confirmed", Some(event_id), None).await,
         Err(CalendarError::Rejected | CalendarError::NotFound) => {
             finish(state, &link, id, "failed", None, Some("provider_rejected")).await
@@ -643,7 +851,7 @@ async fn list_bookings(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Value>, AppError> {
-    let mut tx = auth.begin(&state.pool).await?;
+    let mut tx = auth.begin_authorized(&state.pool).await?;
     let rows = sqlx::query("SELECT * FROM calendar_bookings ORDER BY created_at DESC LIMIT 200")
         .fetch_all(&mut *tx)
         .await?;
@@ -668,6 +876,8 @@ async fn list_bookings(
 #[serde(deny_unknown_fields)]
 struct SharingRequest {
     enabled: bool,
+    #[serde(default = "primary_calendars")]
+    calendar_ids: Vec<String>,
 }
 async fn set_sharing(
     State(state): State<AppState>,
@@ -677,7 +887,7 @@ async fn set_sharing(
 ) -> Result<Json<Value>, AppError> {
     if !input.enabled {
         // Revocation must work even if OAuth expired or the provider is down.
-        let mut tx = auth.begin(&state.pool).await?;
+        let mut tx = auth.begin_authorized(&state.pool).await?;
         let owned: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM provider_accounts WHERE id=$1)")
                 .bind(id)
@@ -697,9 +907,31 @@ async fn set_sharing(
     }
     let session = mail::account_session(&state, &auth, id).await?;
     calendar_provider::require_calendar(&session)?;
-    let mut tx = auth.begin(&state.pool).await?;
-    sqlx::query("INSERT INTO calendar_sharing(account_id,workspace_id,user_id,email,enabled) VALUES($1,$2,$3,$4,$5) ON CONFLICT(account_id) DO UPDATE SET enabled=excluded.enabled,email=excluded.email,updated_at=now()")
-        .bind(id).bind(auth.workspace_id).bind(auth.user_id).bind(session.account.email).bind(input.enabled).execute(&mut *tx).await?;
+    if !valid_calendar_selection(&input.calendar_ids) {
+        return Err(AppError::bad_request(
+            "Choose one to eight distinct calendars to share.",
+        ));
+    }
+    if input.calendar_ids != ["primary"] {
+        if !calendar_provider::has_calendar_list_scope(&session) {
+            return Err(AppError::conflict(
+                "Reconnect calendar access to select additional calendars.",
+            ));
+        }
+        let listed = LiveCalendar.calendars(&state, &session).await?;
+        if input
+            .calendar_ids
+            .iter()
+            .any(|id| !listed.iter().any(|item| &item.id == id))
+        {
+            return Err(AppError::bad_request("Choose calendars you can read."));
+        }
+    }
+    let mut tx = auth.begin_authorized(&state.pool).await?;
+    lock_active_account(&mut tx, id).await?;
+    auth.authorize_in_transaction(&mut tx).await?;
+    sqlx::query("INSERT INTO calendar_sharing(account_id,workspace_id,user_id,email,enabled,calendar_ids) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(account_id) DO UPDATE SET enabled=excluded.enabled,email=excluded.email,calendar_ids=excluded.calendar_ids,updated_at=now()")
+        .bind(id).bind(auth.workspace_id).bind(auth.user_id).bind(session.account.email).bind(input.enabled).bind(input.calendar_ids).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(json!({})))
 }
@@ -707,10 +939,10 @@ async fn list_sharing(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Value>, AppError> {
-    let mut tx = auth.begin(&state.pool).await?;
-    let rows=sqlx::query("SELECT a.id AS account_id,a.email,a.user_id,coalesce(s.enabled,false) AS enabled FROM provider_accounts a LEFT JOIN calendar_sharing s ON s.account_id=a.id WHERE a.disabled_at IS NULL AND 'calendar'=ANY(a.capabilities) UNION ALL SELECT s.account_id,s.email,s.user_id,s.enabled FROM calendar_sharing s JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN users u ON u.id=s.user_id WHERE s.user_id<>$1 AND s.enabled AND m.revoked_at IS NULL AND u.disabled_at IS NULL ORDER BY email")
+    let mut tx = auth.begin_authorized(&state.pool).await?;
+    let rows=sqlx::query("SELECT a.id AS account_id,a.email,a.user_id,coalesce(s.enabled,false) AS enabled,coalesce(s.calendar_ids,ARRAY['primary']::TEXT[]) AS calendar_ids FROM provider_accounts a LEFT JOIN calendar_sharing s ON s.account_id=a.id WHERE a.disabled_at IS NULL AND 'calendar'=ANY(a.capabilities) UNION ALL SELECT s.account_id,s.email,s.user_id,s.enabled,s.calendar_ids FROM calendar_sharing s JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN users u ON u.id=s.user_id WHERE s.user_id<>$1 AND s.enabled AND m.revoked_at IS NULL AND u.disabled_at IS NULL ORDER BY email")
         .bind(auth.user_id).fetch_all(&mut *tx).await?;
-    let items=rows.into_iter().map(|r|Ok::<_,AppError>(json!({"account_id":r.try_get::<Uuid,_>("account_id")?,"email":r.try_get::<String,_>("email")?,"user_id":r.try_get::<Uuid,_>("user_id")?,"enabled":r.try_get::<bool,_>("enabled")?,"is_mine":r.try_get::<Uuid,_>("user_id")?==auth.user_id}))).collect::<Result<Vec<_>,_>>()?;
+    let items=rows.into_iter().map(|r|Ok::<_,AppError>(json!({"account_id":r.try_get::<Uuid,_>("account_id")?,"email":r.try_get::<String,_>("email")?,"user_id":r.try_get::<Uuid,_>("user_id")?,"enabled":r.try_get::<bool,_>("enabled")?,"is_mine":r.try_get::<Uuid,_>("user_id")?==auth.user_id,"calendar_ids":if r.try_get::<Uuid,_>("user_id")?==auth.user_id {Some(r.try_get::<Vec<String>,_>("calendar_ids")?)} else {None}}))).collect::<Result<Vec<_>,_>>()?;
     tx.commit().await?;
     Ok(Json(json!({"items":items})))
 }
@@ -725,17 +957,22 @@ async fn shared_owners(
     state: &AppState,
     auth: &AuthContext,
     accounts: &[Uuid],
-) -> Result<HashMap<Uuid, Uuid>, AppError> {
-    let mut tx = auth.begin(&state.pool).await?;
+) -> Result<HashMap<Uuid, (Uuid, Vec<String>)>, AppError> {
+    let mut tx = auth.begin_authorized(&state.pool).await?;
     // One statement gives all returned calendars the same authorization
     // snapshot. Provider accounts are owner-only under RLS; peer calendars
     // require a live, explicit share from an active workspace member.
-    let rows=sqlx::query("SELECT id AS account_id,user_id FROM provider_accounts WHERE id=ANY($1) AND disabled_at IS NULL UNION ALL SELECT s.account_id,s.user_id FROM calendar_sharing s JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN users u ON u.id=s.user_id WHERE s.account_id=ANY($1) AND s.user_id<>$2 AND s.enabled AND m.revoked_at IS NULL AND u.disabled_at IS NULL")
+    let rows=sqlx::query("SELECT a.id AS account_id,a.user_id,coalesce(s.calendar_ids,ARRAY['primary']::TEXT[]) AS calendar_ids FROM provider_accounts a LEFT JOIN calendar_sharing s ON s.account_id=a.id WHERE a.id=ANY($1) AND a.disabled_at IS NULL UNION ALL SELECT s.account_id,s.user_id,s.calendar_ids FROM calendar_sharing s JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN users u ON u.id=s.user_id WHERE s.account_id=ANY($1) AND s.user_id<>$2 AND s.enabled AND m.revoked_at IS NULL AND u.disabled_at IS NULL")
         .bind(accounts).bind(auth.user_id).fetch_all(&mut *tx).await?;
     let owners = rows
         .into_iter()
-        .map(|row| Ok((row.try_get("account_id")?, row.try_get("user_id")?)))
-        .collect::<Result<HashMap<Uuid, Uuid>, sqlx::Error>>()?;
+        .map(|row| {
+            Ok((
+                row.try_get("account_id")?,
+                (row.try_get("user_id")?, row.try_get("calendar_ids")?),
+            ))
+        })
+        .collect::<Result<HashMap<Uuid, (Uuid, Vec<String>)>, sqlx::Error>>()?;
     tx.commit().await?;
     Ok(owners)
 }
@@ -779,7 +1016,7 @@ pub async fn free_busy_with(
         if !accounts.insert(id) {
             continue;
         }
-        let owner = *owners.get(&id).ok_or_else(AppError::not_found)?;
+        let (owner, selected) = owners.get(&id).ok_or_else(AppError::not_found)?.clone();
         let session = mail::service_account_session(state, auth.workspace_id, owner, id).await?;
         calendar_provider::require_calendar(&session)?;
         let state = state.clone();
@@ -789,8 +1026,9 @@ pub async fn free_busy_with(
             end: input.end,
         };
         tasks.spawn(async move {
-            let busy = transport.busy(&state, &session, &range).await?;
-            Ok::<_, CalendarError>((id, owner, busy))
+            let busy =
+                selected_busy(&state, &session, &selected, &range, transport.as_ref()).await?;
+            Ok::<_, CalendarError>((id, (owner, selected), busy))
         });
     }
     let mut results = vec![];
@@ -859,6 +1097,9 @@ mod tests {
             time_zone: "Africa/Lagos".into(),
             duration_minutes: 30,
             expires_at: start + Duration::days(1),
+            calendar_id: primary_calendar(),
+            conflict_calendar_ids: primary_calendars(),
+            availability: None,
             slots: vec![Interval {
                 start,
                 end: start + Duration::minutes(30),

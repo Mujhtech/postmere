@@ -2,21 +2,12 @@ import SwiftUI
 
 struct CalendarAgendaView: View {
     private let service: MailCalendarService
-    @Environment(\.dismiss) private var dismiss
     @State private var day = Calendar.current.startOfDay(for: Date())
-    @State private var eventDraft: MailCalendarEventDraft?
 
     init(service: MailCalendarService? = nil) { self.service = service ?? .shared }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Calendar").font(PostmereTheme.sheetTitle)
-                Spacer()
-                Button { eventDraft = MailCalendarEventDraft() } label: { PostmereLabel("New Event", symbol: "plus", size: 14) }
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-            }.padding(24)
-            Divider()
             if !service.isEnabled || !service.access.canRead {
                 CalendarIntegrationSettingsView(service: service).padding(24)
                 Spacer()
@@ -31,7 +22,7 @@ struct CalendarAgendaView: View {
                 if let error = service.errorMessage { Text(error).font(.caption).foregroundStyle(.red).padding() }
                 if service.events.isEmpty && !service.isLoading {
                     ContentUnavailableView {
-                        PostmereLabel("No events this week", symbol: "calendar", size: 36)
+                        PostmereLabel.emptyState("No events this week", symbol: "calendar", size: 36)
                     } description: { Text("Choose another week or add an event.") }
                 } else {
                     List(service.events) { event in
@@ -53,12 +44,11 @@ struct CalendarAgendaView: View {
                 }
             }
         }
-        .frame(width: 680, height: 540)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: "\(day.timeIntervalSince1970)|\(service.isEnabled)") {
             let start = Calendar.current.startOfDay(for: day)
             if let end = Calendar.current.date(byAdding: .day, value: 7, to: start) { await service.refreshAgenda(from: start, to: end) }
         }
-        .sheet(item: $eventDraft) { CalendarEventDraftView(draft: $0, service: service) }
     }
 }
 
@@ -316,7 +306,9 @@ struct MailDateSuggestionsView: View {
                         Button(suggestion.matchedText) { onReview(suggestion.eventDraft(title: title)) }
                     }
                 } label: { PostmereLabel("Dates in this message", symbol: "calendar", size: 13) }
-                .menuStyle(.borderlessButton).fixedSize()
+                .menuStyle(.borderlessButton)
+                .tint(PostmereTheme.accentInk)
+                .fixedSize()
             }
         }.task(id: text) {
             let source = text

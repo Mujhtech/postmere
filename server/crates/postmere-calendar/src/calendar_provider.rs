@@ -1,4 +1,4 @@
-//! Fixed-origin adapters for the account's primary calendar. Incomplete pages,
+//! Fixed-origin adapters for explicitly selected provider calendars. Incomplete pages,
 //! unknown time zones and provider failures never turn into empty availability.
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -12,8 +12,74 @@ use url::Url;
 use uuid::Uuid;
 
 const GOOGLE: &str = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
-const GRAPH: &str = "https://graph.microsoft.com/v1.0/me/calendar/calendarView";
+const BOOKING_PROPERTY: &str = "String {5f9cd7c7-9097-4fcb-9560-410eb9db073b} Name PostmereBooking";
 const MAX_BODY: usize = 8 * 1024 * 1024;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ProviderCalendar {
+    pub id: String,
+    pub name: String,
+    pub is_primary: bool,
+    pub can_write: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EventLookup {
+    Present(String),
+    Absent,
+}
+
+pub fn valid_calendar_id(id: &str) -> bool {
+    !id.is_empty()
+        && !matches!(id, "." | "..")
+        && id.len() <= 1024
+        && !id.chars().any(char::is_control)
+}
+fn calendar_url(provider: Provider, calendar: &str, resource: &str) -> Result<Url, CalendarError> {
+    if !valid_calendar_id(calendar) {
+        return Err(CalendarError::Rejected);
+    }
+    let mut url = Url::parse(if provider == Provider::Gmail {
+        "https://www.googleapis.com/calendar/v3/calendars/"
+    } else if calendar == "primary" {
+        "https://graph.microsoft.com/v1.0/me/calendar/"
+    } else {
+        "https://graph.microsoft.com/v1.0/me/calendars/"
+    })
+    .map_err(|_| CalendarError::InvalidResponse)?;
+    let mut path = url
+        .path_segments_mut()
+        .map_err(|_| CalendarError::InvalidResponse)?;
+    path.pop_if_empty();
+    if provider == Provider::Gmail || calendar != "primary" {
+        path.push(calendar);
+    }
+    path.push(resource);
+    drop(path);
+    Ok(url)
+}
+fn selected_event_url(provider: Provider, calendar: &str, id: &str) -> Result<Url, CalendarError> {
+    if id.is_empty() || matches!(id, "." | "..") || id.len() > 4096 {
+        return Err(CalendarError::InvalidResponse);
+    }
+    let mut url = calendar_url(provider, calendar, "events")?;
+    url.path_segments_mut()
+        .map_err(|_| CalendarError::InvalidResponse)?
+        .push(id);
+    Ok(url)
+}
+fn graph_cursor_for(raw: &str, expected: &Url) -> Result<Url, CalendarError> {
+    let url = Url::parse(raw).map_err(|_| CalendarError::InvalidResponse)?;
+    if raw.len() > 16_384
+        || url.origin() != expected.origin()
+        || url.path() != expected.path()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(CalendarError::InvalidResponse);
+    }
+    Ok(url)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Interval {
@@ -119,6 +185,58 @@ pub trait CalendarTransport: Send + Sync {
         session: &'a AccountSession,
         event: &'a BookingEvent,
     ) -> CalendarFuture<'a, String>;
+    fn calendars<'a>(
+        &'a self,
+        _: &'a AppState,
+        _: &'a AccountSession,
+    ) -> CalendarFuture<'a, Vec<ProviderCalendar>> {
+        Box::pin(async { Err(CalendarError::Unavailable) })
+    }
+    fn busy_selected<'a>(
+        &'a self,
+        state: &'a AppState,
+        session: &'a AccountSession,
+        calendar: &'a str,
+        range: &'a Interval,
+    ) -> CalendarFuture<'a, Vec<Interval>> {
+        if calendar == "primary" {
+            self.busy(state, session, range)
+        } else {
+            Box::pin(async { Err(CalendarError::Rejected) })
+        }
+    }
+    fn create_selected<'a>(
+        &'a self,
+        state: &'a AppState,
+        session: &'a AccountSession,
+        calendar: &'a str,
+        event: &'a BookingEvent,
+    ) -> CalendarFuture<'a, String> {
+        if calendar == "primary" {
+            self.create(state, session, event)
+        } else {
+            Box::pin(async { Err(CalendarError::Rejected) })
+        }
+    }
+    fn lookup<'a>(
+        &'a self,
+        _: &'a AppState,
+        _: &'a AccountSession,
+        _: &'a str,
+        _: Uuid,
+        _: Option<&'a str>,
+    ) -> CalendarFuture<'a, EventLookup> {
+        Box::pin(async { Err(CalendarError::Unavailable) })
+    }
+    fn cancel<'a>(
+        &'a self,
+        _: &'a AppState,
+        _: &'a AccountSession,
+        _: &'a str,
+        _: &'a str,
+    ) -> CalendarFuture<'a, ()> {
+        Box::pin(async { Err(CalendarError::Unavailable) })
+    }
 }
 pub struct LiveCalendar;
 impl CalendarTransport for LiveCalendar {
@@ -129,9 +247,12 @@ impl CalendarTransport for LiveCalendar {
         range: &'a Interval,
     ) -> CalendarFuture<'a, Vec<Interval>> {
         Box::pin(async move {
-            tokio::time::timeout(StdDuration::from_secs(12), busy(state, session, range))
-                .await
-                .map_err(|_| CalendarError::Unavailable)?
+            tokio::time::timeout(
+                StdDuration::from_secs(12),
+                busy(state, session, "primary", range),
+            )
+            .await
+            .map_err(|_| CalendarError::Unavailable)?
         })
     }
     fn create<'a>(
@@ -140,7 +261,58 @@ impl CalendarTransport for LiveCalendar {
         session: &'a AccountSession,
         event: &'a BookingEvent,
     ) -> CalendarFuture<'a, String> {
-        Box::pin(create(state, session, event))
+        Box::pin(create(state, session, "primary", event))
+    }
+    fn calendars<'a>(
+        &'a self,
+        state: &'a AppState,
+        session: &'a AccountSession,
+    ) -> CalendarFuture<'a, Vec<ProviderCalendar>> {
+        Box::pin(list_calendars(state, session))
+    }
+    fn busy_selected<'a>(
+        &'a self,
+        state: &'a AppState,
+        session: &'a AccountSession,
+        calendar: &'a str,
+        range: &'a Interval,
+    ) -> CalendarFuture<'a, Vec<Interval>> {
+        Box::pin(async move {
+            tokio::time::timeout(
+                StdDuration::from_secs(12),
+                busy(state, session, calendar, range),
+            )
+            .await
+            .map_err(|_| CalendarError::Unavailable)?
+        })
+    }
+    fn create_selected<'a>(
+        &'a self,
+        state: &'a AppState,
+        session: &'a AccountSession,
+        calendar: &'a str,
+        event: &'a BookingEvent,
+    ) -> CalendarFuture<'a, String> {
+        Box::pin(create(state, session, calendar, event))
+    }
+    fn lookup<'a>(
+        &'a self,
+        state: &'a AppState,
+        session: &'a AccountSession,
+        calendar: &'a str,
+        booking: Uuid,
+        event_id: Option<&'a str>,
+    ) -> CalendarFuture<'a, EventLookup> {
+        Box::pin(lookup(state, session, calendar, booking, event_id))
+    }
+    fn cancel<'a>(
+        &'a self,
+        state: &'a AppState,
+        session: &'a AccountSession,
+        calendar: &'a str,
+        event_id: &'a str,
+    ) -> CalendarFuture<'a, ()> {
+        Box::pin(cancel(state, session, calendar, event_id))
     }
 }
 
@@ -164,7 +336,7 @@ async fn request(builder: reqwest::RequestBuilder, mutation: bool) -> Result<Val
             } else {
                 CalendarError::Unavailable
             }
-        } else if status.as_u16() == 404 {
+        } else if matches!(status.as_u16(), 404 | 410) {
             CalendarError::NotFound
         } else {
             CalendarError::Rejected
@@ -285,6 +457,7 @@ fn event_interval(
     }
     Ok(range)
 }
+#[cfg(test)]
 fn graph_cursor(raw: &str) -> Result<Url, CalendarError> {
     let url = Url::parse(raw).map_err(|_| CalendarError::InvalidResponse)?;
     if raw.len() > 16_384
@@ -307,16 +480,20 @@ fn graph_cursor(raw: &str) -> Result<Url, CalendarError> {
 async fn events(
     state: &AppState,
     session: &AccountSession,
+    calendar: &str,
     range: &Interval,
     uid: Option<&str>,
 ) -> Result<(Provider, Vec<(Value, String)>), CalendarError> {
     let provider = require_calendar(session).map_err(|_| CalendarError::Rejected)?;
-    let mut url = Url::parse(if provider == Provider::Gmail {
-        GOOGLE
-    } else {
-        GRAPH
-    })
-    .map_err(|_| CalendarError::InvalidResponse)?;
+    let mut url = calendar_url(
+        provider,
+        calendar,
+        if provider == Provider::Gmail {
+            "events"
+        } else {
+            "calendarView"
+        },
+    )?;
     if provider == Provider::Gmail {
         url.query_pairs_mut().extend_pairs([
             ("timeMin", range.start.to_rfc3339()),
@@ -384,7 +561,7 @@ async fn events(
                 url = first.clone();
                 url.query_pairs_mut().append_pair("pageToken", next);
             }
-            Some(next) => url = graph_cursor(next)?,
+            Some(next) => url = graph_cursor_for(next, &first)?,
         }
     }
     Err(CalendarError::InvalidResponse)
@@ -393,9 +570,10 @@ async fn events(
 async fn busy(
     state: &AppState,
     session: &AccountSession,
+    calendar: &str,
     range: &Interval,
 ) -> Result<Vec<Interval>, CalendarError> {
-    let (provider, events) = events(state, session, range, None).await?;
+    let (provider, events) = events(state, session, calendar, range, None).await?;
     let mut result = vec![];
     for (event, zone) in events {
         let free = match provider {
@@ -430,18 +608,21 @@ async fn busy(
 async fn create(
     state: &AppState,
     session: &AccountSession,
+    calendar: &str,
     event: &BookingEvent,
 ) -> Result<String, CalendarError> {
     let provider = require_calendar(session).map_err(|_| CalendarError::Rejected)?;
-    let (url, body) = match provider {
-        Provider::Gmail => (
-            format!("{GOOGLE}?sendUpdates=all"),
-            json!({"id":event.id.simple().to_string(),"summary":event.title,"description":event.description,"start":{"dateTime":event.interval.start.to_rfc3339()},"end":{"dateTime":event.interval.end.to_rfc3339()},"attendees":[{"email":event.guest_email,"displayName":event.guest_name}],"guestsCanInviteOthers":false,"guestsCanModify":false,"transparency":"opaque","visibility":"private"}),
-        ),
-        Provider::Microsoft => (
-            "https://graph.microsoft.com/v1.0/me/events".into(),
-            json!({"transactionId":event.id,"subject":event.title,"body":{"contentType":"text","content":event.description},"start":{"dateTime":event.interval.start.format("%Y-%m-%dT%H:%M:%S").to_string(),"timeZone":"UTC"},"end":{"dateTime":event.interval.end.format("%Y-%m-%dT%H:%M:%S").to_string(),"timeZone":"UTC"},"attendees":[{"emailAddress":{"address":event.guest_email,"name":event.guest_name},"type":"required"}],"showAs":"busy","sensitivity":"private","allowNewTimeProposals":false}),
-        ),
+    let mut url = calendar_url(provider, calendar, "events")?;
+    if provider == Provider::Gmail {
+        url.query_pairs_mut().append_pair("sendUpdates", "all");
+    }
+    let body = match provider {
+        Provider::Gmail => {
+            json!({"id":event.id.simple().to_string(),"summary":event.title,"description":event.description,"start":{"dateTime":event.interval.start.to_rfc3339()},"end":{"dateTime":event.interval.end.to_rfc3339()},"attendees":[{"email":event.guest_email,"displayName":event.guest_name}],"guestsCanInviteOthers":false,"guestsCanModify":false,"transparency":"opaque","visibility":"private"})
+        }
+        Provider::Microsoft => {
+            json!({"transactionId":event.id,"singleValueExtendedProperties":[{"id":BOOKING_PROPERTY,"value":event.id.to_string()}],"subject":event.title,"body":{"contentType":"text","content":event.description},"start":{"dateTime":event.interval.start.format("%Y-%m-%dT%H:%M:%S").to_string(),"timeZone":"UTC"},"end":{"dateTime":event.interval.end.format("%Y-%m-%dT%H:%M:%S").to_string(),"timeZone":"UTC"},"attendees":[{"emailAddress":{"address":event.guest_email,"name":event.guest_name},"type":"required"}],"showAs":"busy","sensitivity":"private","allowNewTimeProposals":false})
+        }
     };
     let value = request(
         state
@@ -460,8 +641,209 @@ async fn create(
         .ok_or(CalendarError::Ambiguous)
 }
 
+pub fn has_calendar_list_scope(session: &AccountSession) -> bool {
+    session.account.provider != "gmail"
+        || session.credentials.scopes.iter().any(|scope| {
+            matches!(
+                scope.as_str(),
+                "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+                    | "https://www.googleapis.com/auth/calendar.calendarlist"
+                    | "https://www.googleapis.com/auth/calendar.readonly"
+                    | "https://www.googleapis.com/auth/calendar"
+            )
+        })
+}
+
+async fn list_calendars(
+    state: &AppState,
+    session: &AccountSession,
+) -> Result<Vec<ProviderCalendar>, CalendarError> {
+    let provider = require_calendar(session).map_err(|_| CalendarError::Rejected)?;
+    if !has_calendar_list_scope(session) {
+        return Err(CalendarError::Rejected);
+    }
+    let mut url = Url::parse(if provider == Provider::Gmail {
+        "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=250&minAccessRole=reader"
+    } else { "https://graph.microsoft.com/v1.0/me/calendars?$top=100&$select=id,name,canEdit,isDefaultCalendar" }).map_err(|_| CalendarError::InvalidResponse)?;
+    let first = url.clone();
+    let mut result = vec![];
+    for _ in 0..10 {
+        let body = request(
+            state
+                .http
+                .get(url.clone())
+                .bearer_auth(&session.credentials.access_token),
+            false,
+        )
+        .await?;
+        let rows = body[if provider == Provider::Gmail {
+            "items"
+        } else {
+            "value"
+        }]
+        .as_array()
+        .ok_or(CalendarError::InvalidResponse)?;
+        for row in rows {
+            let id = row["id"]
+                .as_str()
+                .filter(|s| valid_calendar_id(s))
+                .ok_or(CalendarError::InvalidResponse)?;
+            let is_primary = row[if provider == Provider::Gmail {
+                "primary"
+            } else {
+                "isDefaultCalendar"
+            }]
+            .as_bool()
+            .unwrap_or(false);
+            result.push(ProviderCalendar {
+                id: if is_primary {
+                    "primary".into()
+                } else {
+                    id.into()
+                },
+                name: row[if provider == Provider::Gmail {
+                    "summary"
+                } else {
+                    "name"
+                }]
+                .as_str()
+                .unwrap_or("Calendar")
+                .chars()
+                .take(256)
+                .collect(),
+                is_primary,
+                can_write: if provider == Provider::Gmail {
+                    matches!(row["accessRole"].as_str(), Some("owner" | "writer"))
+                } else {
+                    row["canEdit"].as_bool() == Some(true)
+                },
+            });
+        }
+        if result.len() > 1000 {
+            return Err(CalendarError::InvalidResponse);
+        }
+        match body[if provider == Provider::Gmail {
+            "nextPageToken"
+        } else {
+            "@odata.nextLink"
+        }]
+        .as_str()
+        {
+            None => {
+                result.sort_by(|a, b| {
+                    b.is_primary
+                        .cmp(&a.is_primary)
+                        .then_with(|| a.name.cmp(&b.name))
+                });
+                return Ok(result);
+            }
+            Some(next) if provider == Provider::Gmail => {
+                if next.is_empty() || next.len() > 8192 {
+                    return Err(CalendarError::InvalidResponse);
+                }
+                url = first.clone();
+                url.query_pairs_mut().append_pair("pageToken", next);
+            }
+            Some(next) => url = graph_cursor_for(next, &first)?,
+        }
+    }
+    Err(CalendarError::InvalidResponse)
+}
+
+// Stable Google IDs and Graph extended properties survive a lost create response.
+// This path never replays the create, even if a provider returns no matching item.
+async fn lookup(
+    state: &AppState,
+    session: &AccountSession,
+    calendar: &str,
+    booking: Uuid,
+    event_id: Option<&str>,
+) -> Result<EventLookup, CalendarError> {
+    let provider = require_calendar(session).map_err(|_| CalendarError::Rejected)?;
+    let google_id = booking.simple().to_string();
+    if let Some(id) =
+        event_id.or_else(|| (provider == Provider::Gmail).then_some(google_id.as_str()))
+    {
+        let value = match request(
+            state
+                .http
+                .get(selected_event_url(provider, calendar, id)?)
+                .bearer_auth(&session.credentials.access_token),
+            false,
+        )
+        .await
+        {
+            Err(CalendarError::NotFound) => return Ok(EventLookup::Absent),
+            other => other?,
+        };
+        if value["status"] == "cancelled" || value["isCancelled"] == true {
+            return Ok(EventLookup::Absent);
+        }
+        return value["id"]
+            .as_str()
+            .filter(|v| !v.is_empty() && v.len() <= 4096)
+            .map(|id| EventLookup::Present(id.into()))
+            .ok_or(CalendarError::InvalidResponse);
+    }
+    let mut url = calendar_url(provider, calendar, "events")?;
+    url.query_pairs_mut().append_pair("$filter", &format!("singleValueExtendedProperties/Any(ep: ep/id eq '{BOOKING_PROPERTY}' and ep/value eq '{booking}')"))
+        .append_pair("$select", "id,isCancelled").append_pair("$top", "2");
+    let value = request(
+        state
+            .http
+            .get(url)
+            .bearer_auth(&session.credentials.access_token),
+        false,
+    )
+    .await?;
+    let rows = value["value"]
+        .as_array()
+        .ok_or(CalendarError::InvalidResponse)?;
+    if rows.len() > 1 || value.get("@odata.nextLink").is_some() {
+        return Err(CalendarError::Ambiguous);
+    }
+    match rows.first() {
+        None => Ok(EventLookup::Absent),
+        Some(row) if row["isCancelled"] == true => Ok(EventLookup::Absent),
+        Some(row) => row["id"]
+            .as_str()
+            .filter(|v| !v.is_empty() && v.len() <= 4096)
+            .map(|id| EventLookup::Present(id.into()))
+            .ok_or(CalendarError::InvalidResponse),
+    }
+}
+async fn cancel(
+    state: &AppState,
+    session: &AccountSession,
+    calendar: &str,
+    event_id: &str,
+) -> Result<(), CalendarError> {
+    let provider = require_calendar(session).map_err(|_| CalendarError::Rejected)?;
+    let mut url = selected_event_url(provider, calendar, event_id)?;
+    if provider == Provider::Gmail {
+        url.query_pairs_mut().append_pair("sendUpdates", "all");
+    }
+    let response = state
+        .http
+        .delete(url)
+        .bearer_auth(&session.credentials.access_token)
+        .timeout(StdDuration::from_secs(8))
+        .send()
+        .await
+        .map_err(|_| CalendarError::Ambiguous)?;
+    cancellation_status(response.status().as_u16())
+}
+
+fn cancellation_status(status: u16) -> Result<(), CalendarError> {
+    match status {
+        200 | 204 | 404 | 410 => Ok(()),
+        202 | 408 | 500..=599 => Err(CalendarError::Ambiguous),
+        _ => Err(CalendarError::Rejected),
+    }
+}
+
 fn event_url(provider: Provider, id: &str) -> Result<Url, CalendarError> {
-    if id.is_empty() || id.len() > 4096 {
+    if id.is_empty() || matches!(id, "." | "..") || id.len() > 4096 {
         return Err(CalendarError::InvalidResponse);
     }
     let mut url = Url::parse(if provider == Provider::Gmail {
@@ -551,7 +933,7 @@ pub async fn respond(
     };
     let (provider, listed) = tokio::time::timeout(
         StdDuration::from_secs(12),
-        events(state, session, &range, Some(&input.ical_uid)),
+        events(state, session, "primary", &range, Some(&input.ical_uid)),
     )
     .await
     .map_err(|_| AppError::unavailable())??;
@@ -609,6 +991,43 @@ pub async fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selected_calendar_paths_and_pagination_cannot_change_resources() {
+        let google = calendar_url(Provider::Gmail, "work/calendar?x=1", "events").unwrap();
+        assert_eq!(
+            google.path(),
+            "/calendar/v3/calendars/work%2Fcalendar%3Fx=1/events"
+        );
+        let graph = calendar_url(Provider::Microsoft, "work/calendar?x=1", "calendarView").unwrap();
+        assert_eq!(
+            graph.path(),
+            "/v1.0/me/calendars/work%2Fcalendar%3Fx=1/calendarView"
+        );
+        let mut next = graph.clone();
+        next.query_pairs_mut().append_pair("$skiptoken", "opaque");
+        assert!(graph_cursor_for(next.as_str(), &graph).is_ok());
+        assert!(graph_cursor_for("https://graph.microsoft.com/v1.0/me/messages", &graph).is_err());
+        assert!(
+            graph_cursor_for(
+                "https://other.example/v1.0/me/calendars/work/calendarView",
+                &graph
+            )
+            .is_err()
+        );
+        for id in ["", ".", "..", "injected\n"] {
+            assert!(!valid_calendar_id(id));
+        }
+    }
+    #[test]
+    fn accepted_cancellation_stays_uncertain_until_provider_confirms() {
+        for status in [200, 204, 404, 410] {
+            assert_eq!(cancellation_status(status), Ok(()));
+        }
+        for status in [202, 408, 500, 503] {
+            assert_eq!(cancellation_status(status), Err(CalendarError::Ambiguous));
+        }
+        assert_eq!(cancellation_status(403), Err(CalendarError::Rejected));
+    }
     #[test]
     fn adjacent_intervals_do_not_overlap_and_all_day_uses_calendar_zone() {
         let start = Utc.with_ymd_and_hms(2026, 11, 1, 8, 0, 0).unwrap();

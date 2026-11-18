@@ -96,7 +96,7 @@ impl Provider {
         let scope = match (self, calendar_access) {
             (Self::Gmail, false) => "https://www.googleapis.com/auth/gmail.modify",
             (Self::Gmail, true) => {
-                "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.events"
+                "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.calendarlist.readonly"
             }
             (Self::Microsoft, false) => "offline_access User.Read Mail.ReadWrite Mail.Send",
             (Self::Microsoft, true) => {

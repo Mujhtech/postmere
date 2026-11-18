@@ -24,7 +24,9 @@
     showStatus('Checking the host’s calendar…');
     try {
       const value = await api();
-      $('title').textContent=value.title; $('description').textContent=value.description || 'Choose a time for your next conversation.';
+      $('title').textContent=value.title;
+      $('description').textContent=value.description || '';
+      $('description').hidden=!value.description;
       $('details').hidden=false; $('duration').textContent=value.duration_minutes+' minutes'; $('host-zone').textContent='Host: '+value.time_zone.replaceAll('_',' ');
       const groups = new Map();
       for (const slot of value.slots) {
@@ -50,14 +52,19 @@
     $('refresh').disabled=false;
   }
   function confirm(result) {
-    $('slots').hidden=true; $('booking-form').hidden=true; $('refresh').hidden=true; $('zone').hidden=true; $('status').hidden=true;
-    $('confirmation').hidden=false; $('confirmation-title').textContent=result.status==='confirmed'?'You’re on the calendar.':'We’re checking your meeting.';
+    $('availability-heading').hidden=true; $('availability-note').hidden=true; $('slots').hidden=true; $('booking-form').hidden=true; $('zone').hidden=true; $('status').hidden=true;
+    const confirmed = result.status === 'confirmed';
+    $('confirmation').hidden=false;
+    $('confirmation-mark').hidden=!confirmed;
+    $('confirmation-title').textContent=confirmed ? 'Meeting confirmed' : result.status === 'cancelled' ? 'Meeting cancelled' : ['cancelling','cancel_uncertain'].includes(result.status) ? 'Cancellation pending' : 'Confirmation unavailable';
     $('confirmation-message').textContent=result.message;
     $('confirmation-time').textContent=day.format(new Date(result.start))+' · '+time.format(new Date(result.start))+'–'+time.format(new Date(result.end))+' · '+zone;
+    $('confirmation-title').focus();
   }
   $('booking-form').addEventListener('submit',async event=>{
     event.preventDefault(); if(sending||!selected||!event.target.reportValidity())return;
-    sending=true; $('submit').disabled=true; $('refresh').disabled=true; $('name').disabled=true; $('email').disabled=true; showStatus('Checking availability and creating your meeting…');
+    sending=true; $('submit').disabled=true; $('refresh').disabled=true; $('name').disabled=true; $('email').disabled=true;
+    showStatus(pending ? 'Checking booking status…' : 'Checking availability and creating your meeting…');
     for(const button of document.querySelectorAll('.slot'))button.disabled=true;
     pending ??= {client_id:crypto.randomUUID(),slot_id:selected.id,name:$('name').value.trim(),email:$('email').value.trim()};
     try {
@@ -66,7 +73,11 @@
         await new Promise(resolve=>setTimeout(resolve,3000)); result=await api(pending);
       }
       if(result.status==='failed') {pending=null;throw new Error(result.message);}
-      confirm(result);
+      if (['checking','creating'].includes(result.status)) {
+        showStatus('Your meeting is still being scheduled. Check its status again shortly.');
+      } else {
+        confirm(result);
+      }
     } catch(error) {
       // Retain the idempotency key after a network error. Re-submitting checks
       // the same reservation and cannot create another calendar invitation.
@@ -74,7 +85,7 @@
       showStatus(pending ? 'We could not confirm the result. Check this booking’s status before choosing another time. '+error.message : error.message,true);
     }
     sending=false; $('submit').disabled=false; $('refresh').disabled=!!pending; $('name').disabled=!!pending; $('email').disabled=!!pending;
-    if(pending && !$('booking-form').hidden)$('submit').textContent='Check booking status';
+    $('submit-label').textContent=pending ? 'Check booking status' : 'Confirm meeting';
     for(const button of document.querySelectorAll('.slot'))button.disabled=!!pending;
   });
   $('refresh').addEventListener('click',load);

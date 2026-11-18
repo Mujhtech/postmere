@@ -4,13 +4,13 @@ struct CalendarInvitationSheet: View {
     let invitation: MailCalendarInvitation
     var session: BackendSession?
     var account: MailAccount?
-    @Environment(\.dismiss) private var dismiss
     @State private var draft: MailCalendarEventDraft?
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack { Text("Invitation").font(PostmereTheme.sheetTitle); Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.cancelAction) }
+        VStack(alignment: .leading, spacing: 0) {
+            PostmereSheetHeader("Invitation")
             CalendarInvitationView(invitation: invitation, onAddLocalEvent: { draft = $0 }, onRespond: responseAction)
-        }.padding(24).frame(width: 620)
+                .padding(.horizontal, 24).padding(.bottom, 24)
+        }.frame(width: 620)
             .sheet(item: $draft) { CalendarEventDraftView(draft: $0) }
     }
 

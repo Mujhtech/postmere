@@ -896,3 +896,713 @@ async fn bookings_scope_race_idempotency_encryption_revocation_and_ambiguous_pro
         .await
         .unwrap();
 }
+
+struct SelectedCalendarFixture {
+    busy_id: Option<String>,
+    gate_busy: std::sync::atomic::AtomicBool,
+    gate_lookup: std::sync::atomic::AtomicBool,
+    gate_calendars: std::sync::atomic::AtomicBool,
+    started: Notify,
+    release: Notify,
+    creates: AtomicUsize,
+    cancels: AtomicUsize,
+    absent: std::sync::atomic::AtomicBool,
+    ambiguous_cancel: std::sync::atomic::AtomicBool,
+    target: std::sync::Mutex<Option<String>>,
+    checked: std::sync::Mutex<Vec<String>>,
+}
+impl SelectedCalendarFixture {
+    fn new(busy_id: Option<&str>) -> Self {
+        Self {
+            busy_id: busy_id.map(str::to_owned),
+            gate_busy: false.into(),
+            gate_lookup: false.into(),
+            gate_calendars: false.into(),
+            started: Notify::new(),
+            release: Notify::new(),
+            creates: AtomicUsize::new(0),
+            cancels: AtomicUsize::new(0),
+            absent: true.into(),
+            ambiguous_cancel: true.into(),
+            target: Default::default(),
+            checked: Default::default(),
+        }
+    }
+}
+impl CalendarTransport for SelectedCalendarFixture {
+    fn busy<'a>(
+        &'a self,
+        state: &'a AppState,
+        session: &'a AccountSession,
+        range: &'a Interval,
+    ) -> CalendarFuture<'a, Vec<Interval>> {
+        self.busy_selected(state, session, "primary", range)
+    }
+    fn create<'a>(
+        &'a self,
+        state: &'a AppState,
+        session: &'a AccountSession,
+        event: &'a BookingEvent,
+    ) -> CalendarFuture<'a, String> {
+        self.create_selected(state, session, "primary", event)
+    }
+    fn calendars<'a>(
+        &'a self,
+        _: &'a AppState,
+        _: &'a AccountSession,
+    ) -> CalendarFuture<'a, Vec<postmere_calendar::calendar_provider::ProviderCalendar>> {
+        Box::pin(async move {
+            if self.gate_calendars.swap(false, Ordering::SeqCst) {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
+            Ok([
+                ("primary", true),
+                ("work@example.test", true),
+                ("holidays", false),
+            ]
+            .into_iter()
+            .map(
+                |(id, can_write)| postmere_calendar::calendar_provider::ProviderCalendar {
+                    id: id.into(),
+                    name: id.into(),
+                    is_primary: id == "primary",
+                    can_write,
+                },
+            )
+            .collect())
+        })
+    }
+    fn busy_selected<'a>(
+        &'a self,
+        _: &'a AppState,
+        _: &'a AccountSession,
+        id: &'a str,
+        range: &'a Interval,
+    ) -> CalendarFuture<'a, Vec<Interval>> {
+        Box::pin(async move {
+            if self.gate_busy.swap(false, Ordering::SeqCst) {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
+            self.checked.lock().unwrap().push(id.into());
+            Ok(if self.busy_id.as_deref() == Some(id) {
+                vec![range.clone()]
+            } else {
+                vec![]
+            })
+        })
+    }
+    fn create_selected<'a>(
+        &'a self,
+        _: &'a AppState,
+        _: &'a AccountSession,
+        id: &'a str,
+        _: &'a BookingEvent,
+    ) -> CalendarFuture<'a, String> {
+        Box::pin(async move {
+            *self.target.lock().unwrap() = Some(id.into());
+            self.creates.fetch_add(1, Ordering::SeqCst);
+            Err(CalendarError::Ambiguous)
+        })
+    }
+    fn lookup<'a>(
+        &'a self,
+        _: &'a AppState,
+        _: &'a AccountSession,
+        calendar: &'a str,
+        _: Uuid,
+        _: Option<&'a str>,
+    ) -> CalendarFuture<'a, postmere_calendar::calendar_provider::EventLookup> {
+        Box::pin(async move {
+            assert_eq!(calendar, "work@example.test");
+            if self.gate_lookup.swap(false, Ordering::SeqCst) {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
+            Ok(if self.absent.load(Ordering::SeqCst) {
+                postmere_calendar::calendar_provider::EventLookup::Absent
+            } else {
+                postmere_calendar::calendar_provider::EventLookup::Present(
+                    "stable-provider-event".into(),
+                )
+            })
+        })
+    }
+    fn cancel<'a>(
+        &'a self,
+        _: &'a AppState,
+        _: &'a AccountSession,
+        calendar: &'a str,
+        event: &'a str,
+    ) -> CalendarFuture<'a, ()> {
+        Box::pin(async move {
+            assert_eq!(calendar, "work@example.test");
+            assert_eq!(event, "stable-provider-event");
+            self.cancels.fetch_add(1, Ordering::SeqCst);
+            if self.ambiguous_cancel.load(Ordering::SeqCst) {
+                Err(CalendarError::Ambiguous)
+            } else {
+                Ok(())
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn booking_final_authorization_precedes_reservation_lock_and_rechecks_expiry() {
+    let url = std::env::var("POSTMERE_TEST_DATABASE_URL").expect("isolated test database");
+    let pool = db::connect(&url).await.unwrap();
+    db::migrate(&pool).await.unwrap();
+    let state = AppState::new(pool.clone(), common::config(url))
+        .await
+        .unwrap();
+    let app = application(state.clone(), calendar::router());
+    let workspace = Uuid::new_v4();
+    let email = format!("calendar-lock-order-{}@example.test", Uuid::new_v4());
+    let hash = hash_password(Zeroizing::new(
+        "calendar fixture password long enough".into(),
+    ))
+    .await
+    .unwrap();
+    seed(&pool, workspace, &email, &hash).await;
+    let session = login(&app, &email, workspace).await;
+    let auth = state.auth.authenticate(&session.token).await.unwrap();
+
+    for expire_while_waiting in [false, true] {
+        let account_id = account(&state, &auth, true).await;
+        let fixture = Arc::new(SelectedCalendarFixture::new(None));
+        let link = serde_json::to_value(
+            calendar::create_link_with(
+                &state,
+                &auth,
+                serde_json::from_value(link_body(account_id, Utc::now() + Duration::days(2)))
+                    .unwrap(),
+                fixture.as_ref(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        let link_id: Uuid = serde_json::from_value(link["id"].clone()).unwrap();
+        fixture.gate_busy.store(true, Ordering::SeqCst);
+        let task = {
+            let state = state.clone();
+            let fixture = fixture.clone();
+            tokio::spawn(async move {
+                calendar::book_with(&state, &secret(&link), booking(&link, 0), fixture.as_ref())
+                    .await
+            })
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            fixture.started.notified(),
+        )
+        .await
+        .expect("booking must reach provider availability before the final transaction");
+
+        let mut blocker = auth.begin(&pool).await.unwrap();
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,711947))")
+            .bind(account_id.to_string())
+            .execute(&mut *blocker)
+            .await
+            .unwrap();
+        let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *blocker)
+            .await
+            .unwrap();
+        if expire_while_waiting {
+            let mut tx = auth.begin(&pool).await.unwrap();
+            sqlx::query("UPDATE calendar_booking_links SET expires_at=clock_timestamp()+interval '2 seconds' WHERE id=$1")
+                .bind(link_id).execute(&mut *tx).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+        fixture.release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))")
+                    .bind(blocker_pid).fetch_one(&pool).await.unwrap();
+                if waiting {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("booking must wait at the final reservation lock");
+
+        let mut probe = pool.begin().await.unwrap();
+        let identity_lock = sqlx::query("SELECT id FROM users WHERE id=$1 FOR UPDATE NOWAIT")
+            .bind(auth.user_id)
+            .fetch_one(&mut *probe)
+            .await;
+        probe.rollback().await.unwrap();
+        assert_eq!(
+            identity_lock
+                .unwrap_err()
+                .as_database_error()
+                .unwrap()
+                .code()
+                .as_deref(),
+            Some("55P03"),
+            "booking must hold identity authorization before waiting for reservations"
+        );
+        if expire_while_waiting {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        blocker.commit().await.unwrap();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(3), task)
+            .await
+            .expect("booking must finish after releasing the reservation lock")
+            .unwrap();
+        if expire_while_waiting {
+            assert_eq!(outcome.unwrap_err().status, StatusCode::NOT_FOUND);
+            assert_eq!(fixture.creates.load(Ordering::SeqCst), 0);
+        } else {
+            assert_eq!(outcome.unwrap().status, "uncertain");
+            assert_eq!(fixture.creates.load(Ordering::SeqCst), 1);
+        }
+        let mut tx = auth.begin(&pool).await.unwrap();
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM calendar_bookings WHERE link_id=$1")
+                .bind(link_id)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(
+            status,
+            if expire_while_waiting {
+                "failed"
+            } else {
+                "uncertain"
+            }
+        );
+        tx.commit().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn selected_calendars_weekly_rules_and_booking_recovery_never_replay_creation() {
+    let url = std::env::var("POSTMERE_TEST_DATABASE_URL").expect("isolated test database");
+    let pool = db::connect(&url).await.unwrap();
+    db::migrate(&pool).await.unwrap();
+    let state = AppState::new(pool.clone(), common::config(url))
+        .await
+        .unwrap();
+    let app = application(state.clone(), calendar::router());
+    let workspace = Uuid::new_v4();
+    let email = format!("lifecycle-{}@example.test", Uuid::new_v4());
+    let hash = hash_password(Zeroizing::new(
+        "calendar fixture password long enough".into(),
+    ))
+    .await
+    .unwrap();
+    seed(&pool, workspace, &email, &hash).await;
+    let session = login(&app, &email, workspace).await;
+    let auth = state.auth.authenticate(&session.token).await.unwrap();
+    let account_id = account(&state, &auth, true).await;
+    let start = Utc::now() + Duration::days(2);
+    let mut body = link_body(account_id, start);
+    body["calendar_id"] = json!("work@example.test");
+    body["conflict_calendar_ids"] = json!(["primary", "work@example.test", "holidays"]);
+    let fixture = SelectedCalendarFixture::new(None);
+    // Old grants keep primary available and explicitly request reconnection for discovery.
+    let (status, old_list) = request(
+        &app,
+        "GET",
+        &format!("/v1/calendar/accounts/{account_id}/calendars"),
+        Some(&session.token),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(old_list["requires_reconnect"], true);
+    let denied = calendar::create_link_with(
+        &state,
+        &auth,
+        serde_json::from_value(body.clone()).unwrap(),
+        &fixture,
+    )
+    .await;
+    assert!(denied.is_err());
+    // Upgrade only the fixture credential; no OAuth or provider traffic occurs.
+    let mut credentials = mail::account_session(&state, &auth, account_id)
+        .await
+        .unwrap()
+        .credentials;
+    credentials
+        .scopes
+        .push("https://www.googleapis.com/auth/calendar.calendarlist.readonly".into());
+    let sealed = state
+        .crypto
+        .seal(
+            workspace,
+            account_id,
+            &serde_json::to_vec(&credentials).unwrap(),
+        )
+        .unwrap();
+    let mut tx = auth.begin(&pool).await.unwrap();
+    sqlx::query("UPDATE provider_accounts SET encrypted_credentials=$2 WHERE id=$1")
+        .bind(account_id)
+        .bind(sealed)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let mut read_only = body.clone();
+    read_only["calendar_id"] = json!("holidays");
+    assert!(
+        calendar::create_link_with(
+            &state,
+            &auth,
+            serde_json::from_value(read_only).unwrap(),
+            &fixture
+        )
+        .await
+        .is_err()
+    );
+    let mut excluded = body.clone();
+    excluded["conflict_calendar_ids"] = json!(["primary"]);
+    assert!(
+        calendar::create_link_with(
+            &state,
+            &auth,
+            serde_json::from_value(excluded).unwrap(),
+            &fixture
+        )
+        .await
+        .is_err()
+    );
+    let link = serde_json::to_value(
+        calendar::create_link_with(
+            &state,
+            &auth,
+            serde_json::from_value(body.clone()).unwrap(),
+            &fixture,
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(link["calendar_id"], "work@example.test");
+    assert_eq!(link["conflict_calendar_ids"].as_array().unwrap().len(), 3);
+    let token = secret(&link);
+    let blocked = SelectedCalendarFixture::new(Some("holidays"));
+    assert!(
+        calendar::public_availability_with(&state, &token, &blocked)
+            .await
+            .unwrap()["slots"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        calendar::book_with(&state, &token, booking(&link, 0), &blocked)
+            .await
+            .is_err()
+    );
+    assert_eq!(blocked.creates.load(Ordering::SeqCst), 0);
+    let request = booking(&link, 0);
+    let booked = calendar::book_with(&state, &token, request.clone(), &fixture)
+        .await
+        .unwrap();
+    assert_eq!(booked.status, "uncertain");
+    assert_eq!(fixture.creates.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        fixture.target.lock().unwrap().as_deref(),
+        Some("work@example.test")
+    );
+    assert_eq!(
+        *fixture.checked.lock().unwrap(),
+        vec!["primary", "work@example.test", "holidays"]
+    );
+    assert_eq!(
+        calendar::reconcile_with(&state, &auth, booked.id, &fixture)
+            .await
+            .unwrap()
+            .status,
+        "uncertain"
+    );
+    assert!(
+        calendar::cancel_with(&state, &auth, booked.id, &fixture)
+            .await
+            .is_err()
+    );
+    fixture.absent.store(false, Ordering::SeqCst);
+    assert_eq!(
+        calendar::reconcile_with(&state, &auth, booked.id, &fixture)
+            .await
+            .unwrap()
+            .status,
+        "confirmed"
+    );
+    assert_eq!(
+        calendar::book_with(&state, &token, request.clone(), &fixture)
+            .await
+            .unwrap()
+            .status,
+        "confirmed"
+    );
+    assert_eq!(
+        calendar::cancel_with(&state, &auth, booked.id, &fixture)
+            .await
+            .unwrap()
+            .status,
+        "cancel_uncertain"
+    );
+    assert_eq!(
+        calendar::reconcile_with(&state, &auth, booked.id, &fixture)
+            .await
+            .unwrap()
+            .status,
+        "cancel_uncertain"
+    );
+    let availability = calendar::public_availability_with(&state, &token, &fixture)
+        .await
+        .unwrap();
+    assert_eq!(availability["slots"].as_array().unwrap().len(), 4);
+    fixture.ambiguous_cancel.store(false, Ordering::SeqCst);
+    assert_eq!(
+        calendar::cancel_with(&state, &auth, booked.id, &fixture)
+            .await
+            .unwrap()
+            .status,
+        "cancelled"
+    );
+    assert_eq!(
+        calendar::cancel_with(&state, &auth, booked.id, &fixture)
+            .await
+            .unwrap()
+            .status,
+        "cancelled"
+    );
+    assert_eq!(fixture.cancels.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.creates.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        calendar::public_availability_with(&state, &token, &fixture)
+            .await
+            .unwrap()["slots"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
+    assert_eq!(
+        calendar::book_with(&state, &token, request, &fixture)
+            .await
+            .unwrap()
+            .status,
+        "cancelled"
+    );
+    // Persist a bounded weekly definition and materialized slots through the same create path.
+    body["slots"] = json!([]);
+    body["availability"] = json!({"start_date":start.date_naive(),"end_date":(start + Duration::days(1)).date_naive(),"weekdays":[1,2,3,4,5,6,7],"start_minute":540,"end_minute":600});
+    let recurring = serde_json::to_value(
+        calendar::create_link_with(
+            &state,
+            &auth,
+            serde_json::from_value(body).unwrap(),
+            &fixture,
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(recurring["availability"].is_object());
+    assert_eq!(recurring["slots"].as_array().unwrap().len(), 4);
+    let (_, listed) = crate::request(
+        &app,
+        "GET",
+        "/v1/calendar/booking-links",
+        Some(&session.token),
+        Value::Null,
+    )
+    .await;
+    assert!(
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == recurring["id"] && item["availability"].is_object())
+    );
+    assert_eq!(fixture.creates.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn revoked_access_during_calendar_io_prevents_later_mutations() {
+    let url = std::env::var("POSTMERE_TEST_DATABASE_URL").expect("isolated test database");
+    let pool = db::connect(&url).await.unwrap();
+    db::migrate(&pool).await.unwrap();
+    let state = AppState::new(pool.clone(), common::config(url))
+        .await
+        .unwrap();
+    let app = application(state.clone(), calendar::router());
+    let workspace = Uuid::new_v4();
+    let email = format!("calendar-revocation-{}@example.test", Uuid::new_v4());
+    let hash = hash_password(Zeroizing::new(
+        "calendar fixture password long enough".into(),
+    ))
+    .await
+    .unwrap();
+    seed(&pool, workspace, &email, &hash).await;
+    for (cancel, change) in [
+        (true, "logout"),
+        (true, "disconnect"),
+        (true, "reconnect"),
+        (false, "logout"),
+        (false, "disconnect"),
+        (false, "reconnect"),
+        (true, "membership"),
+        (false, "membership"),
+    ] {
+        let session = login(&app, &email, workspace).await;
+        let auth = state.auth.authenticate(&session.token).await.unwrap();
+        let account_id = account(&state, &auth, true).await;
+        let mut credentials = mail::account_session(&state, &auth, account_id)
+            .await
+            .unwrap()
+            .credentials;
+        credentials
+            .scopes
+            .push("https://www.googleapis.com/auth/calendar.calendarlist.readonly".into());
+        let encrypted = state
+            .crypto
+            .seal(
+                workspace,
+                account_id,
+                &serde_json::to_vec(&credentials).unwrap(),
+            )
+            .unwrap();
+        let mut tx = auth.begin(&pool).await.unwrap();
+        sqlx::query("UPDATE provider_accounts SET encrypted_credentials=$2 WHERE id=$1")
+            .bind(account_id)
+            .bind(encrypted)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let fixture = Arc::new(SelectedCalendarFixture::new(None));
+        let mut body = link_body(account_id, Utc::now() + Duration::days(2));
+        body["calendar_id"] = json!("work@example.test");
+        body["conflict_calendar_ids"] = json!(["primary", "work@example.test"]);
+        let booking_id = if cancel {
+            let link = serde_json::to_value(
+                calendar::create_link_with(
+                    &state,
+                    &auth,
+                    serde_json::from_value(body.clone()).unwrap(),
+                    fixture.as_ref(),
+                )
+                .await
+                .unwrap(),
+            )
+            .unwrap();
+            let booked =
+                calendar::book_with(&state, &secret(&link), booking(&link, 0), fixture.as_ref())
+                    .await
+                    .unwrap();
+            fixture.absent.store(false, Ordering::SeqCst);
+            fixture.gate_lookup.store(true, Ordering::SeqCst);
+            Some(booked.id)
+        } else {
+            fixture.gate_calendars.store(true, Ordering::SeqCst);
+            None
+        };
+        let task_state = state.clone();
+        let task_auth = auth.clone();
+        let task_fixture = fixture.clone();
+        let task = tokio::spawn(async move {
+            if let Some(id) = booking_id {
+                calendar::cancel_with(&task_state, &task_auth, id, task_fixture.as_ref())
+                    .await
+                    .map(|_| ())
+            } else {
+                calendar::create_link_with(
+                    &task_state,
+                    &task_auth,
+                    serde_json::from_value(body).unwrap(),
+                    task_fixture.as_ref(),
+                )
+                .await
+                .map(|_| ())
+            }
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            fixture.started.notified(),
+        )
+        .await
+        .unwrap();
+        match change {
+            "logout" => {
+                sqlx::query("UPDATE sessions SET revoked_at=now() WHERE id=$1")
+                    .bind(session.session_id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            "membership" => {
+                sqlx::query(
+                    "UPDATE memberships SET revoked_at=now() WHERE workspace_id=$1 AND user_id=$2",
+                )
+                .bind(workspace)
+                .bind(auth.user_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            _ => {
+                let mut tx = auth.begin(&pool).await.unwrap();
+                let query = if change == "reconnect" {
+                    "UPDATE provider_accounts SET status='reconnect_required' WHERE id=$1"
+                } else {
+                    "UPDATE provider_accounts SET disabled_at=now() WHERE id=$1"
+                };
+                sqlx::query(query)
+                    .bind(account_id)
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            }
+        }
+        fixture.release.notify_one();
+        assert!(
+            task.await.unwrap().is_err(),
+            "revoked access must reject the final mutation"
+        );
+        assert_eq!(fixture.cancels.load(Ordering::SeqCst), 0);
+        let mut tx = auth.begin(&pool).await.unwrap();
+        if let Some(id) = booking_id {
+            let status: String =
+                sqlx::query_scalar("SELECT status FROM calendar_bookings WHERE id=$1")
+                    .bind(id)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .unwrap();
+            assert_eq!(status, "uncertain");
+            assert_eq!(fixture.creates.load(Ordering::SeqCst), 1);
+        } else {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM calendar_booking_links WHERE account_id=$1",
+            )
+            .bind(account_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+            assert_eq!(count, 0);
+            assert_eq!(fixture.creates.load(Ordering::SeqCst), 0);
+        }
+        tx.commit().await.unwrap();
+        if change == "membership" {
+            sqlx::query(
+                "UPDATE memberships SET revoked_at=NULL WHERE workspace_id=$1 AND user_id=$2",
+            )
+            .bind(workspace)
+            .bind(auth.user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    }
+}
