@@ -2,7 +2,10 @@ use postmere_core::{AppState, auth, config::Config, db};
 use postmere_mail::{mail, mail_sync};
 use postmere_server::{application, feature_routes};
 use sqlx::postgres::PgPoolOptions;
-use std::io::{IsTerminal, Read};
+use std::{
+    io::{IsTerminal, Read},
+    sync::Arc,
+};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -100,11 +103,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let pool = db::connect(&config.database_url).await?;
             let addr = config.bind_addr;
             let state = AppState::new(pool, config).await?;
+            let webhooks = Arc::new(postmere_webhooks::WebhookService::from_env(&state)?);
             let listener = tokio::net::TcpListener::bind(addr).await?;
             let worker = mail::spawn_delivery_worker(state.clone());
             let sync_worker = mail_sync::spawn_sync_worker(state.clone());
+            let webhook_worker = postmere_webhooks::spawn_worker(state.clone(), webhooks.clone());
             let (shutdown_sender, shutdown_signal) = postmere_realtime::shutdown_channel();
             let app = application(state, feature_routes())
+                .layer(axum::Extension(webhooks))
                 .layer(axum::Extension(shutdown_signal));
             tracing::info!(%addr, "Postmere API listening");
             let result = axum::serve(
@@ -118,8 +124,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .await;
             worker.abort();
             sync_worker.abort();
+            webhook_worker.abort();
             let _ = worker.await;
             let _ = sync_worker.await;
+            let _ = webhook_worker.await;
             result?;
         }
         _ => {

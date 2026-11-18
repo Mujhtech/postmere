@@ -131,6 +131,13 @@ pub async fn sync_account_with(
     if !acquired {
         return Err(AppError::conflict("This account is already synchronizing."));
     }
+    // Observe without locking: callbacks must be able to coalesce a newer hint
+    // while this transaction waits on the provider. Consume only this version.
+    let signal_generation: Option<i64> =
+        sqlx::query_scalar("SELECT generation FROM mail_sync_signals WHERE account_id=$1")
+            .bind(account)
+            .fetch_optional(&mut *tx)
+            .await?;
     schedule_account(&mut tx, workspace, user, account).await?;
     let encoded: serde_json::Value =
         sqlx::query_scalar("SELECT checkpoint FROM mail_sync_state WHERE account_id=$1 FOR UPDATE")
@@ -186,6 +193,13 @@ pub async fn sync_account_with(
         .bind(next)
         .execute(&mut *tx)
         .await?;
+    if let Some(observed) = signal_generation {
+        sqlx::query("DELETE FROM mail_sync_signals WHERE account_id=$1 AND generation<=$2")
+            .bind(account)
+            .bind(observed)
+            .execute(&mut *tx)
+            .await?;
+    }
     tx.commit().await?;
     Ok(MessagePage {
         messages: batch.messages,
@@ -241,7 +255,7 @@ pub async fn process_one_sync_with(
     state: &AppState,
     transport: &(impl SyncTransport + ?Sized),
 ) -> Result<bool, AppError> {
-    let row=sqlx::query("UPDATE mail_sync_wakeups SET lease_until=now()+interval '5 minutes' WHERE account_id=(SELECT account_id FROM mail_sync_wakeups WHERE due_at<=now() AND (lease_until IS NULL OR lease_until<now()) ORDER BY due_at,account_id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING account_id,workspace_id,user_id").fetch_optional(&state.pool).await?;
+    let row=sqlx::query("UPDATE mail_sync_wakeups SET lease_until=now()+interval '5 minutes' WHERE account_id=(SELECT w.account_id FROM mail_sync_wakeups w WHERE (w.due_at<=now() OR EXISTS(SELECT 1 FROM mail_sync_signals s WHERE s.account_id=w.account_id AND s.due_at<=now())) AND (w.lease_until IS NULL OR w.lease_until<now()) ORDER BY w.due_at,w.account_id FOR UPDATE OF w SKIP LOCKED LIMIT 1) RETURNING account_id,workspace_id,user_id").fetch_optional(&state.pool).await?;
     let Some(row) = row else { return Ok(false) };
     let account: Uuid = row.try_get("account_id")?;
     let workspace: Uuid = row.try_get("workspace_id")?;
@@ -254,9 +268,14 @@ pub async fn process_one_sync_with(
                 .bind(account)
                 .execute(&mut *tx)
                 .await?;
+            sqlx::query("DELETE FROM mail_sync_signals WHERE account_id=$1")
+                .bind(account)
+                .execute(&mut *tx)
+                .await?;
         } else {
             sqlx::query("UPDATE mail_sync_wakeups SET due_at=now()+interval '60 seconds',lease_until=NULL WHERE account_id=$1").bind(account).execute(&mut *tx).await?;
             sqlx::query("UPDATE mail_sync_state SET last_error='provider_sync_deferred',updated_at=now() WHERE account_id=$1").bind(account).execute(&mut *tx).await?;
+            sqlx::query("UPDATE mail_sync_signals SET due_at=clock_timestamp()+interval '60 seconds' WHERE account_id=$1").bind(account).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         return Err(error);

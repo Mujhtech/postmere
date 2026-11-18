@@ -1990,6 +1990,7 @@ dependencies = [
  "postmere-realtime",
  "postmere-tracking",
  "postmere-unsubscribe",
+ "postmere-webhooks",
  "reqwest",
  "ring",
  "serde",
@@ -2039,6 +2040,30 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "postmere-webhooks"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "getrandom 0.4.3",
+ "postmere-core",
+ "postmere-mail",
+ "postmere-providers",
+ "reqwest",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]
