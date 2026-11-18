@@ -4,9 +4,13 @@ Built and verified with Rust 1.96 and PostgreSQL 17; the schema supports Postgre
 This service hosts the workspace API; the desktop client keeps its bearer token
 in Keychain. No account, password, or provider access is enabled by default.
 
-The backend is a Cargo workspace with eight library crates and a small server
+The backend is a Cargo workspace with thirteen library crates and a small server
 crate that composes their routers and workers. See [the architecture guide](ARCHITECTURE.md)
 for crate ownership, dependency boundaries, and how to add features.
+
+For a self-hosted stack, use the included [Docker Compose setup](deploy/README.md)
+with PostgreSQL, automatic migrations, Caddy HTTPS, ChatGPT OAuth callbacks,
+and optional Apple push notifications.
 
 ## Configuration
 
@@ -17,19 +21,69 @@ Provide secrets through your deployment secret manager; do not commit them:
 | `DATABASE_URL` | PostgreSQL connection URL. Remote databases require `sslmode=verify-full`; loopback and Unix sockets are allowed for local development. |
 | `POSTMERE_PUBLIC_URL` | Public HTTPS origin; HTTP is accepted only on loopback for development. |
 | `POSTMERE_BIND` | Bind address; default `127.0.0.1:8080`. Containers normally use `0.0.0.0:8080`. |
+| `POSTMERE_MCP_REDIRECT_URIS` | JSON array of exact allowed MCP client OAuth callbacks. Defaults to `[]`, which disables new registrations. See [remote MCP setup](../docs/remote-mcp.md). |
 | `POSTMERE_CREDENTIAL_KEYS` | JSON object mapping integer key IDs to independent base64-encoded 32-byte keys. |
 | `POSTMERE_ACTIVE_CREDENTIAL_KEY` | Key ID used for new encrypted credentials. |
 | `POSTMERE_RATE_LIMIT_KEY` | Separate base64-encoded 32-byte secret for private rate-limit identities. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Optional Google OAuth web application credentials. |
 | `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` | Optional Microsoft confidential web application credentials. |
 | `MICROSOFT_TENANT` | Microsoft tenant ID/domain; default `common`. |
+| `POSTMERE_GMAIL_PUBSUB_TOPIC`, `POSTMERE_GMAIL_PUBSUB_SUBSCRIPTION`, `POSTMERE_GMAIL_PUSH_AUDIENCE`, `POSTMERE_GMAIL_PUSH_SERVICE_ACCOUNT` | Optional Gmail authenticated Pub/Sub delivery; configure all four together. |
+| `POSTMERE_MICROSOFT_WEBHOOKS` | Set `true` to maintain Microsoft mail subscriptions. Requires public HTTPS. |
 | `OPENAI_API_KEY`, `POSTMERE_AI_MODEL` | Optional AI provider configuration; user opt-in is separate. |
+| `POSTMERE_APNS_KEY_FILE`, `POSTMERE_APNS_KEY_ID`, `POSTMERE_APNS_TEAM_ID` | Optional server-only APNs `.p8` signing key path and Apple key/team identifiers. Configure all APNs values together. |
+| `POSTMERE_APNS_TOPIC`, `POSTMERE_APNS_ENVIRONMENT` | Signed app bundle ID and `sandbox` or `production`; these must match the app's provisioning. |
 
 Generate independent keys using a cryptographically secure random generator.
 Retain old credential keys during rotation: add a new key ID, make it active,
 then re-encrypt stored envelopes before retiring old keys. Removing a key before
 its data has been migrated makes those credentials unreadable. Back up the
 keyring separately from database backups.
+
+## Remote MCP
+
+`/mcp` serves authenticated Streamable HTTP using the official Rust MCP SDK.
+ChatGPT and other OAuth clients can read/search cached mail, maintain drafts,
+manage mailbox state, and request sending. Send, trash, and account-disconnect
+requests require explicit browser approval of the exact saved action. The MCP
+client has no approval tool. See [setup, permissions, and limits](../docs/remote-mcp.md).
+
+## Realtime updates and Apple push
+
+`GET /v1/events` provides an authenticated SSE stream of committed account,
+mail and outbox changes. The Mac app coalesces updates and refreshes the server
+cache without launching a provider sync for every event. Reconnects catch up from
+durable mail cursors; the stream itself is not an event history. See the
+[event contract](crates/postmere-realtime/README.md). Authenticated Gmail Pub/Sub
+and Microsoft Graph callbacks queue durable account sync hints. The subscription
+worker renews watches and reconciles interrupted registrations. Polling about
+every 60 seconds remains a fallback. See [provider notification setup](crates/postmere-webhooks/README.md).
+
+Optional APNs alerts can arrive when the Mac app is closed. Device registration
+uses `GET`, `PUT`, `PATCH`, and `DELETE /v1/push/devices/{installation_id}` under the native
+workspace session. Tokens are encrypted, scoped to the current user/workspace,
+and rebound when the same device changes identity. Alerts are queued for new,
+unread Inbox messages arriving after consent, account connection and registration.
+Historical imports and the user's own outgoing messages do not create alerts.
+
+The server honors per-account notification schedules, time zone and subject
+preview preferences. APNs receives a generic title and optional subject, with
+account-specific Focus filter criteria. Local reminders remain local. Versioned,
+encrypted sender policies apply the same account-scoped first-match rules as
+the Mac app: Inbox and Needs Reply allow unread Inbox alerts; Archive, Blocked,
+and screened unknown senders suppress them. `PATCH` updates preferences without
+waiting for a new APNs token callback. The app preserves the last server-confirmed
+delivery ownership while updates retry, preventing duplicate local alerts.
+Older servers retain local screening until they advertise policy support.
+
+Native registrations have no time-based expiry. They stop at logout, access
+revocation, account disconnection or when notifications are disabled. APNs
+delivery is best effort, and macOS can delay presentation while asleep or in
+Focus. Each individual mail alert expires after 24 hours to avoid delivering
+stale mail notifications; that limit does not expire the registration or stop
+future alerts. The queue does not retry ambiguous delivery outcomes. Follow the
+[APNs deployment steps](deploy/README.md#apple-push-notifications) for credentials,
+provisioning and a real device check.
 
 ## Database and first owner
 
@@ -53,13 +107,30 @@ limits use the actual TCP peer; spoofable forwarding headers are ignored.
 ## Authentication and storage boundaries
 
 `POST /v1/auth/login` accepts `{email,password,workspace_id}` and returns an opaque
-bearer token, expiry, absolute expiry, session/user/workspace IDs and role.
-Send `Authorization: Bearer <token>` on authenticated calls. Tokens last 24 hours;
-`POST /v1/auth/rotate` replaces the old token without extending the 30-day absolute
-session lifetime. Logout revokes the current token; logout-all revokes all of the
-user's sessions. User, workspace, and membership revocation are checked on every
-authenticated request. Native clients should remove locally stored tokens after
-logout or HTTP 401.
+bearer token, session/user/workspace IDs and role. Native sessions are persistent:
+`expires_at` and `absolute_expires_at` are both `null`, with no idle or absolute
+timeout. `GET /v1/auth/me` reports both lifetime fields and `persistent`, so an
+updated client can refresh previously cached expiry metadata after migration.
+Send `Authorization: Bearer <token>` on authenticated calls.
+
+`POST /v1/auth/rotate` replaces the old token and preserves the session's lifetime
+mode. Logout revokes the current token and existing MCP connections in that
+workspace; logout-all revokes all of the user's sessions. User, workspace, and
+membership revocation are checked on every authenticated request. Native tokens
+remain in Keychain until sign-out or invalidation. Browser cookies, authorization
+codes and access tokens remain short-lived; each MCP grant has its own persistent
+session and rotating refresh tokens, independent of the browser login.
+
+`POST /v1/auth/logout` accepts optional `{signed_out_at,revoke_mcp}`. Native clients
+persist the original RFC3339 sign-out timestamp for offline retries, preserving
+MCP grants created afterward. `revoke_mcp:false` is for canceled/failed-login
+credential cleanup, not an intentional workspace sign-out. Omitted fields mean
+current-time sign-out including MCP revocation.
+
+Migration `0011` upgrades still-valid native sessions without changing their
+tokens. It does not revive expired or revoked sessions, or extend browser OAuth
+sessions. Deploy the updated Mac app with the server so it can read the nullable
+expiry fields and replace its old cached deadlines.
 
 Passwords use Argon2id. Session tokens have 256 bits of randomness and only their
 SHA-256 hashes are stored. Login identity and TCP-peer rate limits are shared in
@@ -144,9 +215,9 @@ signatures at eight, with an eight-second DNS/verification deadline. Deployment
 egress must allow the provider APIs and DNS-over-TLS (TCP 853).
 
 Ordinary `Authentication-Results` headers are not accepted as proof: imported
-mail can contain sender-supplied copies. Direct Gmail in the Mac app therefore
-uses browser/email fallbacks; workspace Gmail and Microsoft can offer one-click
-only when raw verification succeeds. Invalid signatures, ambiguous fields,
+mail can contain sender-supplied copies. Workspace Gmail and Microsoft offer
+one-click only when raw verification succeeds; browser/email options remain
+available when verification fails. Invalid signatures, ambiguous fields,
 modified messages, unsupported signatures, and unavailable DNS fail closed to
 manual options. No message body or recipient is sent to the DNS resolver.
 
@@ -173,8 +244,12 @@ must reconnect with that explicit choice. Enable Google Calendar API on the
 OAuth project and configure the corresponding delegated calendar permission
 for Microsoft; no additional server secrets are needed.
 
-Calendar operations use the connected account's **primary calendar**. Google
-events are expanded across the requested interval; Microsoft uses calendarView.
+Booking links choose a writable destination calendar and up to eight calendars
+for conflict checks; the primary calendar remains the default. Discovery uses
+Google's additional `calendar.calendarlist.readonly` scope, or the existing
+Microsoft calendar grant. Older Google grants keep primary-calendar support
+and report `requires_reconnect:true` for discovery until consent is renewed.
+Google events are expanded across the requested interval; Microsoft uses calendarView.
 All-day times use the provider calendar's IANA time zone, including daylight
 saving transitions. Missing pages, unsupported time zones, provider errors, and
 lost access fail closed; they are not reported as free time. Adapters use fixed
@@ -182,24 +257,39 @@ HTTPS origins, bounded bodies/pages/timeouts, and validated pagination links.
 
 Authenticated API:
 
+- `GET /v1/calendar/accounts/{account_id}/calendars` returns
+  `{items:[{id,name,is_primary,can_write}],requires_reconnect}` for an owned account.
 - `GET /v1/calendar/booking-links` returns `{items:[...]}`. `POST` accepts
-  `{account_id,title,description,time_zone,duration_minutes,expires_at,slots}`;
-  each slot is `{start,end}` in RFC3339. Choose 15–240 minute meetings and up to
-  100 explicit future times within 90 days. The response includes `id`, `url`,
+  `{account_id,title,description,time_zone,duration_minutes,expires_at,slots,
+  calendar_id,conflict_calendar_ids,availability}`. Calendar fields default to
+  `primary`; 1–8 distinct conflict calendars must include the writable destination.
+  Each explicit slot is `{start,end}` in RFC3339. Choose 15–240 minute meetings and
+  up to 100 explicit future times within 90 days. Alternatively, supply
+  `availability:{start_date,end_date,weekdays,start_minute,end_minute}` with ISO
+  dates and Monday=1 through Sunday=7. Weekly hours materialize at most 1,000 slots
+  within 90 days and before expiry in the selected IANA time zone; ambiguous or
+  nonexistent DST times are omitted. Weekly rules and explicit slots are mutually
+  exclusive. The response preserves the calendar selection and rule plus `id`, `url`,
   `created_at`, `disabled_at`, and slots with stable UUIDs. `DELETE
   /v1/calendar/booking-links/{id}` revokes the link, without canceling meetings
   already sent to the provider.
 - `GET /v1/calendar/bookings` returns the owner's recent reservations with guest
-  name/email, start/end, and `checking`, `creating`, `confirmed`, `failed`, or
-  `uncertain` status. Guest details and reusable link secrets are encrypted at
+  name/email, start/end, and `checking`, `creating`, `confirmed`, `failed`,
+  `uncertain`, `cancelling`, `cancel_uncertain`, or `cancelled` status. Guest details and reusable link secrets are encrypted at
   rest; only token hashes authorize public access.
+- `POST /v1/calendar/bookings/{id}/reconcile` looks up the reservation by stable
+  provider identity without repeating creation. `POST /v1/calendar/bookings/{id}/cancel`
+  records cancellation intent before deleting the identified provider event.
+  Repeated cancellations address the same event; ambiguous/202 responses retain
+  the reservation as `cancel_uncertain`. Only confirmed cancellation releases it.
 - `GET /v1/calendar/sharing` returns owned calendars and explicitly shared
   calendars in the same workspace. `PUT /v1/calendar/sharing/{account_id}` with
-  `{enabled:true|false}` controls an owned account's sharing. Sharing is off by
+  `{enabled:true|false,calendar_ids:[...]}` controls an owned account's sharing;
+  omitted calendar IDs default to `primary`. Sharing is off by
   default. Revocation works without contacting the provider, including when
   OAuth credentials have expired.
 - `POST /v1/calendar/free-busy` accepts `{account_ids,start,end}` for up to eight
-  calendars and 31 days. It returns `{calendars:[{account_id,busy:[{start,end}]}],
+  accounts and 31 days, combining their explicitly selected calendars. It returns `{calendars:[{account_id,busy:[{start,end}]}],
   start,end}`. Only busy intervals are shared; event subjects, attendees, and
   bodies never leave the owner scope. The share is checked again after provider
   I/O so an in-flight revocation prevents disclosure.
@@ -228,12 +318,13 @@ same host account**, including overlapping alternative slots. The server
 commits a durable reservation, checks provider availability, rechecks link and
 account authorization, then records `creating` before sending an invitation.
 An ambiguous provider response or interrupted creation keeps the time blocked
-as `uncertain` and is never retried automatically. The host must inspect their
-provider calendar before resolving such a reservation operationally. No API can
-atomically lock a provider calendar against unrelated clients: a meeting added
-in another app between the availability check and event creation can still
-conflict. Secondary calendars, automatic recurring availability rules, and
-provider cancellation/reconciliation of uncertain bookings are not included.
+as `uncertain` and is never retried automatically. Check Status looks for the
+provider event using Google's deterministic event ID or Microsoft's persisted
+booking property. An absent uncertain creation stays reserved because absence
+alone does not prove the event was never created. Interrupted cancellations can
+be checked or retried against the same event. No API can atomically lock a provider
+calendar against unrelated clients: a meeting added in another app between the
+availability check and event creation can still conflict.
 
 The calendar integration test uses a real isolated PostgreSQL database and an
 injected calendar transport; it sends no real invitations. It covers tenant and
@@ -299,15 +390,21 @@ Provider access and refresh tokens never reach the desktop.
 
 Ordinary Gmail connections request `gmail.modify`. Microsoft connections request
 `offline_access User.Read Mail.ReadWrite Mail.Send`. The explicit body
-`{calendar_access:true}` additionally requests Google `calendar.events` or
-Microsoft `Calendars.ReadWrite`. The account gains the `calendar` capability only
+`{calendar_access:true}` additionally requests Google `calendar.events` and
+`calendar.calendarlist.readonly`, or Microsoft `Calendars.ReadWrite`. The account gains the `calendar` capability only
 when that request was explicit **and** the returned token grant includes the
 required scope. Refresh-token rotation is serialized per account, and a refresh
 that removes calendar permission removes its capability.
 
 `GET /v1/mail/accounts` returns an array of
 `{id,provider,email,display_name,status,last_synced_at,capabilities}`. Multiple
-accounts are scoped to their connecting user inside the workspace. Disconnect
+accounts are scoped to their connecting user inside the workspace. There is no
+configured limit on connected accounts; requests, provider quotas, and server
+capacity still bound throughput. Google and Microsoft sign-in both offer an
+account chooser. Reconnecting the same provider/email for one user retains its
+account ID and changes only that account’s credentials, even for simultaneous
+callbacks. The ten-attempt limit applies only to unfinished OAuth handshakes.
+Disconnect
 with `DELETE /v1/mail/accounts/{id}`; this disables the account, cancels pending
 sends, stops synchronization, and disables calendar sharing. It does not erase
 cached mail or claim to revoke consent at the provider.
@@ -316,7 +413,10 @@ cached mail or claim to revoke consent at the provider.
 
 The server starts a background account-sync worker alongside the send worker.
 OAuth connection and explicit synchronization seed an identifier-only scheduler.
-Each tick processes at most one account page. Active user/workspace membership
+Four concurrent workers each process at most one account page per tick. Due-time
+ordering gives other waiting accounts a turn before a busy account takes another
+page; one slow provider request does not block every account. Worker shutdown
+cancels in-flight child work. Active user/workspace membership
 and account ownership are checked before credentials are opened and again before
 results are committed. Disabled or revoked accounts are removed from the queue.
 Provider checkpoints and bounded batches survive server restarts.
