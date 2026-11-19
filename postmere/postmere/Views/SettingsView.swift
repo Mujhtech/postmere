@@ -100,6 +100,42 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .task(id: settingsTab == "general" && scenePhase == .active) {
+            guard settingsTab == "general", scenePhase == .active || runtime.defaultMail.status == nil else { return }
+            await runtime.defaultMail.refresh()
+        }
+    }
+
+    private var defaultMailSettings: some View {
+        let service = runtime.defaultMail
+        return Section("Default mail app") {
+            LabeledContent("Current default") {
+                if service.isRequesting {
+                    ProgressView("Waiting for macOS…").controlSize(.small)
+                } else {
+                    switch service.status {
+                    case nil:
+                        ProgressView("Checking…").controlSize(.small)
+                    case .postmere:
+                        Label("Postmere", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(palette.accentInk)
+                    case let .other(name):
+                        HStack(spacing: 12) {
+                            Text(name ?? "Unknown").foregroundStyle(.secondary)
+                            Button {
+                                Task { await service.makeDefault() }
+                            } label: {
+                                Text("Make Postmere default").foregroundStyle(palette.accentInk)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+            }
+            if let error = service.errorMessage {
+                Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+            }
+        }
     }
 
     private var privacySettings: some View {
@@ -243,23 +279,15 @@ struct SettingsView: View {
             case .provisional:
                 HStack {
                     Text("Delivered quietly")
-                    systemNotificationSettingsButton
+                    SystemNotificationSettingsButton()
                 }
             case .denied:
                 HStack {
                     Text("Off")
-                    systemNotificationSettingsButton
+                    SystemNotificationSettingsButton()
                 }
             @unknown default:
-                systemNotificationSettingsButton
-            }
-        }
-    }
-
-    private var systemNotificationSettingsButton: some View {
-        Button("Open System Settings…") {
-            if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
-                openURL(url)
+                SystemNotificationSettingsButton()
             }
         }
     }

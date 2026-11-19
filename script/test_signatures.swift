@@ -34,6 +34,13 @@ private struct SignatureChecks {
         let newRich = MailTemplate.richBody(text: newBody.text, rtf: newBody.rtfData)
         let font = newRich.attribute(.font, at: 2, effectiveRange: nil) as! NSFont
         precondition(NSFontManager.shared.traits(of: font).contains(.boldFontMask), "Initial composition must retain signature formatting")
+        let linked = newBody.prepending("Email link body")
+        let linkedRich = MailTemplate.richBody(text: linked.text, rtf: linked.rtfData)
+        let signatureStart = ("Email link body\n\n" as NSString).length
+        let linkedFont = linkedRich.attribute(.font, at: signatureStart, effectiveRange: nil) as! NSFont
+        precondition(linked.text == "Email link body\n\n" + custom.text
+                     && NSFontManager.shared.traits(of: linkedFont).contains(.boldFontMask),
+                     "Email link text should precede the original formatted account signature")
         let quoted = "On Tuesday, 👩🏽‍💻 Ada wrote:\n> Original message"
         let reply = reloaded.initialBody(for: "ada@example.com", context: .reply, quotedText: quoted)
         precondition(reply.text == "\n\n" + quoted, "Disabled reply signatures must preserve the full quote")

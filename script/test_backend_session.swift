@@ -274,8 +274,12 @@ struct BackendSessionFixtures {
     static func identities() async {
         let person = SessionPersona("owner@example.test")
         let store = SessionMemoryStore(); let session = fixture(store); install(person)
-        await login(session, person)
+        session.baseURL = "https://previous-workspace.example.test"
+        await session.login(email: person.email, password: "fixture password only",
+                            workspaceID: person.workspace.uuidString, serverURL: person.base)
         let saved = await store.value
+        check(saved?.baseURL == person.base && session.baseURL == person.base,
+              "Login did not use the workspace address chosen in the active window")
         check(session.isConnected && session.canAccessWorkspace && !session.isBusy, "Successful verified login did not unlock the workspace")
         check(saved?.userID == person.user && saved?.workspaceID == person.workspace && saved?.token == person.token, "Login stored the wrong identity")
         check(RemoteAccountRegistry.accounts.count == 1 && RemoteAccountRegistry.accounts[0].accountID == person.account, "Login registry did not install the connected provider account")

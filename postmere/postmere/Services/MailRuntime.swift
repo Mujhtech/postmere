@@ -53,7 +53,8 @@ final class MailRuntime {
     private var deferredIncomingNotificationIDs: Set<UUID> = []
     private var isFlushingDeferredNotifications = false
 
-    init(store: MailStore? = nil) {
+    init(store: MailStore? = nil, defaultMail: DefaultMailAppService? = nil) {
+        self.defaultMail = defaultMail ?? DefaultMailAppService()
         self.store = store ?? MailStore(openInBackground: true)
         mailboxCounts = MailboxCounts(store: self.store, dockAccounts: { [backend] in
             guard backend.canAccessWorkspace, let scope = backend.scope else { return [] }
@@ -107,6 +108,7 @@ final class MailRuntime {
     /// Save the current draft, but remove every transient mail presentation
     /// when the workspace session ends. The scene gate removes its view tree.
     func reconcileWorkspaceAccess() {
+        mailLinks.useWorkspace(backend.canAccessWorkspace ? backend.scope : nil)
         reconcileRealtime()
         let generation = backend.realtimeGeneration
         push.reset(generation: generation)

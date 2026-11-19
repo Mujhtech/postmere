@@ -14,15 +14,24 @@ struct AccountSettingsButton: View {
 }
 
 struct WorkspaceConnectionEmptyView: View {
+    @Environment(MailRuntime.self) private var runtime
+
     var body: some View {
-        ContentUnavailableView {
-            PostmereLabel.emptyState("Add your first email account", symbol: "envelope", size: 42)
-        } description: {
-            Text("Choose Google or Outlook in Accounts settings to start reading and sending mail.")
-                .frame(maxWidth: 340)
-        } actions: {
-            AccountSettingsButton(title: "Open Accounts Settings")
-                .buttonStyle(.borderedProminent)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Connect your inbox")
+                        .font(.system(.largeTitle, design: .serif, weight: .semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    Text("Choose where you read your mail.")
+                        .foregroundStyle(.secondary)
+                }
+                OnboardingInboxPicker(session: runtime.backend, onSync: runtime.sync)
+            }
+            .frame(maxWidth: 410)
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .defaultScrollAnchor(.center, for: .alignment)
     }
 }

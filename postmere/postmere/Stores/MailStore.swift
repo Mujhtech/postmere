@@ -550,6 +550,28 @@ final class MailStore {
         isComposing = true
     }
 
+    /// A URL may supply draft content. The sending identity comes from the active workspace.
+    func beginCompose(from link: MailLinkDraft, verifiedScope: String?) -> Bool {
+        guard let verifiedScope, !isComposing, !draftRecoveryAvailable, !isOpeningMailbox else { return false }
+        let accounts = MailAccount.sendingAccounts.filter { $0.remote?.scope == verifiedScope }
+        guard let account = accounts.first(where: { $0.rawValue == selectedAccount })
+            ?? accounts.first(where: { $0 == defaultSendingAccount }) ?? accounts.first else { return false }
+        persistenceSuspended += 1
+        beginCompose(account: account)
+        draftTo = link.to
+        draftCc = link.cc
+        draftBcc = link.bcc
+        draftSubject = link.subject
+        if let body = link.body, !body.isEmpty {
+            let content = MailSignatureBody(text: draftBody, rtfData: draftBodyRTF).prepending(body)
+            draftBody = content.text
+            draftBodyRTF = content.rtfData
+        }
+        persistenceSuspended -= 1
+        schedulePersistence()
+        return true
+    }
+
     func beginReplyAll(_ message: MailMessage) {
         guard !isComposing, !message.isDraft else { return }
         if draftRecoveryAvailable { recoverDraft(); return }
@@ -813,7 +835,7 @@ final class MailStore {
         initialDraft = currentDraft
     }
 
-    private var defaultSendingAccount: MailAccount {
+    var defaultSendingAccount: MailAccount {
         if let saved = UserDefaults.standard.string(forKey: "defaultSendingAccount").flatMap(MailAccount.init(rawValue:)), saved.isConnected { return saved }
         return MailAccount.sendingAccounts.first ?? .unassigned
     }

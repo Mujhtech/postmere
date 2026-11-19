@@ -1,24 +1,20 @@
 import SwiftUI
-import AppKit
 
 struct BackendConnectionView: View {
     @Bindable var session: BackendSession
     @Bindable var store: MailStore
     @Environment(\.openWindow) private var openWindow
-    var onSync: () async -> Void
+    var onSync: @MainActor @Sendable () async -> Void
     @State private var email = ""
     @State private var password = ""
     @State private var workspaceID = ""
-    @State private var connectingProvider: String?
-    @State private var reconnectingEmail: String?
-    @State private var connectionTask: Task<Void, Never>?
-    @State private var connectionID: UUID?
+    @State private var connection = MailAccountConnection()
     @State private var calendarAccess = false
     @State private var accountToDisconnect: BackendAccount?
     @State private var disconnectingAccountID: UUID?
 
     private var isManagingAccounts: Bool {
-        session.isBusy || connectingProvider != nil || disconnectingAccountID != nil
+        session.isBusy || connection.provider != nil || disconnectingAccountID != nil
     }
 
     var body: some View {
@@ -91,14 +87,14 @@ struct BackendConnectionView: View {
                         .disabled(isManagingAccounts)
                     Text("To add calendar access later, turn this on and reconnect the account.")
                         .font(.caption).foregroundStyle(.secondary)
-                    if connectingProvider != nil {
+                    if connection.provider != nil {
                         HStack {
                             ProgressView().controlSize(.small)
-                            Text(reconnectingEmail.map { "Sign in as \($0) in your browser." }
+                            Text(connection.reconnectingEmail.map { "Sign in as \($0) in your browser." }
                                  ?? "Finish signing in in your browser.")
                                 .font(.caption)
                             Spacer()
-                            Button("Cancel", action: cancelConnection)
+                            Button("Cancel", action: connection.cancel)
                         }
                     }
                 }
@@ -115,7 +111,7 @@ struct BackendConnectionView: View {
             }
         }
         .formStyle(.grouped)
-        .onDisappear(perform: cancelConnection)
+        .onDisappear(perform: connection.cancel)
         .confirmationDialog("Disconnect mail account?", isPresented: Binding(
             get: { accountToDisconnect != nil },
             set: { if !$0 { accountToDisconnect = nil } }
@@ -187,42 +183,8 @@ struct BackendConnectionView: View {
 
     private func connect(_ provider: String, reconnecting account: BackendAccount? = nil) {
         guard !isManagingAccounts else { return }
-        let id = UUID()
-        connectionID = id
-        session.errorMessage = nil
-        connectingProvider = provider
-        reconnectingEmail = account?.email
-        let includeCalendar = calendarAccess || account?.capabilities?.contains("calendar") == true
-        connectionTask = Task {
-            defer {
-                if connectionID == id {
-                    connectingProvider = nil
-                    reconnectingEmail = nil
-                    connectionID = nil
-                    connectionTask = nil
-                }
-            }
-            do {
-                let connection = try await session.startOAuth(provider: provider, calendarAccess: includeCalendar)
-                try Task.checkCancellation()
-                guard let url = URL(string: connection.authorizationUrl), url.scheme == "https",
-                      ["accounts.google.com", "login.microsoftonline.com"].contains(url.host ?? ""),
-                      url.user == nil, url.password == nil else { throw BackendError.invalidURL }
-                guard NSWorkspace.shared.open(url) else { throw BackendError.invalidURL }
-                try await session.waitForOAuth(connection, expectedAccountID: account?.id)
-                try Task.checkCancellation()
-                await onSync()
-            } catch is CancellationError { }
-            catch { if connectionID == id { session.errorMessage = error.localizedDescription } }
-        }
-    }
-
-    private func cancelConnection() {
-        connectionTask?.cancel()
-        connectionTask = nil
-        connectionID = nil
-        connectingProvider = nil
-        reconnectingEmail = nil
+        connection.start(provider, session: session, reconnecting: account,
+                         calendarAccess: calendarAccess) { await onSync() }
     }
 
     private func disconnect(_ account: BackendAccount) {

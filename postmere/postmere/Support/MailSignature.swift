@@ -54,6 +54,13 @@ struct MailSignature: Codable, Equatable {
 struct MailSignatureBody {
     let text: String
     let rtfData: Data?
+
+    @MainActor func prepending(_ message: String) -> MailSignatureBody {
+        guard !text.isEmpty else { return MailSignatureBody(text: message, rtfData: nil) }
+        let combined = NSMutableAttributedString(attributedString: MailTemplate.richBody(text: message, rtf: nil))
+        combined.append(MailTemplate.richBody(text: text, rtf: rtfData))
+        return MailSignatureBody(text: combined.string, rtfData: MailTemplate.encodeRTF(combined))
+    }
 }
 
 /// Local preferences contain signature text only, never provider credentials.

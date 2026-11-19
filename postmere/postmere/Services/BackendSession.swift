@@ -132,7 +132,7 @@ final class BackendSession {
         }
     }
 
-    func login(email: String, password: String, workspaceID: String) async {
+    func login(email: String, password: String, workspaceID: String, serverURL: String? = nil) async {
         guard !isBusy, !isWaitingForSignOut, credential == nil else { return }
         isBusy = true
         generation = UUID()
@@ -147,7 +147,7 @@ final class BackendSession {
                 throw BackendError.response(400, "Enter the workspace ID supplied by your server administrator.")
             }
             let loginEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
-            let client = try BackendHTTPClient(baseURL: baseURL, configuration: configuration)
+            let client = try BackendHTTPClient(baseURL: serverURL ?? baseURL, configuration: configuration)
             let response: SessionResponse = try await client.request("POST", "/v1/auth/login",
                 body: Login(email: loginEmail, password: password, workspaceId: workspace))
             issued = (client, response.token)
@@ -171,6 +171,7 @@ final class BackendSession {
             guard requestGeneration == generation, saved.isValid(at: .now) else { throw BackendError.notConnected }
             credential = saved
             transport = client
+            baseURL = saved.baseURL
             lastLifetimeCheck = .now
             preferences.set(saved.baseURL, forKey: "postmereServerURL")
             // The session is installed. A later account-list failure should not

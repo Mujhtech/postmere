@@ -131,7 +131,14 @@ struct ContentView: View {
         .focusedSceneValue(\.mailStore, store)
         .focusedSceneValue(\.isComposerWindow, false)
         .onAppear { runtime.openMailWindow = { openWindow(id: "mail") } }
-        .safeAreaInset(edge: .bottom, spacing: 0) { statusBanners }
+        .overlay(alignment: .bottomTrailing) {
+            MailStatusNotices(store: store, pendingMailLinks: runtime.mailLinks)
+        }
+        .onChange(of: runtime.mailLinks.canOpen(in: store, verifiedScope: runtime.backend.scope), initial: true) {
+            if runtime.backend.canAccessWorkspace {
+                runtime.mailLinks.openNext(in: store, verifiedScope: runtime.backend.scope)
+            }
+        }
         .sheet(isPresented: Binding(get: { runtime.showsCommandPalette }, set: { runtime.showsCommandPalette = $0 }), onDismiss: runtime.finishPaletteDismissal) {
             CommandPaletteView(store: store, runtime: runtime)
         }
@@ -152,17 +159,6 @@ struct ContentView: View {
         }
         .sheet(isPresented: Binding(get: { runtime.showsWorkspace }, set: { runtime.showsWorkspace = $0 })) {
             WorkspaceView(runtime: runtime)
-        }
-        .sheet(item: Binding(get: { runtime.schedulePurpose }, set: { runtime.schedulePurpose = $0 })) { purpose in
-            if let message = runtime.scheduleTarget {
-                MailScheduleSheet(purpose: purpose) { date, conditional in
-                    if purpose == .snooze { store.snoozeMessage(message.id, until: date) }
-                    else { store.setFollowUp(message.id, at: date, onlyIfNoReply: conditional) }
-                }
-            }
-        }
-        .sheet(isPresented: Binding(get: { runtime.showsPrivateNote }, set: { runtime.showsPrivateNote = $0 })) {
-            if let message = runtime.privateNoteTarget { PrivateNoteSheet(store: store, message: message) }
         }
         .onChange(of: store.isComposing) {
             if store.isComposing { openWindow(id: "compose") }
@@ -243,49 +239,6 @@ struct ContentView: View {
                 item.beginSearchInteraction()
             }
         }
-    }
-
-    private var statusBanners: some View {
-        VStack(spacing: 0) {
-            if let error = store.persistenceError {
-                banner(error, symbol: "externaldrive.badge.exclamationmark", isError: true) {
-                    Button("Retry", action: store.retryPersistence)
-                }
-            }
-            if let error = store.operationError {
-                banner(error, symbol: "exclamationmark.circle", isError: true) {
-                    Button("Dismiss") { store.operationError = nil }
-                }
-            }
-            if store.draftRecoveryAvailable {
-                banner("An unfinished message was recovered.", symbol: "doc") {
-                    Button("Resume", action: store.recoverDraft)
-                    Button("Discard", role: .destructive, action: store.discardRecoveredDraft)
-                }
-            }
-            TimelineView(.periodic(from: .now, by: 1)) { _ in
-                if let item = store.latestUndoableSend {
-                    banner(item.scheduledAt > item.undoUntil
-                           ? "Scheduled for \(item.scheduledAt.formatted(date: .abbreviated, time: .shortened))"
-                           : "Message queued · sending in \(max(0, Int(ceil(item.undoUntil.timeIntervalSinceNow)))) seconds", symbol: "paperplane") {
-                        Button("Undo Send", action: store.undoLastSend)
-                    }
-                }
-            }
-        }
-    }
-
-    private func banner<Actions: View>(_ text: String, symbol: String, isError: Bool = false, @ViewBuilder actions: () -> Actions) -> some View {
-        HStack(spacing: 12) {
-            Label {
-                Text(text).lineLimit(3)
-            } icon: {
-                PostmereIcon(symbol, size: 14).foregroundStyle(isError ? Color.red : PostmereTheme.icon)
-            }
-            Spacer()
-            actions()
-        }.font(.caption).controlSize(.small).padding(.horizontal, 18).padding(.vertical, 10)
-            .background(.bar)
     }
 }
 

@@ -16,12 +16,13 @@ struct postmereApp: App {
 
     var body: some Scene {
         Window("Postmere", id: "mail") {
-            WorkspaceSceneGate(runtime: runtime) {
+            WorkspaceSceneGate(runtime: runtime, offersInboxSetup: true) {
                 ContentView(store: store)
             }
                 .preferredColorScheme(appearance.colorScheme)
                 .postmereStyle()
         }
+        .handlesExternalEvents(matching: ["mailto:"])
         .defaultSize(width: 1280, height: 820)
         .windowToolbarStyle(.unified)
         .commands { MailCommands(store: store, runtime: runtime) }
@@ -52,6 +53,8 @@ struct postmereApp: App {
 private struct WorkspaceSceneGate<Content: View>: View {
     let runtime: MailRuntime
     var isComposer = false
+    var offersInboxSetup = false
+    @State private var finishingSetup = false
     @ViewBuilder var content: () -> Content
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismissWindow) private var dismissWindow
@@ -62,7 +65,15 @@ private struct WorkspaceSceneGate<Content: View>: View {
                 ProgressView("Opening mailbox…")
                     .controlSize(.small)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if runtime.backend.canAccessWorkspace {
+                    .mailboxWindowSurface()
+            } else if !runtime.backend.canAccessWorkspace || finishingSetup {
+                WorkspaceOnboardingView(session: runtime.backend, notifications: runtime.notifications,
+                                        defaultMail: runtime.defaultMail,
+                                        offersInboxSetup: offersInboxSetup,
+                                        onHoldSetup: { finishingSetup = $0 && offersInboxSetup },
+                                        onOpenMailbox: { finishingSetup = false },
+                                        onSync: { await runtime.syncBackend() })
+            } else {
                 if isComposer && !runtime.canResumeComposer {
                     ContentUnavailableView {
                         PostmereLabel.emptyState("Draft kept in another workspace", symbol: "doc", size: 38)
@@ -73,14 +84,13 @@ private struct WorkspaceSceneGate<Content: View>: View {
                 } else {
                     content().id(runtime.backend.scope)
                 }
-            } else {
-                WorkspaceOnboardingView(session: runtime.backend)
             }
         }
         .environment(runtime)
         .task { runtime.start() }
         .onChange(of: runtime.backend.canAccessWorkspace) {
             runtime.reconcileWorkspaceAccess()
+            if !runtime.backend.canAccessWorkspace { finishingSetup = false }
             if isComposer, !runtime.backend.canAccessWorkspace, !runtime.store.isComposing {
                 dismissWindow(id: "compose")
             }

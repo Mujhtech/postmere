@@ -165,6 +165,7 @@ enum RegressionFailure: Error { case failed(String) }
             scope: "fixture:workspace:user", email: "me@example.com", displayName: "Me", provider: "gmail")
         RemoteAccountRegistry.accounts = [workspaceAccount]
         defer { RemoteAccountRegistry.accounts = [] }
+        try mailLinks(directory: directory, account: workspaceAccount)
         try scopedDraftRecovery(directory: directory, account: workspaceAccount)
         let stateURL = directory.appendingPathComponent("state.json")
         let initial = MailMessage(sender: "Pat", senderEmail: "pat@example.com", initials: "P", subject: "A question", preview: "Hello", paragraphs: ["Hello"], timeLabel: "10:00", isUnread: true, sentAt: .now.addingTimeInterval(-100))
@@ -485,7 +486,10 @@ enum RegressionFailure: Error { case failed(String) }
         switched.discardRecoveredDraft()
         try check(!switched.isComposing && switched.recoveredDraft?.body == "Latest workspace A body",
                   "direct recovery and discard cannot expose or delete an unavailable workspace draft")
-        switched.beginCompose()
+        let links = MailLinkDrafts()
+        links.receive(URL(string: "mailto:new@example.com")!, verifiedScope: other.scope)
+        try check(links.openNext(in: switched, verifiedScope: other.scope),
+                  "an email link can open when the recovery belongs to another workspace")
         try check(switched.isComposing && switched.draftAccount.rawValue == other.localID && switched.draftBody != "Latest workspace A body",
                   "new composition cannot automatically reopen another workspace's recovery")
         let preserved = switched.messages.first { $0.id == originalID }!
