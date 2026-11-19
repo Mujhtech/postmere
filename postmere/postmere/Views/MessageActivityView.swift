@@ -24,6 +24,7 @@ nonisolated struct BackendActivityEvent: Decodable, Identifiable, Sendable {
 }
 
 struct MessageActivityButton: View {
+    @Environment(\.postmereAccent) private var palette
     let message: MailMessage
     let session: BackendSession
     @State private var isPresented = false
@@ -31,6 +32,7 @@ struct MessageActivityButton: View {
     var body: some View {
         Button { isPresented.toggle() } label: {
             PostmereLabel("Message activity", symbol: "eye", size: 12)
+                .foregroundStyle(palette.accentInk)
         }
         .onChange(of: message.id) { isPresented = false }
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
@@ -102,6 +104,8 @@ private struct MessageActivityView: View {
                 if let error {
                     Text(error).foregroundStyle(.secondary)
                     Button("Try Again") { refreshRevision += 1 }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                 }
             }
             .font(.callout)
@@ -111,6 +115,7 @@ private struct MessageActivityView: View {
         }
         .scrollBounceBehavior(.basedOnSize)
         .frame(width: 360, height: min(contentHeight, 396))
+        .foregroundStyle(Color.primary)
         .task(id: refreshRevision) { await refresh() }
     }
 

@@ -412,7 +412,6 @@ struct ReaderView: View {
                 }
                 if showsActivity {
                     MessageActivityButton(message: message, session: runtime.backend)
-                        .foregroundStyle(palette.accentInk)
                         .id(store.selectedMessageID)
                     if message.trackOpens != true && message.trackLinks != true {
                         Text("Tracking off").foregroundStyle(.secondary)
