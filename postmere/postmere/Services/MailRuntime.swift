@@ -188,9 +188,9 @@ final class MailRuntime {
 
     func synchronizePush(forceStatus: Bool = false) async {
         notifications.reconcileAccounts()
-        let authorized = notifications.authorizationStatus == .authorized || notifications.authorizationStatus == .provisional
+        guard notifications.hasCheckedAuthorization else { return }
         let preferences = MailPushPreferences.workspace(accounts: RemoteAccountRegistry.accounts, profiles: notifications.profiles,
-            authorized: authorized, senderScreeningEnabled: store.senderScreeningEnabled, senderRules: store.senderRules)
+            authorized: notifications.isAuthorized, senderScreeningEnabled: store.senderScreeningEnabled, senderRules: store.senderRules)
         await push.synchronize(session: backend, preferences: preferences, forceStatus: forceStatus)
         await flushDeferredIncomingNotifications()
     }

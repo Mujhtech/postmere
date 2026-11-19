@@ -93,6 +93,9 @@ private struct IncomingNotificationRecord: Codable {
 final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate {
     var profiles: [NotificationProfile] { didSet { savePreferences() } }
     private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
+    private(set) var hasCheckedAuthorization = false
+    private(set) var isRequestingAuthorization = false
+    private(set) var authorizationError: String?
     private(set) var lastError: String?
     @ObservationIgnored var openMessage: ((UUID) -> Void)?
     @ObservationIgnored var openRemoteMessage: ((MailPushDestination) -> Void)?
@@ -106,6 +109,7 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
     @ObservationIgnored private var scheduledFingerprint = ""
     @ObservationIgnored private var nextReconciliation = Date.distantPast
     @ObservationIgnored private var lastAuthorizationCheck = Date.distantPast
+    @ObservationIgnored private var latestAuthorizationRead: UUID?
     @ObservationIgnored private var deliveryRecords: [String: ReminderDeliveryRecord]
     @ObservationIgnored private var dueSnoozes: [String: Date]
     @ObservationIgnored private var incomingRecords: [String: IncomingNotificationRecord]
@@ -139,17 +143,30 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func refreshAuthorization(now: Date = .now) async {
+        let read = UUID()
+        latestAuthorizationRead = read
         let status = await client.authorizationStatus()
-        let changed = authorizationStatus != status
-        if changed { scheduledFingerprint = "" }
+        guard latestAuthorizationRead == read else { return }
+        let changed = !hasCheckedAuthorization || authorizationStatus != status
+        hasCheckedAuthorization = true
         authorizationStatus = status
+        if isAuthorized { authorizationError = nil }
         lastAuthorizationCheck = now
-        if changed { onPreferencesChanged?() }
+        if changed {
+            scheduledFingerprint = ""
+            if isReconciling { needsReconciliation = true }
+            onPreferencesChanged?()
+        }
     }
 
     func requestAuthorization() async {
-        do { try await client.requestAuthorization(); lastError = nil }
-        catch { lastError = error.localizedDescription }
+        guard !isRequestingAuthorization else { return }
+        isRequestingAuthorization = true
+        defer { isRequestingAuthorization = false }
+        if !hasCheckedAuthorization { await refreshAuthorization() }
+        guard authorizationStatus == .notDetermined || authorizationStatus == .provisional else { return }
+        do { try await client.requestAuthorization(); authorizationError = nil }
+        catch { authorizationError = error.localizedDescription }
         await refreshAuthorization()
     }
 
@@ -203,7 +220,7 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
         } catch { lastError = error.localizedDescription }
     }
 
-    private var isAuthorized: Bool { authorizationStatus == .authorized || authorizationStatus == .provisional }
+    var isAuthorized: Bool { authorizationStatus == .authorized || authorizationStatus == .provisional }
 
     func notificationPolicyChanged() { scheduledFingerprint = "" }
 

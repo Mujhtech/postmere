@@ -19,11 +19,20 @@ private final class FakeNotificationClient: MailNotificationClient {
     var removedDelivered: [String] = []
     var failAdds = false
     var authorizationRequests = 0
+    var beforeAuthorizationRead: (() async -> Void)?
+    var duringAuthorizationRequest: (() async throws -> Void)?
     var beforePendingRead: (() async -> Void)?
     var duringAdd: (() async -> Void)?
     func setDelegate(_ delegate: any UNUserNotificationCenterDelegate) {}
-    func authorizationStatus() async -> UNAuthorizationStatus { status }
-    func requestAuthorization() async throws { authorizationRequests += 1 }
+    func authorizationStatus() async -> UNAuthorizationStatus {
+        let snapshot = status
+        if let action = beforeAuthorizationRead { beforeAuthorizationRead = nil; await action() }
+        return snapshot
+    }
+    func requestAuthorization() async throws {
+        authorizationRequests += 1
+        if let action = duringAuthorizationRequest { duringAuthorizationRequest = nil; try await action() }
+    }
     func pendingRequests() async -> [UNNotificationRequest] {
         if let action = beforePendingRead { beforePendingRead = nil; await action() }
         return Array(pending.values)
@@ -63,6 +72,7 @@ private struct NotificationChecks {
         try schedules(calendar: utc)
         try focusAndPlanning()
         try await reconciliation(calendar: utc)
+        try await authorizationChanges()
         try await overdueAndQuietHours(calendar: utc)
         try await budgetAndRetry(calendar: utc)
         try await manyAccountProfiles(calendar: utc)
@@ -319,7 +329,7 @@ private struct NotificationChecks {
     }
 
     @MainActor
-    static func withService(_ body: (MailNotificationService, FakeNotificationClient, UserDefaults) async throws -> Void) async throws {
+    static func withService(expectedRequests: Int = 0, _ body: (MailNotificationService, FakeNotificationClient, UserDefaults) async throws -> Void) async throws {
         let suite = "PostmereNotificationChecks.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -327,7 +337,43 @@ private struct NotificationChecks {
         let service = MailNotificationService(client: client, preferences: defaults)
         service.profiles = [NotificationProfile(id: "remote:fixture:work", enabled: true), NotificationProfile(id: "remote:fixture:personal"), NotificationProfile(id: "remote:fixture:third")]
         try await body(service, client, defaults)
-        try expect(client.authorizationRequests == 0, "Reconciliation must not request permission")
+        try expect(client.authorizationRequests == expectedRequests, "Unexpected number of permission requests")
+    }
+
+    @MainActor
+    static func authorizationChanges() async throws {
+        try await withService(expectedRequests: 1) { service, client, _ in
+            try expect(!service.hasCheckedAuthorization, "Unqueried permission must remain distinguishable from a new installation")
+            client.status = .notDetermined
+            var changes: [UNAuthorizationStatus] = []
+            service.onPreferencesChanged = { changes.append(service.authorizationStatus) }
+            await service.refreshAuthorization()
+            client.duringAuthorizationRequest = {
+                try expect(service.isRequestingAuthorization, "Permission controls must reflect an in-flight request")
+                await service.requestAuthorization()
+                client.status = .authorized
+            }
+            client.beforeAuthorizationRead = { await service.requestAuthorization() }
+            await service.refreshAuthorization()
+            try expect(service.hasCheckedAuthorization && service.isAuthorized && !service.isRequestingAuthorization,
+                       "A late permission snapshot must not overwrite the user's new authorization")
+            try expect(changes == [.notDetermined, .authorized], "Mirror the initial permission and each actual change once")
+            await service.requestAuthorization()
+        }
+        try await withService(expectedRequests: 1) { service, client, _ in
+            client.status = .notDetermined
+            client.duringAuthorizationRequest = { throw NotificationCheckFailure(description: "Fixture prompt failed") }
+            await service.requestAuthorization()
+            await service.reconcileReminders(messages: [])
+            try expect(service.authorizationError != nil, "Reminder reconciliation must retain a permission request error")
+            client.status = .authorized
+            await service.refreshAuthorization()
+            try expect(service.authorizationError == nil, "A later system grant must clear an obsolete permission error")
+            client.status = .denied
+            await service.refreshAuthorization()
+            await service.requestAuthorization()
+        }
+        print("PASS: permission loading, concurrent refresh, prompt deduplication, denial and later system grant")
     }
 
     @MainActor

@@ -32,7 +32,7 @@ nonisolated final class PushFixtureServer: @unchecked Sendable {
     private var enabled = true
     private var configured = true
     private var environment = "sandbox"
-    private var failNextStatus = false
+    private var nextStatusError: Int?
     private var failNextUpdate = false
     private var policyVersion: Int? = 1
     private var heldUpdate: (@Sendable (PushHeldRequest) -> Void)?
@@ -45,7 +45,7 @@ nonisolated final class PushFixtureServer: @unchecked Sendable {
     var registrations: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return registrationValues }
     var preferenceUpdates: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return preferenceValues }
     func setConfigured(_ value: Bool) { lock.lock(); defer { lock.unlock() }; configured = value }
-    func failStatusOnce() { lock.lock(); defer { lock.unlock() }; failNextStatus = true }
+    func failStatusOnce(_ code: Int = 503) { lock.lock(); defer { lock.unlock() }; nextStatusError = code }
     func failUpdateOnce() { lock.lock(); defer { lock.unlock() }; failNextUpdate = true }
     func setPolicyVersion(_ value: Int?) { lock.lock(); defer { lock.unlock() }; policyVersion = value }
     func holdNextUpdate(_ receive: @escaping @Sendable (PushHeldRequest) -> Void) { lock.lock(); defer { lock.unlock() }; heldUpdate = receive }
@@ -69,10 +69,10 @@ nonisolated final class PushFixtureServer: @unchecked Sendable {
             fixture.response(204)
         } else if path.hasPrefix("/v1/push/devices/") {
             lock.lock()
-            if request.httpMethod == "GET", failNextStatus {
-                failNextStatus = false
+            if request.httpMethod == "GET", let code = nextStatusError {
+                nextStatusError = nil
                 lock.unlock()
-                fixture.response(503)
+                fixture.response(code)
                 return
             }
             if ["PUT", "PATCH"].contains(request.httpMethod ?? ""), let hold = heldUpdate {
@@ -155,12 +155,19 @@ struct BackendPushFixtures {
         try realtimeCheck(server.registrations.isEmpty, "Locally missing token must not invent registration")
         try realtimeCheck(server.preferenceUpdates.count == 1 && server.preferenceUpdates[0]["token"] == nil,
                           "Existing registration preferences were not updated before an APNs callback")
+        let enabledStatus = service.statusText
+        service.registrationFailed()
+        server.failStatusOnce(404)
+        await service.synchronize(session: session, preferences: preferences, forceStatus: true)
+        try realtimeCheck(service.remoteAccountIDs.isEmpty && service.allowsLocalIncoming(for: account.localID)
+                          && service.statusText != enabledStatus && service.lastError != nil,
+                          "Missing device must clear old delivery status and retain the pending Apple registration error")
 
         let token = Data([0,1,2,0xfd,0xfe,0xff,0x7f])
         service.registered(token: token)
         service.registered(token: token)
         await service.synchronize(session: session, preferences: preferences)
-        try realtimeCheck(server.registrations.count == 2, "Every identical APNs registration callback must still upload")
+        try realtimeCheck(server.registrations.count == 2 && service.lastError == nil, "Every identical APNs registration callback must still upload and clear a previous registration error")
         let uploaded = server.registrations[0]
         try realtimeCheck(uploaded["token"] as? String == "000102fdfeff7f" && uploaded["environment"] as? String == "sandbox", "Opaque token conversion or signed environment changed")
         let uploadedAccount = (uploaded["accounts"] as! [[String: Any]])[0]
@@ -200,8 +207,10 @@ struct BackendPushFixtures {
         let unsigned = MailPushService(preferences: defaults, environment: nil)
         let beforeUnsigned = RealtimeFixtureProtocol.recorder.requests.count
         unsigned.registered(token: token)
+        unsigned.registrationFailed()
         await unsigned.synchronize(session: session, preferences: preferences)
-        try realtimeCheck(RealtimeFixtureProtocol.recorder.requests.count == beforeUnsigned && unsigned.remoteAccountIDs.isEmpty,
+        try realtimeCheck(RealtimeFixtureProtocol.recorder.requests.count == beforeUnsigned && unsigned.remoteAccountIDs.isEmpty &&
+                          unsigned.lastError == nil && unsigned.statusText.contains("while Postmere is open"),
                           "Unsigned build chose a guessed APNs environment or claimed remote delivery")
         server.setConfigured(false)
         await service.synchronize(session: session, preferences: preferences, forceStatus: true)
@@ -243,10 +252,14 @@ struct BackendPushFixtures {
 
         let oldGeneration = session.realtimeGeneration
         session.clearSession()
-        try realtimeCheck(service.remoteAccountIDs.isEmpty, "Session clear retained stale remote notification ownership")
+        try realtimeCheck(service.remoteAccountIDs.isEmpty && service.statusText.contains("Sign in") && service.lastError == nil,
+                          "Session clear retained stale notification ownership, status or errors")
         await storage.save(credential)
         await session.restore()
         try realtimeCheck(session.realtimeGeneration != oldGeneration, "Same user/workspace restore reused the old login generation")
+        // The workspace scene reconciles its push generation when verified access resumes.
+        service.reset(generation: session.realtimeGeneration)
+        try realtimeCheck(service.statusText.contains("Checking"), "A new login showed stale background notification status before its own lookup")
         let registrationsBeforeRestore = server.registrations.count
         await service.synchronize(session: session, preferences: preferences)
         try realtimeCheck(server.registrations.count == registrationsBeforeRestore,

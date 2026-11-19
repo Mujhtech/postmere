@@ -4,6 +4,7 @@ import UserNotifications
 struct SettingsView: View {
     @Bindable var store: MailStore
     @Bindable var runtime: MailRuntime
+    @Environment(\.openURL) private var openURL
     @AppStorage("markdownSubstitutions") private var markdownSubstitutions = true
     @AppStorage("undoSendDelay") private var undoSendDelay = 10.0
     @State private var selectedNotificationAccount = ""
@@ -26,12 +27,12 @@ struct SettingsView: View {
             shortcutSettings.tabItem { PostmereLabel("Shortcuts", symbol: "keyboard", size: 18) }.tag("shortcuts")
         }
         .padding(.top, 8)
-        .tint(PostmereTheme.accent)
+        .tint(PostmereTheme.accentInk)
         .frame(width: 640, height: 590)
         .sheet(isPresented: $showsInboxManager) { InboxManagementView(store: store) }
         .onChange(of: MailAccount.allCases.map(\.rawValue), initial: true) {
             if !MailAccount.allCases.contains(where: { $0.rawValue == selectedNotificationAccount }) {
-                selectedNotificationAccount = MailAccount.allCases.first?.rawValue ?? ""
+                selectedNotificationAccount = (MailAccount.allCases.first(where: \.isConnected) ?? MailAccount.allCases.first)?.rawValue ?? ""
             }
         }
     }
@@ -131,60 +132,102 @@ struct SettingsView: View {
 
     private var notificationSettings: some View {
         Form {
-            Section("Permission") {
-                HStack {
-                    Text(notificationPermissionText)
-                    Spacer()
-                    Button("Enable Notifications") { Task { await runtime.notifications.requestAuthorization() } }
+            Section {
+                LabeledContent("Notifications on this Mac") {
+                    notificationPermissionControl
+                }
+                if let error = runtime.notifications.authorizationError { Text(error).font(.caption).foregroundStyle(.red) }
+            }
+            Section("Account notifications") {
+                if MailAccount.allCases.isEmpty {
+                    LabeledContent("No accounts connected") { AccountSettingsButton(title: "Add an Account…") }
+                } else {
+                    Picker("Account", selection: $selectedNotificationAccount) {
+                        ForEach(MailAccount.allCases) { Text($0.email).tag($0.rawValue) }
+                    }
+                    if let account = MailAccount(rawValue: selectedNotificationAccount), !account.isConnected {
+                        LabeledContent("Reconnect to receive notifications") {
+                            AccountSettingsButton(title: "Open Accounts…")
+                        }
+                    }
+                    Toggle("Notify me about this account", isOn: notificationProfile.enabled)
+                    if notificationProfile.wrappedValue.enabled {
+                        Toggle("Show message subject", isOn: notificationProfile.showPreview)
+                        Toggle("Only during these hours", isOn: notificationProfile.scheduleEnabled)
+                        if notificationProfile.wrappedValue.scheduleEnabled { notificationSchedule }
+                    }
                 }
                 if let error = runtime.notifications.lastError { Text(error).font(.caption).foregroundStyle(.red) }
             }
-            Section("Account schedule") {
-                Picker("Account", selection: $selectedNotificationAccount) {
-                    if MailAccount.allCases.isEmpty { Text("No accounts connected").tag("") }
-                    ForEach(MailAccount.allCases) { Text($0.email).tag($0.rawValue) }
-                }
-                Toggle("Allow notifications", isOn: notificationProfile.enabled)
-                Toggle("Show message subject", isOn: notificationProfile.showPreview)
-                    .disabled(!notificationProfile.wrappedValue.enabled)
-                Toggle("Only during these hours", isOn: notificationProfile.scheduleEnabled)
-                    .disabled(!notificationProfile.wrappedValue.enabled)
-                if notificationProfile.wrappedValue.scheduleEnabled {
-                    DatePicker("From", selection: minuteBinding(notificationProfile.startMinute), displayedComponents: .hourAndMinute)
-                    DatePicker("Until", selection: minuteBinding(notificationProfile.endMinute), displayedComponents: .hourAndMinute)
-                    HStack(spacing: 6) {
-                        ForEach(1...7, id: \.self) { day in
-                            Toggle(Calendar.current.shortWeekdaySymbols[day - 1], isOn: Binding(get: {
-                                notificationProfile.wrappedValue.weekdays.contains(day)
-                            }, set: { enabled in
-                                if enabled { notificationProfile.wrappedValue.weekdays.insert(day) }
-                                else { notificationProfile.wrappedValue.weekdays.remove(day) }
-                            })).toggleStyle(.button)
-                        }
-                    }
-                    Text("Times use your Mac’s time zone. Overnight schedules continue into the next morning.").font(.caption).foregroundStyle(.secondary)
-                }
-            }.disabled(MailAccount.allCases.isEmpty)
             Section("Focus") {
-                Text("In System Settings → Focus, add Postmere as a Focus Filter to choose which accounts may notify you. Your Focus and notification permissions still apply.")
+                Text("To limit alerts to specific accounts during a Focus, add a Postmere filter in System Settings → Focus.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Section("While Postmere is closed") {
                 Text(runtime.push.statusText).font(.caption).foregroundStyle(.secondary)
                 if let error = runtime.push.lastError { Text(error).font(.caption).foregroundStyle(.secondary) }
-                Text("Apple push delivery follows your account schedules and system Focus settings while you stay signed in. Sign-in continues until you sign out or workspace access is revoked. Accounts with local sender screening or blocking rules use local notifications while Postmere is open.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }.formStyle(.grouped)
             .task { await runtime.notifications.refreshAuthorization() }
     }
 
-    private var notificationPermissionText: String {
-        switch runtime.notifications.authorizationStatus {
-        case .authorized, .provisional: "Notifications are allowed"
-        case .denied: "Notifications are disabled in System Settings"
-        default: "Notifications are off until you enable them"
+    @ViewBuilder
+    private var notificationPermissionControl: some View {
+        let notifications = runtime.notifications
+        if !notifications.hasCheckedAuthorization || notifications.isRequestingAuthorization {
+            ProgressView(notifications.isRequestingAuthorization ? "Waiting for permission…" : "Checking permission…")
+                .controlSize(.small)
+        } else {
+            switch notifications.authorizationStatus {
+            case .notDetermined:
+                Button("Enable Notifications…") { Task { await notifications.requestAuthorization() } }
+            case .authorized:
+                Label {
+                    Text("Allowed")
+                } icon: {
+                    PostmereIcon("checkmark.circle", size: 15).foregroundStyle(PostmereTheme.accentInk)
+                }
+                .labelStyle(.titleAndIcon)
+            case .provisional:
+                HStack {
+                    Text("Delivered quietly")
+                    systemNotificationSettingsButton
+                }
+            case .denied:
+                HStack {
+                    Text("Off")
+                    systemNotificationSettingsButton
+                }
+            @unknown default:
+                systemNotificationSettingsButton
+            }
         }
+    }
+
+    private var systemNotificationSettingsButton: some View {
+        Button("Open System Settings…") {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
+                openURL(url)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var notificationSchedule: some View {
+        DatePicker("From", selection: minuteBinding(notificationProfile.startMinute), displayedComponents: .hourAndMinute)
+        DatePicker("Until", selection: minuteBinding(notificationProfile.endMinute), displayedComponents: .hourAndMinute)
+        HStack(spacing: 6) {
+            ForEach(1...7, id: \.self) { day in
+                Toggle(Calendar.current.shortWeekdaySymbols[day - 1], isOn: Binding(get: {
+                    notificationProfile.wrappedValue.weekdays.contains(day)
+                }, set: { enabled in
+                    if enabled { notificationProfile.wrappedValue.weekdays.insert(day) }
+                    else { notificationProfile.wrappedValue.weekdays.remove(day) }
+                })).toggleStyle(.button)
+            }
+        }
+        Text("Times use your Mac’s time zone. Overnight schedules continue into the next morning.")
+            .font(.caption).foregroundStyle(.secondary)
     }
 
     private func minuteBinding(_ minutes: Binding<Int>) -> Binding<Date> {
