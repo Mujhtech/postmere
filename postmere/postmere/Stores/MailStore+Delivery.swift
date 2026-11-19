@@ -259,6 +259,7 @@ extension MailStore {
                 let previous = combined[existingIndex]
                 if let backendID = message.backendMessageID, newerLabels.contains(backendID) {
                     message.providerLabelIDs = previous.providerLabelIDs
+                    message.providerCategories = previous.providerCategories
                 }
                 message.id = previous.id
                 message.conversationID = previous.conversationID

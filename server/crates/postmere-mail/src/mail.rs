@@ -32,6 +32,7 @@ use zeroize::Zeroizing;
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .merge(crate::mail_labels::router(crate::mail_labels::HttpLabels))
         .route("/v1/mail/accounts", get(accounts))
         .route("/v1/mail/accounts/{id}", axum::routing::delete(disconnect))
         .route("/v1/mail/oauth/{provider}/start", post(oauth_start))

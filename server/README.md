@@ -389,7 +389,8 @@ The PKCE verifier is encrypted with the connection ID as part of its binding.
 Provider access and refresh tokens never reach the desktop.
 
 Ordinary Gmail connections request `gmail.modify`. Microsoft connections request
-`offline_access User.Read Mail.ReadWrite Mail.Send`. The explicit body
+`offline_access User.Read Mail.ReadWrite Mail.Send MailboxSettings.ReadWrite`.
+Existing Microsoft connections can reconnect to grant access to Outlook's category list. The explicit body
 `{calendar_access:true}` additionally requests Google `calendar.events` and
 `calendar.calendarlist.readonly`, or Microsoft `Calendars.ReadWrite`. The account gains the `calendar` capability only
 when that request was explicit **and** the returned token grant includes the
@@ -450,6 +451,10 @@ treat missing pages as deletions.
 | --- | --- |
 | `GET /v1/mail/messages?account_id=&query=&cursor=&limit=` | Search/browse the scoped server cache. This route uses plain text; native advanced query parsing remains local. |
 | `GET /v1/mail/messages/{id}` | Fetch one normalized cached message, including RFC threading metadata. Add `?view=envelope` to fetch recipient and delivery details without the body or attachments. |
+| `GET /v1/mail/accounts/{account}/labels` | List editable Gmail labels or Outlook categories for this account. |
+| `POST /v1/mail/accounts/{account}/labels` | Create a label or category with `{"name":"…"}` and return its provider ID and name. |
+| `GET /v1/mail/accounts/{account}/messages/{message}/label` | Return the provider catalog and the message’s currently applied label IDs. |
+| `PUT /v1/mail/accounts/{account}/messages/{message}/label` | Apply or remove one provider label using `{"label_id":"…","applied":true}`. Return the updated message. Older Outlook grants can return HTTP 412 until reconnected. |
 | `POST /v1/mail/accounts/{id}/search` | `{query,cursor?,limit?}` searches deeper at the provider and caches the results. Query syntax is Gmail search or Microsoft Graph search, respectively. |
 | `PATCH /v1/mail/messages/{id}` | `{is_read?,is_starred?,mailbox?}`; destinations are `inbox`, `archive`, or `trash`. Returns `{}` after provider confirmation and cache update. |
 | `GET /v1/mail/messages/{id}/attachments/{attachment_id}` | Return an attachment owned by that scoped message, with a 25 MiB download limit. |

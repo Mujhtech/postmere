@@ -21,6 +21,7 @@ final class BackendSession {
     @ObservationIgnored private var transport: BackendHTTPClient?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var accountsGeneration = UUID()
+    @ObservationIgnored private var lastLabelCatalog: (account: String, labels: [ProviderLabel])?
     @ObservationIgnored var onAccountCatalogChanged: (() -> Void)?
     @ObservationIgnored var pushInstallationID: UUID?
     @ObservationIgnored private var isCheckingLifetime = false
@@ -269,6 +270,7 @@ final class BackendSession {
 
     func clearSession() {
         generation = UUID()
+        lastLabelCatalog = nil
         credential = nil
         transport = nil
         isRestoring = false
@@ -433,6 +435,9 @@ final class BackendSession {
                                   scope: scope, email: $0.email, displayName: $0.displayName ?? $0.email,
                                   provider: $0.provider, status: $0.status)
         }
+        if let lastLabelCatalog, !RemoteAccountRegistry.accounts.contains(where: {
+            $0.localID == lastLabelCatalog.account && $0.status == "connected"
+        }) { self.lastLabelCatalog = nil }
         // Focus queries can run in a separate process. Persist only the account
         // catalog; bearer tokens and provider credentials never enter defaults.
         if let catalog = try? JSONEncoder().encode(RemoteAccountRegistry.accounts) {
@@ -517,6 +522,49 @@ final class BackendSession {
             guard requestGeneration == generation else { throw BackendError.notConnected }
             return response
         } catch { await invalidateExpiredSession(error, generation: requestGeneration); throw error }
+    }
+
+    private func requireConnected(_ account: RemoteAccountIdentity) throws {
+        guard isAccountConnected(account.accountID, scope: account.scope) else { throw BackendError.notConnected }
+    }
+
+    private func labelPath(account: RemoteAccountIdentity, messageID: UUID) -> String {
+        "/v1/mail/accounts/\(account.accountID)/messages/\(messageID)/label"
+    }
+
+    func cachedLabels(account: RemoteAccountIdentity) -> [ProviderLabel]? {
+        guard lastLabelCatalog?.account == account.localID, isAccountConnected(account.accountID, scope: account.scope) else { return nil }
+        return lastLabelCatalog?.labels
+    }
+
+    func labelSelection(account: RemoteAccountIdentity, messageID: UUID) async throws -> MessageLabelSelection {
+        try requireConnected(account)
+        let requestGeneration = generation
+        let selection: MessageLabelSelection = try await request("GET", labelPath(account: account, messageID: messageID))
+        let sorted = await selection.sortedByName()
+        try Task.checkCancellation()
+        guard generation == requestGeneration else { throw BackendError.notConnected }
+        try requireConnected(account)
+        lastLabelCatalog = (account.localID, sorted.labels)
+        return sorted
+    }
+
+    func createLabel(name: String, account: RemoteAccountIdentity) async throws -> ProviderLabel {
+        try requireConnected(account)
+        let label: ProviderLabel = try await request("POST", "/v1/mail/accounts/\(account.accountID)/labels",
+                                                     body: CreateProviderLabel(name: name))
+        try requireConnected(account)
+        if lastLabelCatalog?.account == account.localID { lastLabelCatalog = nil }
+        return label
+    }
+
+    func setLabel(_ labelID: String, applied: Bool, account: RemoteAccountIdentity, messageID: UUID) async throws -> BackendMailMessage {
+        try requireConnected(account)
+        let updated: BackendMailMessage = try await request("PUT", labelPath(account: account, messageID: messageID),
+                                                           body: SetProviderLabel(labelId: labelID, applied: applied))
+        try requireConnected(account)
+        guard updated.accountId == account.accountID, updated.id == messageID else { throw BackendError.invalidResponse }
+        return updated
     }
 
     func bytes(_ path: String) async throws -> Data {

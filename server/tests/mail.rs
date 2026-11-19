@@ -11,6 +11,7 @@ use postmere_core::AppState;
 use postmere_core::auth::{AuthContext, SessionResponse, hash_password};
 use postmere_core::db;
 use postmere_mail::mail::{self, DeliveryTransport};
+use postmere_mail::mail_labels::{self, LabelTransport};
 use postmere_mail::mail_sync::{self, SyncTransport};
 use postmere_providers::{
     self as provider, Credentials, Outgoing, Provider, ProviderError, SyncBatch, SyncCheckpoint,
@@ -21,7 +22,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 use std::sync::{
-    Mutex,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 use tower::ServiceExt;
@@ -122,6 +123,246 @@ async fn seed_account(state: &AppState, auth: &AuthContext, email: &str) -> Uuid
 }
 fn outgoing(account: Uuid) -> Value {
     json!({"client_id":Uuid::new_v4(),"account_id":account,"to":[{"name":"Reader","email":"reader@example.com"}],"cc":[],"bcc":[],"subject":"Mail worker fixture","text_body":"Hello","html_body":"<p>Hello <a href=\"https://example.com/visit?a=1&amp;b=2\">link</a></p>","attachments":[],"undo_seconds":10,"track_opens":false,"track_links":false})
+}
+
+#[derive(Clone)]
+struct FixtureLabels {
+    catalog: Arc<Mutex<Vec<provider::MailLabel>>>,
+    message: Arc<Mutex<provider::Message>>,
+}
+
+impl LabelTransport for FixtureLabels {
+    async fn list(
+        &self,
+        _: &AppState,
+        _: &mail::AccountSession,
+    ) -> Result<Vec<provider::MailLabel>, postmere_core::error::AppError> {
+        Ok(self.catalog.lock().unwrap().clone())
+    }
+    async fn create(
+        &self,
+        _: &AppState,
+        _: &mail::AccountSession,
+        name: &str,
+    ) -> Result<provider::MailLabel, postmere_core::error::AppError> {
+        let label = provider::MailLabel {
+            id: "opaque-new".into(),
+            name: name.into(),
+        };
+        self.catalog.lock().unwrap().push(label.clone());
+        Ok(label)
+    }
+    async fn membership(
+        &self,
+        _: &AppState,
+        session: &mail::AccountSession,
+        id: &str,
+    ) -> Result<Vec<String>, postmere_core::error::AppError> {
+        let message = self.message.lock().unwrap();
+        assert_eq!(id, message.provider_message_id);
+        Ok(if session.account.provider == "microsoft" {
+            message.categories.clone()
+        } else {
+            message.provider_labels.clone()
+        })
+    }
+    async fn set(
+        &self,
+        _: &AppState,
+        session: &mail::AccountSession,
+        id: &str,
+        label_id: &str,
+        add: bool,
+    ) -> Result<provider::Message, postmere_core::error::AppError> {
+        let labels = self.catalog.lock().unwrap();
+        let label = labels
+            .iter()
+            .find(|entry| entry.id == label_id)
+            .ok_or_else(postmere_core::error::AppError::not_found)?;
+        let mut msg = self.message.lock().unwrap();
+        assert_eq!(id, msg.provider_message_id);
+        assert_eq!(session.account.id, msg.account_id);
+        let (members, key) = if session.account.provider == "microsoft" {
+            (&mut msg.categories, &label.name)
+        } else {
+            (&mut msg.provider_labels, &label.id)
+        };
+        if add && !members.contains(key) {
+            members.push(key.clone())
+        }
+        if !add {
+            members.retain(|value| value != key)
+        }
+        Ok(msg.clone())
+    }
+}
+
+async fn label_routes(
+    state: &AppState,
+    auth: &AuthContext,
+    token: &str,
+    foreign_token: &str,
+    cached: &provider::Message,
+) {
+    let account = cached.account_id;
+    let mut remote = cached.clone();
+    remote.provider_labels.push("opaque-other".into());
+    let fixture = FixtureLabels {
+        catalog: Arc::new(Mutex::new(vec![provider::MailLabel {
+            id: "opaque-other".into(),
+            name: "Personal".into(),
+        }])),
+        message: Arc::new(Mutex::new(remote)),
+    };
+    let app = application(state.clone(), mail_labels::router(fixture.clone()));
+    let catalog = format!("/v1/mail/accounts/{account}/labels");
+    let message = format!("/v1/mail/accounts/{account}/messages/{}/label", cached.id);
+    let applied = json!({"label_id":"opaque-new","applied":true});
+    assert_eq!(
+        request(&app, "GET", &catalog, None, Value::Null).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(&app, "GET", &catalog, Some(foreign_token), Value::Null)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(&app, "PUT", &message, Some(foreign_token), applied.clone())
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(&app, "GET", &catalog, Some(token), Value::Null)
+            .await
+            .1["labels"][0]["name"],
+        "Personal"
+    );
+    assert_eq!(
+        request(&app, "GET", &message, Some(token), Value::Null)
+            .await
+            .1["applied_label_ids"],
+        json!(["opaque-other"]),
+        "picker must use current provider state instead of the stale cache"
+    );
+    assert_eq!(
+        request(&app, "POST", &catalog, Some(token), json!({"name":"  " }))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &catalog,
+            Some(token),
+            json!({"name":"  Projects  " })
+        )
+        .await
+        .1,
+        json!({"id":"opaque-new","name":"Projects"})
+    );
+    let other_account = seed_account(state, auth, "label-fixture@example.test").await;
+    let wrong_target = format!(
+        "/v1/mail/accounts/{other_account}/messages/{}/label",
+        cached.id
+    );
+    assert_eq!(
+        request(&app, "PUT", &wrong_target, Some(token), applied.clone())
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    for _ in 0..2 {
+        let (status, updated) = request(&app, "PUT", &message, Some(token), applied.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{updated}");
+        assert_eq!(updated["id"], json!(cached.id));
+        assert_eq!(
+            updated["provider_labels"],
+            json!(["INBOX", "opaque-other", "opaque-new"])
+        );
+    }
+    let removed = request(
+        &app,
+        "PUT",
+        &message,
+        Some(token),
+        json!({"label_id":"opaque-new","applied":false}),
+    )
+    .await;
+    assert_eq!(
+        removed.1["provider_labels"],
+        json!(["INBOX", "opaque-other"])
+    );
+    assert_eq!(
+        mail::cached_message(state, auth, cached.id)
+            .await
+            .unwrap()
+            .provider_labels,
+        vec!["INBOX", "opaque-other"]
+    );
+
+    // The second account represents a Microsoft account connected before the
+    // category grant existed. Grant consent and verify the same HTTP picker.
+    let mut tx = auth.begin(&state.pool).await.unwrap();
+    sqlx::query("UPDATE provider_accounts SET provider='microsoft' WHERE id=$1")
+        .bind(other_account)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let office_catalog = format!("/v1/mail/accounts/{other_account}/labels");
+    let consent = request(&app, "GET", &office_catalog, Some(token), Value::Null).await;
+    assert_eq!(consent.0, StatusCode::PRECONDITION_FAILED);
+    assert_eq!(consent.1["error"]["code"], "label_permission_required");
+    let creds = Credentials {
+        access_token: "fixture".into(),
+        refresh_token: None,
+        expires_at: Utc::now() + Duration::hours(1),
+        scopes: vec!["MailboxSettings.ReadWrite".into(), "Mail.ReadWrite".into()],
+    };
+    let encrypted = state
+        .crypto
+        .seal(
+            auth.workspace_id,
+            other_account,
+            &serde_json::to_vec(&creds).unwrap(),
+        )
+        .unwrap();
+    let mut office = cached.clone();
+    office.id = Uuid::new_v4();
+    office.account_id = other_account;
+    office.provider_labels = vec!["folder-id".into()];
+    office.categories = vec![];
+    let mut tx = auth.begin(&state.pool).await.unwrap();
+    sqlx::query("UPDATE provider_accounts SET encrypted_credentials=$2 WHERE id=$1")
+        .bind(other_account)
+        .bind(encrypted)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let mut old_json = serde_json::to_value(&office).unwrap();
+    old_json.as_object_mut().unwrap().remove("categories");
+    sqlx::query("INSERT INTO mail_messages(id,workspace_id,user_id,account_id,provider_message_id,provider_thread_id,sent_at,normalized,search_text) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'')").bind(office.id).bind(auth.workspace_id).bind(auth.user_id).bind(other_account).bind(&office.provider_message_id).bind(&office.provider_thread_id).bind(office.sent_at).bind(old_json).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    office.categories = vec!["Personal".into()];
+    let office_path = format!(
+        "/v1/mail/accounts/{other_account}/messages/{}/label",
+        office.id
+    );
+    *fixture.message.lock().unwrap() = office;
+    assert_eq!(
+        request(&app, "GET", &office_path, Some(token), Value::Null)
+            .await
+            .1["applied_label_ids"],
+        json!(["opaque-other"])
+    );
+    let changed = request(&app, "PUT", &office_path, Some(token), applied).await;
+    assert_eq!(changed.1["categories"], json!(["Personal", "Projects"]));
+    assert_eq!(changed.1["provider_labels"], json!(["folder-id"]));
 }
 async fn queue(app: &Router, token: &str, body: Value) -> Uuid {
     let (status, response) = request(app, "POST", "/v1/mail/outbox", Some(token), body).await;
@@ -269,6 +510,7 @@ async fn mail_scope_oauth_idempotency_worker_and_tracking_without_live_network()
     sqlx::query("INSERT INTO mail_messages(id,workspace_id,user_id,account_id,provider_message_id,provider_thread_id,sent_at,normalized,search_text) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'Scope fixture Private body')").bind(message.id).bind(workspace).bind(user).bind(account).bind(&message.provider_message_id).bind(&message.provider_thread_id).bind(message.sent_at).bind(serde_json::to_value(&message).unwrap()).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     let message_path = format!("/v1/mail/messages/{}", message.id);
+    label_routes(&state, &auth, &session.token, &peer_session.token, &message).await;
     assert_eq!(
         request(
             &app,

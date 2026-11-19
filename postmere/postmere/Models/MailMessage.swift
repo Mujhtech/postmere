@@ -262,6 +262,7 @@ struct MailMessage: Codable, Identifiable {
     var references: [String]
     var bodyHTML: String?
     var providerLabelIDs: [String]
+    var providerCategories: [String]?
     var envelopeDetails: MailEnvelopeDetails?
     var providerDeletedAt: Date?
     // Optional so mailbox snapshots created before unsubscribe support still decode.

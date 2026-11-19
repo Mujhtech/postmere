@@ -71,6 +71,34 @@ import Foundation
               && backgroundStore.messages.first?.isDeletedOnProvider == false,
               "a provider page from an abandoned account cannot install rows or advance its cursor")
 
+    func labels(_ ids: [String], categories: [String]?) -> BackendMailMessage {
+        var row = BackendMailMessage(id: messageID, accountId: accountID, providerMessageId: payload.providerMessageId,
+            providerThreadId: payload.providerThreadId, subject: "Label order", from: payload.from, to: [], cc: [], bcc: [],
+            textBody: "Updated body", htmlBody: nil, preview: "Updated body", sentAt: payload.sentAt, isRead: true,
+            isStarred: false, mailbox: "inbox", providerLabels: ids, attachments: [], listUnsubscribe: [], listUnsubscribePost: [])
+        row.categories = categories
+        return row
+    }
+    let labelStore = MailStore(messages: [one])
+    let beforeFirstEdit = labelStore.beginProviderPage(for: first.localID)
+    labelStore.applyProviderLabels(labels(["Project"], categories: ["Blue"]), messageID: one.id, account: first)
+    let beforeSecondEdit = labelStore.beginProviderPage(for: first.localID)
+    labelStore.applyProviderLabels(labels(["Project", "Review"], categories: ["Orange"]), messageID: one.id, account: first)
+    let staleLabelPage = BackendMailPage(messages: [labels([], categories: nil)], nextCursor: nil, hasMore: false)
+    try check(await labelStore.applyBackendPage(staleLabelPage, identity: first, read: beforeFirstEdit)
+              && labelStore.messages.first?.providerLabelIDs == ["Project", "Review"]
+              && labelStore.messages.first?.providerCategories == ["Orange"]
+              && labelStore.messages.first?.preview == "Updated body",
+              "an earlier page preserves multiple confirmed label/category edits while applying other message updates")
+    labelStore.endProviderPage(beforeFirstEdit)
+    let newer = BackendMailPage(messages: [labels(["External"], categories: [])], nextCursor: nil, hasMore: false)
+    try check(await labelStore.applyBackendPage(newer, identity: first)
+              && labelStore.messages.first?.providerLabelIDs == ["External"] && labelStore.messages.first?.providerCategories == [],
+              "a fetch started after label editing accepts later remote label and category changes")
+    try check(await labelStore.applyBackendPage(staleLabelPage, identity: first, read: beforeSecondEdit)
+              && labelStore.messages.first?.providerLabelIDs == ["External"] && labelStore.messages.first?.providerCategories == [],
+              "out-of-order older responses cannot overwrite a newer remote label result")
+    labelStore.endProviderPage(beforeSecondEdit)
     let brokenURL = directory.appendingPathComponent("blocked-remote-state.json")
     try Data("invalid JSON".utf8).write(to: brokenURL)
     let blocked = MailStore(messages: [], persistenceURL: brokenURL)

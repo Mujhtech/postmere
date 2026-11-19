@@ -18,6 +18,22 @@ extension MailStore {
         activeProviderPages.removeAll { $0 === read }
     }
 
+    func applyProviderLabels(_ updated: BackendMailMessage, messageID: UUID, account: RemoteAccountIdentity) {
+        guard updated.accountId == account.accountID,
+              let index = messages.firstIndex(where: {
+                  $0.id == messageID && $0.account == account.localID && $0.backendMessageID == updated.id
+              }) else { return }
+        for read in activeProviderPages where read.account == account.localID { read.newerLabels.insert(updated.id) }
+        var message = messages[index]
+        guard message.providerLabelIDs != updated.providerLabels || message.providerCategories != updated.categories else { return }
+        message.providerLabelIDs = updated.providerLabels
+        message.providerCategories = updated.categories
+        let previousSuppression = suppressRemoteMutations
+        suppressRemoteMutations = true
+        defer { suppressRemoteMutations = previousSuppression }
+        messages[index] = message
+    }
+
     /// Establish once, before the account's first network sync. Paging older
     /// history and replaying a retired cursor must not redefine what is new.
     /// Keeping this date across launches still admits mail received while the

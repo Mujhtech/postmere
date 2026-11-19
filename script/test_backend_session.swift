@@ -204,6 +204,7 @@ struct BackendSessionFixtures {
         await signOutCutoffs()
         progress("Checking many-account identity, reconnect and disconnect isolation")
         await manyAccounts()
+        try await labels()
         progress("Checking stale network and credential-store responses")
         await races()
         if !failures.isEmpty {
@@ -217,6 +218,57 @@ struct BackendSessionFixtures {
         print("PASS: persistent lifetime, expired-cache migration, network/408 recovery, atomic upgrades and durable offline sign-out")
         print("PASS: original sign-out time survives retries/relaunch, legacy jobs omit MCP revocation, and rejected-login cleanup preserves MCP connections")
         print("PASS: all credentials in memory, preferences in isolated suites, and all HTTP requests mocked; no Keychain or real server accessed")
+    }
+
+    static func labels() async throws {
+        let person = SessionPersona("labels@example.test"), id = UUID()
+        let session = fixture(SessionMemoryStore())
+        install(person)
+        await login(session, person)
+        guard let account = RemoteAccountRegistry.accounts.first else { throw BackendError.notConnected }
+        let path = "/v1/mail/accounts/\(account.accountID)/messages/\(id)/label"
+        let response = try JSONSerialization.data(withJSONObject: [
+            "id": id.uuidString, "account_id": account.accountID.uuidString, "provider_message_id": "remote",
+            "subject": "Sample", "from": ["email": "team@example.test"], "to": [], "cc": [], "bcc": [],
+            "text_body": "Body", "preview": "Body", "sent_at": "2026-11-19T09:00:00Z", "is_read": true,
+            "is_starred": false, "mailbox": "inbox", "provider_labels": ["folder", "a"], "categories": ["rEvIeW"],
+            "attachments": [], "list_unsubscribe": [], "list_unsubscribe_post": []
+        ] as [String: Any])
+        SessionFixtureProtocol.handler = { request, fixture in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", path):
+                fixture.respond(200, Data(#"{"labels":[{"id":"b","name":"Review"},{"id":"a","name":"Inbox work"}],"applied_label_ids":["a"]}"#.utf8))
+            case ("POST", "/v1/mail/accounts/\(account.accountID)/labels"):
+                fixture.respond(200, Data(#"{"id":"b","name":"Review"}"#.utf8))
+            case ("PUT", path):
+                fixture.respond(200, response)
+            default: fixture.respond(404)
+            }
+        }
+        var selection = try await session.labelSelection(account: account, messageID: id)
+        check(selection.appliedLabelIds == ["a"], "Label picker lost the provider's initial selection")
+        let cached = session.cachedLabels(account: account) ?? []
+        check(cached.map(\.id) == ["a", "b"], "The label catalogue should be sorted once and available on reopen")
+        let outlookPreview = await MessageLabelSelection.preview(labels: cached, labelIDs: ["a"], categories: ["REVIEW"], outlook: true)
+        check(outlookPreview.appliedLabelIds == ["b"], "Cached Outlook rows should use this message's categories")
+        let gmailPreview = await MessageLabelSelection.preview(labels: cached, labelIDs: ["a"], categories: ["Review"], outlook: false)
+        check(gmailPreview.appliedLabelIds == ["a"], "Cached Gmail rows should use this message's label IDs")
+        let created = try await session.createLabel(name: "Review", account: account)
+        let updated = try await session.setLabel(created.id, applied: false, account: account, messageID: id)
+        let requestBody = SessionFixtureProtocol.recorder.values.last?.body ?? Data()
+        let wire = try JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
+        check(wire?["label_id"] as? String == "b" && wire?["applied"] as? Bool == false, "Label remove used the wrong PUT body")
+        selection.updateMembership(from: updated, outlook: true)
+        check(selection.appliedLabelIds == ["b"], "Outlook categories must match names case-insensitively without selecting folder IDs")
+        selection.updateMembership(from: updated, outlook: false)
+        check(selection.appliedLabelIds == ["a"], "Gmail membership must use catalog IDs")
+        SessionFixtureProtocol.handler = { _, fixture in fixture.respond(412) }
+        do {
+            _ = try await session.labelSelection(account: account, messageID: id)
+            check(false, "Missing category consent must reach the picker")
+        } catch BackendError.response(412, _) {}
+        session.clearSession()
+        check(session.cachedLabels(account: account) == nil, "A signed-out account exposed its previous label catalogue")
     }
 
     static func identities() async {

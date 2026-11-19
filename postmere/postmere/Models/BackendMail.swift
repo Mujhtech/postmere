@@ -67,6 +67,7 @@ nonisolated struct BackendMailMessage: Decodable, Sendable {
     var rfcMessageId: String? = nil
     var inReplyTo: String? = nil
     var references: [String]? = nil
+    var categories: [String]? = nil
     var dkimSignatures: [String]? = nil
     var deliveryHeaders: MailDeliveryHeaders? = nil
 }
@@ -129,6 +130,7 @@ extension BackendMailMessage {
         message.rfcMessageID = rfcMessageId
         message.inReplyTo = inReplyTo
         message.references = references ?? []
+        message.providerCategories = categories
         message.envelopeDetails = envelopeDetails
         return message
     }
@@ -138,4 +140,45 @@ extension BackendMailMessage {
         return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
                            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
     }
+}
+
+nonisolated struct ProviderLabel: Decodable, Identifiable, Sendable {
+    let id: String
+    let name: String
+}
+
+nonisolated struct MessageLabelSelection: Decodable, Sendable {
+    var labels: [ProviderLabel]
+    var appliedLabelIds: Set<String>
+
+    @concurrent func sortedByName() async -> Self {
+        var result = self
+        result.labels.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return result
+    }
+
+    @concurrent static func preview(labels: [ProviderLabel], labelIDs: [String], categories: [String]?, outlook: Bool) async -> Self {
+        var result = Self(labels: labels, appliedLabelIds: [])
+        result.updateMembership(labelIDs: labelIDs, categories: categories, outlook: outlook)
+        return result
+    }
+
+    mutating func updateMembership(from updated: BackendMailMessage, outlook: Bool) {
+        updateMembership(labelIDs: updated.providerLabels, categories: updated.categories, outlook: outlook)
+    }
+
+    private mutating func updateMembership(labelIDs: [String], categories: [String]?, outlook: Bool) {
+        if outlook {
+            let names = Set((categories ?? []).map { $0.lowercased() })
+            appliedLabelIds = Set(labels.filter { names.contains($0.name.lowercased()) }.map(\.id))
+        } else {
+            appliedLabelIds = Set(labelIDs).intersection(labels.map(\.id))
+        }
+    }
+}
+
+nonisolated struct CreateProviderLabel: Encodable, Sendable { let name: String }
+nonisolated struct SetProviderLabel: Encodable, Sendable {
+    let labelId: String
+    let applied: Bool
 }

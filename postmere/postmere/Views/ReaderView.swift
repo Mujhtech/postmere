@@ -562,6 +562,7 @@ struct ReaderView: View {
     private var readerToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .automatic) {
             let message = toolbarMessage
+            MessageLabelButton(message: syncedToolbarMessage)
 
             let starred = message?.isStarred == true
             let starTitle = starred ? "Remove Star" : "Star Message"

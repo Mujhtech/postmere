@@ -17,7 +17,7 @@ Messages, unfinished drafts, rich text, attachments, snippets, saved views, send
 
 Conversations expand earlier messages individually or together. A thin overlay scrollbar shows your position and supports dragging.
 
-With no message selected, the reader shows unread conversations, replies due, and follow-ups for the current account. **Start triage** opens the first conversation in its queue. The reader toolbar includes Star, Snooze, and Summarize. Click **Reply** to reply directly or use its arrow for Reply All and Forward.
+With no message selected, the reader shows unread conversations, replies due, and follow-ups for the current account. **Start triage** opens the first conversation in its queue. The reader toolbar includes Star, Snooze, Label, and Summarize. Click **Reply** to reply directly or use its arrow for Reply All and Forward. Label changes sync to Gmail labels and Outlook categories. Existing Outlook connections may need to reconnect for category access.
 
 The chevron beside the recipients opens message details, including the return path, declared signing domains, and receiving hop’s transport when available. Settings → Privacy controls automatic remote images and sender tracking protection. Both are on by default. Turn off automatic images to decide per message. The reader counts detected tracking pixels that it blocks. Sender and recipient avatars use available Contacts photos and optional Gravatar photos. For other participants, Postmere can look up their organization’s website icon. This setting is on by default. Settings → Privacy explains which domains and identifiers each service receives.
 

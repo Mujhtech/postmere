@@ -13,6 +13,12 @@ use url::Url;
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
+mod labels;
+pub use labels::{
+    MailLabel, create_label, has_label_scope, list_labels, message_label_membership,
+    set_message_label,
+};
+
 const GOOGLE_API: &str = "https://gmail.googleapis.com/gmail/v1/users/me/";
 const GRAPH_API: &str = "https://graph.microsoft.com/v1.0/me/";
 const MAX_RESPONSE: usize = 35 * 1024 * 1024;
@@ -98,9 +104,11 @@ impl Provider {
             (Self::Gmail, true) => {
                 "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.calendarlist.readonly"
             }
-            (Self::Microsoft, false) => "offline_access User.Read Mail.ReadWrite Mail.Send",
+            (Self::Microsoft, false) => {
+                "offline_access User.Read Mail.ReadWrite Mail.Send MailboxSettings.ReadWrite"
+            }
             (Self::Microsoft, true) => {
-                "offline_access User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite"
+                "offline_access User.Read Mail.ReadWrite Mail.Send MailboxSettings.ReadWrite Calendars.ReadWrite"
             }
         };
         url.query_pairs_mut().extend_pairs([
@@ -148,6 +156,7 @@ pub enum ProviderError {
     Unavailable,
     InvalidResponse,
     Ambiguous,
+    CategoryConflict,
 }
 impl From<ProviderError> for AppError {
     fn from(value: ProviderError) -> Self {
@@ -156,6 +165,9 @@ impl From<ProviderError> for AppError {
                 AppError::conflict("Reconnect this mail account before continuing.")
             }
             ProviderError::NotFound => AppError::not_found(),
+            ProviderError::CategoryConflict => AppError::conflict(
+                "The categories changed in Outlook. Try applying your change again.",
+            ),
             ProviderError::Rejected => {
                 AppError::bad_request("The mail provider rejected this operation.")
             }
@@ -531,6 +543,10 @@ async fn page_from_value(
 }
 
 fn validated_graph_cursor(cursor: &str) -> Result<Url, ProviderError> {
+    validated_graph_collection_cursor(cursor, "/v1.0/me/messages")
+}
+
+fn validated_graph_collection_cursor(cursor: &str, path: &str) -> Result<Url, ProviderError> {
     let url = Url::parse(cursor).map_err(|_| ProviderError::Rejected)?;
     if cursor.len() > 16_384
         || url.scheme() != "https"
@@ -539,7 +555,7 @@ fn validated_graph_cursor(cursor: &str) -> Result<Url, ProviderError> {
         || !url.username().is_empty()
         || url.password().is_some()
         || url.fragment().is_some()
-        || url.path() != "/v1.0/me/messages"
+        || url.path() != path
     {
         return Err(ProviderError::Rejected);
     }
