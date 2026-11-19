@@ -4,7 +4,8 @@ import AppKit
 enum PostmereTheme {
     // The app icon's forest green anchors every window. Control fills and
     // foreground accents share a hue but keep their own contrast in Dark Mode.
-    static let accent = Color("AccentColor")
+    // Filled controls need a deeper green than the native tab's selected glyph.
+    static let accent = adaptive(light: 0x123F36, dark: 0x3B7C6B)
     static let accentInk = adaptive(light: 0x123F36, dark: 0x94C9BE)
     static let paper = adaptive(light: 0xFDFCF8, dark: 0x1E211F)
     static let ink = Color.primary

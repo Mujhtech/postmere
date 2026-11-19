@@ -294,12 +294,12 @@ struct AvailabilityPickerView: View {
 
 struct MailDateSuggestionsView: View {
     let title: String
-    let text: String
+    let paragraphs: [String]
     let onReview: (MailCalendarEventDraft) -> Void
     @State private var suggestions: [MailDateSuggestion] = []
 
     var body: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 0) {
             if !suggestions.isEmpty {
                 Menu {
                     ForEach(suggestions) { suggestion in
@@ -310,9 +310,12 @@ struct MailDateSuggestionsView: View {
                 .tint(PostmereTheme.accentInk)
                 .fixedSize()
             }
-        }.task(id: text) {
-            let source = text
-            let result = await Task.detached(priority: .utility) { MailDateDetector.suggestions(in: source) }.value
+        }.task(id: paragraphs) {
+            suggestions = []
+            let source = paragraphs
+            let result = await Task.detached(priority: .utility) {
+                MailDateDetector.suggestions(in: source.joined(separator: "\n\n"))
+            }.value
             guard !Task.isCancelled else { return }
             suggestions = result
         }

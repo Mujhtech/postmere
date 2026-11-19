@@ -223,3 +223,63 @@ extension MailStore {
         return result.values.sorted { $0.date < $1.date }
     }
 }
+
+/// Uses the same visibility and conversation rules as the inbox and workflow queues.
+struct InboxOverview {
+    struct Section: Identifiable {
+        let title: String
+        let messages: [MailMessage]
+        let mailbox: Mailbox?
+        var id: String { title }
+    }
+
+    let isInbox: Bool
+    let title: String
+    let summary: String
+    let sections: [Section]
+
+    init(store: MailStore) {
+        let visible = store.filteredMessages
+        let conversations = store.deduplicatedConversations(visible).sorted { $0.sentAt > $1.sentAt }
+        let isSearching = !store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        isInbox = store.selectedMailbox == .inbox && store.selectedSavedViewID == nil && store.selectedInboxSplitID == nil
+            && !isSearching && !store.unreadOnly && !store.attachmentsOnly
+        guard isInbox else {
+            let split = store.selectedMailbox == .inbox ? store.visibleInboxSplits.first { $0.id == store.selectedInboxSplitID } : nil
+            title = isSearching ? "Search results" : store.selectedSavedView?.name ?? split?.name ?? store.selectedMailbox.title
+            summary = conversations.isEmpty ? "No conversations in this view." : Self.count(conversations.count, singular: "conversation", plural: "conversations")
+            sections = conversations.isEmpty ? [] : [Section(title: "Recent conversations", messages: conversations, mailbox: nil)]
+            return
+        }
+
+        title = ""
+        let scoped = store.messages.filter { store.selectedAccount == nil || $0.account == store.selectedAccount }
+        func queue(_ mailbox: Mailbox) -> [MailMessage] {
+            store.deduplicatedConversations(scoped.filter { store.matchesMailbox($0, mailbox: mailbox) })
+        }
+        let waiting = queue(.needsReply).sorted { $0.sentAt > $1.sentAt }
+        let reminders = queue(.followUps).sorted { ($0.workflow.followUpAt ?? .distantFuture) < ($1.workflow.followUpAt ?? .distantFuture) }
+        let unread = store.deduplicatedConversations(visible.filter(\.isUnread)).sorted { $0.sentAt > $1.sentAt }
+        var counts: [String] = []
+        if !waiting.isEmpty { counts.append(Self.count(waiting.count, singular: "conversation needs a reply", plural: "conversations need a reply")) }
+        if !unread.isEmpty { counts.append(Self.count(unread.count, singular: "unread conversation", plural: "unread conversations")) }
+        if !reminders.isEmpty { counts.append(Self.count(reminders.count, singular: "follow-up", plural: "follow-ups")) }
+        summary = counts.isEmpty ? "You’re all caught up." : counts.joined(separator: " · ")
+
+        var groups: [Section] = []
+        if !waiting.isEmpty { groups.append(Section(title: "Needs reply", messages: waiting, mailbox: .needsReply)) }
+        if !reminders.isEmpty { groups.append(Section(title: "Follow-ups", messages: reminders, mailbox: .followUps)) }
+        let alreadyListed = Set((waiting + reminders).map { store.conversationKey(for: $0) })
+        let otherUnread = unread.filter { !alreadyListed.contains(store.conversationKey(for: $0)) }
+        if !otherUnread.isEmpty {
+            groups.append(Section(title: "Unread", messages: otherUnread, mailbox: .inbox))
+        } else if groups.isEmpty && !conversations.isEmpty {
+            groups.append(Section(title: "Recent conversations", messages: conversations, mailbox: nil))
+        }
+        sections = groups
+    }
+
+    private static func count(_ n: Int, singular: String, plural: String) -> String {
+        "\(n.formatted()) \(n == 1 ? singular : plural)"
+    }
+}

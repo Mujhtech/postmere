@@ -1,6 +1,6 @@
 import Foundation
 
-struct MailStateSnapshot: Codable {
+nonisolated struct MailStateSnapshot: Encodable, @MainActor Decodable, Sendable {
     var schemaVersion = 1
     var messages: [MailMessage]
     var savedViews: [SavedInboxView]
@@ -9,7 +9,7 @@ struct MailStateSnapshot: Codable {
     var outgoingQueue: [OutgoingMailItem]
     var activeDraft: ActiveMailDraft?
     var senderScreeningEnabled: Bool
-    var inboxSplits: [InboxSplit] = InboxSplit.defaults
+    var inboxSplits: [InboxSplit]
     var selectedInboxSplitID: UUID?
     var inboxSplitOverlapPolicy: InboxSplitOverlapPolicy = .firstMatch
     var vipContacts: [VIPContact] = []
@@ -22,9 +22,10 @@ struct MailStateSnapshot: Codable {
              backendNotificationCutoffs
     }
 
+    @MainActor
     init(schemaVersion: Int = 1, messages: [MailMessage], savedViews: [SavedInboxView], snippets: [MailSnippet],
          senderRules: [SenderRule], outgoingQueue: [OutgoingMailItem], activeDraft: ActiveMailDraft?,
-         senderScreeningEnabled: Bool, inboxSplits: [InboxSplit] = InboxSplit.defaults,
+         senderScreeningEnabled: Bool, inboxSplits: [InboxSplit],
          selectedInboxSplitID: UUID? = nil, inboxSplitOverlapPolicy: InboxSplitOverlapPolicy = .firstMatch,
          vipContacts: [VIPContact] = [], backendSyncCursors: [String: String] = [:],
          backendNotificationCutoffs: [String: Date] = [:]) {
@@ -44,10 +45,12 @@ struct MailStateSnapshot: Codable {
         self.backendNotificationCutoffs = backendNotificationCutoffs
     }
 
+    @MainActor
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         messages = try values.decode([MailMessage].self, forKey: .messages)
+        for index in messages.indices { messages[index].restoreReceivedText() }
         savedViews = try values.decodeIfPresent([SavedInboxView].self, forKey: .savedViews) ?? []
         snippets = try values.decodeIfPresent([MailSnippet].self, forKey: .snippets) ?? []
         senderRules = try values.decodeIfPresent([SenderRule].self, forKey: .senderRules) ?? []
@@ -64,7 +67,7 @@ struct MailStateSnapshot: Codable {
 }
 
 /// One atomic snapshot keeps messages, the active draft and the outgoing queue consistent.
-struct MailPersistence {
+nonisolated struct MailPersistence: Sendable {
     let fileURL: URL
     static var defaultDirectory: URL {
         URL.applicationSupportDirectory.appendingPathComponent("Postmere", isDirectory: true)
@@ -74,6 +77,7 @@ struct MailPersistence {
         fileURL.deletingLastPathComponent().appendingPathComponent("Attachments", isDirectory: true)
     }
 
+    @MainActor
     func load() throws -> MailStateSnapshot? {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         let decoder = JSONDecoder()

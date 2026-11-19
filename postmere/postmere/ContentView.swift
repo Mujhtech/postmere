@@ -22,7 +22,7 @@ struct ContentView: View {
                 if MailAccount.allCases.isEmpty && store.selectedMessage == nil {
                     WorkspaceConnectionEmptyView()
                 } else {
-                    ReaderView(store: store)
+                    ReaderView(store: store, compactToolbar: isCompact)
                 }
             }.frame(minWidth: 300)
         }

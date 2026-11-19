@@ -105,7 +105,7 @@ struct MailCommands: Commands {
                 Button("Restore from Trash") { store?.restoreSelected() }
                     .disabled(!canActOnMessage || store?.selectedMessage?.mailbox != .trash)
                 Button("Undo Last Move") { store?.undoLastMove() }
-                    .disabled(!canActOnMessage || store?.canUndoMove != true)
+                    .disabled(isComposerWindow == true || focusedStore == nil || store?.canUndoMove != true)
                 Divider()
                 Button(store?.selectedMessage?.isUnread == true ? "Mark as Read" : "Mark as Unread") {
                     if let store, let message = store.selectedMessage { store.setRead(message.isUnread, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }

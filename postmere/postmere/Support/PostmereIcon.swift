@@ -125,6 +125,9 @@ enum PostmereSymbols {
         case "archivebox":
             d.rect(3, 4, 18, 5, radius: 1.5)
             d.line([5, 9, 5, 20, 19, 20, 19, 9]); d.line([9.5, 13, 14.5, 13])
+        case "tag":
+            d.line([3, 4, 12, 4, 21, 13, 13, 21, 3, 11], close: true)
+            d.circle(7.5, 8.5, 1.4)
         case "trash":
             d.line([3, 6, 21, 6]); d.line([9, 6, 9, 3, 15, 3, 15, 6])
             d.line([5, 9, 6, 21, 18, 21, 19, 9]); d.line([9, 10, 9.5, 17]); d.line([15, 10, 14.5, 17])
@@ -211,6 +214,11 @@ enum PostmereSymbols {
             // sidebar sizes without a dense ring of tiny gear teeth.
             d.line([4, 7, 9, 7]); d.line([14, 7, 20, 7]); d.circle(11.5, 7, 2.5)
             d.line([4, 17, 11, 17]); d.line([16, 17, 20, 17]); d.circle(13.5, 17, 2.5)
+        case "shield":
+            d.line([12, 2.5, 20, 6, 20, 12])
+            d.curve(from: [20, 12], to: [12, 21.5], c1: [20, 16], c2: [16, 19.5])
+            d.curve(from: [12, 21.5], to: [4, 12], c1: [8, 19.5], c2: [4, 16])
+            d.line([4, 12, 4, 6, 12, 2.5])
         case "keyboard":
             d.rect(2, 5, 20, 14, radius: 2.5)
             for x: CGFloat in [6, 10, 14, 18] { d.disc(x, 9, 0.65); d.disc(x, 12, 0.65) }

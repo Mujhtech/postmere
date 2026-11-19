@@ -8,10 +8,61 @@ enum RegressionFailure: Error { case failed(String) }
         print("PASS \(description)")
     }
 
+    @MainActor static func readerPersistence(directory: URL) async throws {
+        let file = directory.appendingPathComponent("reader.json")
+        let message = MailMessage(sender: "Pat", senderEmail: "pat@example.org", initials: "P",
+                                  subject: "Reader", preview: "Example", paragraphs: ["Example"],
+                                  timeLabel: "9:00", isUnread: true)
+        let store = MailStore(messages: [message], persistenceURL: file)
+        let saved = MailPersistence(fileURL: file)
+
+        // Hold disk writes while opening the message and its metadata. Both must
+        // update the live UI without waiting on the storage queue.
+        store.saveQueue.suspend()
+        store.select(message)
+        store.cacheEnvelope(MailEnvelopeDetails(recipientNames: [:], signingDomains: ["example.org"]),
+                            messageID: message.id, account: message.account)
+        let revision = store.saveRevision
+        store.select(message)
+        let diskWhileReading = try? saved.load()
+        store.saveQueue.resume()
+        try check(store.messages.first?.isUnread == false && diskWhileReading?.messages.first?.isUnread == true,
+                  "opening an unread message updates the reader independently of disk")
+        try check(store.saveRevision == revision, "reopening a read message schedules no save")
+
+        await withCheckedContinuation { continuation in
+            store.saveQueue.async { continuation.resume() }
+        }
+        let disk = try saved.load()?.messages.first
+        try check(disk?.isUnread == false && disk?.envelopeDetails?.signingDomains == ["example.org"],
+                  "background save includes both read state and envelope metadata")
+        store.messages[0].isStarred = true
+        try check(store.flushPersistence(), "explicit flush completes after reader saves")
+        let restored = try saved.load()?.messages.first
+        try check(restored?.isStarred == true && restored?.isUnread == false, "newer explicit changes survive a reopen")
+
+        var legacy = message
+        legacy.providerAccountEmail = nil
+        var first = message
+        first.id = UUID()
+        first.providerAccountEmail = "A@example.org"
+        var second = first
+        second.id = UUID()
+        second.providerAccountEmail = "b@example.org"
+        var trashed = first
+        trashed.id = UUID()
+        trashed.mailbox = .trash
+        let countsStore = MailStore(messages: [legacy, first, second, trashed])
+        let indexed = countsStore.conversationCounts(for: countsStore.messages)
+        try check(countsStore.messages.allSatisfy { indexed[$0.id] == countsStore.conversationCount(for: $0) },
+                  "list thread counts preserve legacy account matching and trash handling")
+    }
+
     @MainActor static func main() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PostmereRegression-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
+        try await readerPersistence(directory: directory)
         try runSearchSplitRegressions(directory: directory)
         try await runRemoteMailRegressions(directory: directory)
         let workspaceAccount = RemoteAccountIdentity(localID: "remote:fixture:workspace:user:primary", accountID: UUID(),

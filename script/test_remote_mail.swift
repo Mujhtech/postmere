@@ -7,10 +7,37 @@ import Foundation
     let second = RemoteAccountIdentity(localID: "remote:server-b:workspace:user:\(accountID)", accountID: accountID, scope: "server-b:workspace:user", email: "me@example.com", displayName: "Me", provider: "gmail")
     RemoteAccountRegistry.accounts = [first, second]
     defer { RemoteAccountRegistry.accounts = [] }
-    let payload = BackendMailMessage(id: messageID, accountId: accountID, providerMessageId: "provider-1", providerThreadId: "thread-1",
-        subject: "A remote message", from: BackendAddress(email: "sender@example.com"), to: [BackendAddress(email: "me@example.com")], cc: [], bcc: [],
+    var payload = BackendMailMessage(id: messageID, accountId: accountID, providerMessageId: "provider-1", providerThreadId: "thread-1",
+        subject: "A remote message", from: BackendAddress(name: "Sender", email: "sender@example.com"), to: [BackendAddress(name: "Alex", email: "me@example.com")], cc: [], bcc: [],
         textBody: "Message body", htmlBody: nil, preview: "Message body", sentAt: .now, isRead: false, isStarred: false, mailbox: "inbox", providerLabels: [], attachments: [], listUnsubscribe: [], listUnsubscribePost: [])
+    payload.deliveryHeaders = MailDeliveryHeaders(returnPath: "<bounce@mailer.example.com>", receivedWith: "ESMTPS")
+    payload.dkimSignatures = ["v=1; a=rsa-sha256;\r\n d=EXAMPLE.com; s=primary; b=abc",
+                              "d=example.com; b=second", "d=ambiguous.example; d=other.example", "d=<invalid>"]
     let one = payload.localMessage(identity: first), two = payload.localMessage(identity: second)
+    try check(one.envelopeDetails?.signingDomains == ["example.com"] && one.envelopeDetails?.deliveryHeaders?.receivedWith == "ESMTPS"
+              && one.envelopeDetails?.recipientNames["me@example.com"] == "Alex", "reader preserves delivery headers and display names, and rejects ambiguous signer domains")
+    var needsReply = one
+    needsReply.workflow.needsReply = true
+    var earlier = needsReply
+    earlier.id = UUID()
+    earlier.sentAt = needsReply.sentAt.addingTimeInterval(-60)
+    var reminder = one
+    reminder.id = UUID()
+    reminder.conversationID = UUID()
+    reminder.mailbox = .sent
+    reminder.workflow.followUpAt = .now
+    let overviewStore = MailStore(messages: [needsReply, earlier, reminder, two], persistenceURL: directory.appendingPathComponent("overview.json"))
+    overviewStore.selectedAccount = first.localID
+    overviewStore.selectedMessageID = nil
+    let overview = InboxOverview(store: overviewStore)
+    try check(overview.isInbox && overview.sections.map(\.mailbox) == [.needsReply, .followUps]
+              && overview.sections.flatMap(\.messages).map(\.id) == [needsReply.id, reminder.id],
+              "inbox overview keeps account boundaries, deduplicates thread entries and includes sent follow-ups")
+    overviewStore.searchText = "no-such-subject"
+    let search = InboxOverview(store: overviewStore)
+    try check(!search.isInbox && search.sections.isEmpty, "an empty search never shows unrelated mail in the reader")
+    try checkReceivedBodyRecovery(one, directory: directory)
+    try checkTrackingPixelRules()
     try check(one.id != two.id && one.conversationID != two.conversationID, "identical server IDs remain isolated across server identities")
     let stateURL = directory.appendingPathComponent("remote-state.json")
     let store = MailStore(messages: [two], persistenceURL: stateURL)
@@ -125,4 +152,60 @@ import Foundation
     try check(resumedQueue.messages.count == 1 && resumedQueue.messages[0].backendMessageID == messageID
               && resumedQueue.messages[0].rfcMessageID == earlySent.rfcMessageId
               && resumedQueue.backendSyncCursors[first.localID] == "early-sent", "early provider identifiers survive restart together with the advanced cursor")
+}
+
+@MainActor private func checkTrackingPixelRules() throws {
+    let pixel = "https://mail.sendgrid.net/wf/open?upn=A+B.c"
+    let encoded = try MailTrackingPixelRules.encoded(for: [pixel, pixel])
+    let rules = try JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [[String: [String: Any]]]
+    let trigger = rules?.first?["trigger"]
+    let pattern = trigger?["url-filter"] as? String
+    try PostmereBackendRegression.check(rules?.count == 1 && rules?.first?["action"]?["type"] as? String == "block"
+        && trigger?["url-filter-is-case-sensitive"] as? Bool == true
+        && pattern.map { pixel.range(of: $0, options: .regularExpression) != nil } == true,
+        "duplicate tracking URLs yield one exact, case-sensitive WebKit blocker")
+    let allowed = ["https://mail.sendgrid.net/logo.png", pixel + "2", pixel.replacingOccurrences(of: "+", with: "")]
+    try PostmereBackendRegression.check(pattern.map { regex in
+        allowed.allSatisfy { $0.range(of: regex, options: .regularExpression) == nil }
+    } == true, "the blocker leaves ordinary assets and distinct recipient URLs alone")
+}
+
+@MainActor private func checkReceivedBodyRecovery(_ source: MailMessage, directory: URL) throws {
+    let check = PostmereBackendRegression.check
+    let html = "<html><head><style>p {color:navy}</style></head><body><p>Alex&#39;s tea &amp; coffee</p><p>Closing invitation</p></body></html>"
+    func cached(_ paragraphs: [String], preview: String, html: String?) -> MailMessage {
+        var message = source
+        message.id = UUID()
+        message.paragraphs = paragraphs
+        message.preview = preview
+        message.bodyHTML = html
+        return message
+    }
+    let gmail = cached([""], preview: "Alex&#39;s tea &amp; coffee", html: html)
+    let graph = cached(["Alex's tea"], preview: "Alex's tea", html: html)
+    let multipart = cached(["Independent plain alternative"], preview: "Independent plain alternative", html: html)
+    let code = "Use <p>text &amp; code</p>."
+    let plain = cached([code], preview: code, html: nil)
+    var draft = cached(["Edited locally"], preview: "Edited locally", html: html)
+    draft.mailbox = .drafts
+    let url = directory.appendingPathComponent("historical-mail-body.json")
+    let legacy = MailStore(messages: [gmail, graph, multipart, plain, draft], persistenceURL: url)
+    try check(legacy.persistState(), "historical mail fixtures persist")
+    let reopened = MailStore(messages: [], persistenceURL: url)
+    guard let gmail = reopened.messages.first(where: { $0.id == gmail.id }),
+          let graph = reopened.messages.first(where: { $0.id == graph.id }) else {
+        throw RegressionFailure.failed("historical messages missing after restart")
+    }
+    try check(gmail.receivedHTML == html && graph.receivedHTML == html, "cached HTML survives offline restore")
+    try check(gmail.preview == "Alex's tea & coffee" &&
+              MailSearchQuery(source: "invitation").matches(gmail) && MailSearchQuery(source: "invitation").matches(graph),
+              "HTML-only and preview-only caches restore full searchable text and decoded list snippets")
+    try check(!MailSearchQuery(source: "navy").matches(gmail), "email stylesheet rules stay out of local search")
+    try check(reopened.messages.first { $0.id == multipart.id }?.paragraphs == multipart.paragraphs,
+              "multipart cache preserves the sender's independent text alternative")
+    try check(reopened.messages.first { $0.id == plain.id }?.receivedHTML == nil &&
+              reopened.messages.first { $0.id == plain.id }?.preview == code, "plain-text markup examples remain literal")
+    try check(reopened.messages.first { $0.id == draft.id }?.receivedHTML == nil &&
+              reopened.messages.first { $0.id == draft.id }?.paragraphs == draft.paragraphs,
+              "drafts use their current editable text")
 }

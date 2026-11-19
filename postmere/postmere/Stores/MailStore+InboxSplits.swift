@@ -120,9 +120,19 @@ extension MailStore {
         return deduplicatedConversations(splitCandidates.filter { keys.contains(conversationKey(for: $0)) })
     }
 
-    func splitUnreadCount(_ id: UUID) -> Int {
-        let keys = matchingSplitConversationKeys(id)
-        return Set(splitCandidates.filter { $0.isUnread && keys.contains(conversationKey(for: $0)) }.map { conversationKey(for: $0) }).count
+    var inboxTabCounts: (all: Int, splits: [UUID: Int]) {
+        let threads = Dictionary(grouping: splitCandidates, by: conversationKey(for:))
+        let splits = visibleInboxSplits
+        var all = 0
+        var counts: [UUID: Int] = [:]
+        for thread in threads.values where thread.contains(where: \.isUnread) {
+            all += 1
+            for split in splits where thread.contains(where: { matchesSavedView($0, criteria: split.criteria) }) {
+                counts[split.id, default: 0] += 1
+                if inboxSplitOverlapPolicy == .firstMatch { break }
+            }
+        }
+        return (all, counts)
     }
 
     func splitMatchReasons(for message: MailMessage, splitID: UUID) -> [String] {

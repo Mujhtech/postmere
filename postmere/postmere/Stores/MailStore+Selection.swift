@@ -4,13 +4,14 @@ extension MailStore {
     var selectedMessages: [MailMessage] { filteredMessages.filter { selectedMessageIDs.contains($0.id) } }
 
     func setSelection(_ ids: Set<UUID>) {
+        let visible = filteredMessages
         let added = ids.subtracting(selectedMessageIDs)
-        selectedMessageIDs = ids.intersection(Set(filteredMessages.map(\.id)))
+        selectedMessageIDs = ids.intersection(Set(visible.map(\.id)))
         isUpdatingSelection = true
-        if let newest = filteredMessages.first(where: { added.contains($0.id) }) {
+        if let newest = visible.first(where: { added.contains($0.id) }) {
             selectedMessageID = newest.id
         } else if selectedMessageID.map({ selectedMessageIDs.contains($0) }) != true {
-            selectedMessageID = filteredMessages.first(where: { selectedMessageIDs.contains($0.id) })?.id
+            selectedMessageID = visible.first(where: { selectedMessageIDs.contains($0.id) })?.id
         }
         isUpdatingSelection = false
         if selectedMessageIDs.count == 1 { markSelectedRead() }
@@ -28,7 +29,7 @@ extension MailStore {
         if movable.count > 1 {
             batchMoveUndo = original
             batchMoveSelection = ids
-            lastAction = "Moved \(movable.count) messages to \(mailbox.title)"
+            announceMove("Moved \(movable.count) messages to \(mailbox.title)")
         }
         return !movable.isEmpty
     }
@@ -45,7 +46,7 @@ extension MailStore {
         if originals.count > 1 {
             batchMoveUndo = originals
             batchMoveSelection = ids
-            lastAction = "Restored \(originals.count) messages"
+            announceMove("Restored \(originals.count) messages")
         }
         return true
     }

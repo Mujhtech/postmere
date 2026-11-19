@@ -17,13 +17,7 @@ struct MailListView: View {
         Binding(get: { store.selectedMessageIDs }, set: store.setSelection)
     }
 
-    private var groups: [String] {
-        var labels: [String] = []
-        for message in store.filteredMessages where !labels.contains(message.dateLabel) {
-            labels.append(message.dateLabel)
-        }
-        return labels
-    }
+    @State private var showsAction = false
 
     private var query: String { store.searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var hasMessageFilters: Bool { store.unreadOnly || store.attachmentsOnly }
@@ -44,26 +38,31 @@ struct MailListView: View {
     }
 
     var body: some View {
+        let visible = store.filteredMessages
+        let counts = store.conversationCounts(for: visible)
+        let grouped = Dictionary(grouping: visible, by: \.dateLabel)
+        var seen = Set<String>()
+        let dates = visible.compactMap { seen.insert($0.dateLabel).inserted ? $0.dateLabel : nil }
         VStack(spacing: 0) {
             searchControls
             if store.selectedMailbox == .inbox && store.selectedSavedView == nil && !searchesAllMailboxes {
                 InboxTabsView(store: store) { showsInboxManager = true }
             }
-            filterControls
+            filterControls(count: visible.count)
             Divider()
             if store.selectedMessageIDs.count > 1 {
                 bulkControls
                 Divider()
             }
 
-            if store.filteredMessages.isEmpty {
+            if visible.isEmpty {
                 emptyState
             } else {
                 List(selection: selection) {
-                    ForEach(groups, id: \.self) { group in
+                    ForEach(dates, id: \.self) { group in
                         Section(group) {
-                            ForEach(store.filteredMessages.filter { $0.dateLabel == group }) { message in
-                                MailRow(message: message, conversationCount: message.isDraft ? 1 : store.conversationCount(for: message), showsLocation: searchesAllMailboxes, outgoingItem: store.outgoingQueue.first { $0.id == message.id }, isSelected: store.selectedMessageIDs.contains(message.id))
+                            ForEach(grouped[group] ?? []) { message in
+                                MailRow(message: message, conversationCount: counts[message.id] ?? 1, showsLocation: searchesAllMailboxes, outgoingItem: store.outgoingQueue.first { $0.id == message.id }, isSelected: store.selectedMessageIDs.contains(message.id))
                                     .tag(message.id)
                                     .listRowInsets(EdgeInsets(top: 11, leading: 10, bottom: 11, trailing: 10))
                                     .contextMenu {
@@ -86,21 +85,26 @@ struct MailListView: View {
                 }
                 .onKeyPress(phases: [.down, .repeat], action: handleListKey)
             }
-
-            Divider()
-            HStack(spacing: 6) {
-                Text(store.lastAction ?? "Saved on this Mac")
-                    .lineLimit(1)
-                    .help(store.lastAction ?? "Saved on this Mac")
-                Spacer(minLength: 4)
-                if store.canUndoMove {
-                    Button("Undo", action: store.undoLastMove).buttonStyle(.plain)
+        }
+        .overlay(alignment: .bottom) {
+            if showsAction, let action = store.lastAction {
+                HStack(spacing: 10) {
+                    Text(action).lineLimit(2)
+                    if store.lastActionOffersUndo {
+                        Button("Undo", action: store.undoLastMove)
+                    }
                 }
+                .font(.callout)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(.regularMaterial, in: Capsule())
+                .padding(8)
             }
-            .font(.system(size: 11))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 16)
-            .frame(height: 29)
+        }
+        .task(id: store.actionRevision) {
+            showsAction = store.lastAction != nil
+            try? await Task.sleep(for: .seconds(4))
+            if !Task.isCancelled { showsAction = false }
         }
         .defaultFocus($isListFocused, true)
         .navigationTitle(searchesAllMailboxes ? store.selectedAccount.map { "\(MailAccount.scopeLabel(for: $0)) Search" } ?? "Search Results" : mailboxTitle)
@@ -171,7 +175,7 @@ struct MailListView: View {
                 .controlSize(.small)
                 .font(.system(size: 11))
                 HStack {
-                    Text("Searching mail saved on this Mac").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text("Searching local mail").font(.system(size: 10)).foregroundStyle(.secondary)
                     Spacer()
                     if runtime.backend.isConnected {
                         Button("Search online…") { showsProviderSearch = true }.buttonStyle(.plain)
@@ -191,10 +195,10 @@ struct MailListView: View {
         .padding(.bottom, 12)
     }
 
-    private var filterControls: some View {
+    private func filterControls(count: Int) -> some View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
-                Text(store.filteredMessages.count == 1 ? "1 message" : "\(store.filteredMessages.count) messages")
+                Text(count == 1 ? "1 message" : "\(count) messages")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 4)
@@ -455,11 +459,15 @@ private struct MailRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
-            Circle()
-                .fill(unreadFill)
-                .frame(width: 6, height: 6)
-                .padding(.top, 5)
-                .accessibilityHidden(true)
+            MailParticipantAvatar(address: message.isOutgoing ? message.toRecipients.first ?? message.senderEmail : message.senderEmail,
+                                  name: message.isOutgoing ? "" : message.sender, size: 28)
+                .overlay(alignment: .bottomTrailing) {
+                    if message.isUnread {
+                        Circle().fill(unreadFill).frame(width: 7, height: 7)
+                            .overlay { Circle().stroke(.background, lineWidth: 1) }
+                            .allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(senderTitle)

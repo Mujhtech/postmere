@@ -55,9 +55,38 @@ nonisolated struct BackendMailMessage: Decodable, Sendable {
     var rfcMessageId: String? = nil
     var inReplyTo: String? = nil
     var references: [String]? = nil
+    var dkimSignatures: [String]? = nil
+    var deliveryHeaders: MailDeliveryHeaders? = nil
+}
+
+nonisolated struct BackendMessageEnvelope: Decodable, Sendable {
+    let id: UUID
+    let accountId: UUID
+    let to: [BackendAddress]
+    let cc: [BackendAddress]
+    let bcc: [BackendAddress]
+    let dkimSignatures: [String]?
+    let deliveryHeaders: MailDeliveryHeaders?
+
+    var details: MailEnvelopeDetails {
+        var names: [String: String] = [:]
+        for address in to + cc + bcc {
+            if let name = address.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+                names[address.email.lowercased()] = name
+            }
+        }
+        return MailEnvelopeDetails(recipientNames: names,
+                                   signingDomains: MailEnvelopeDetails.signingDomains(from: dkimSignatures ?? []),
+                                   deliveryHeaders: deliveryHeaders)
+    }
 }
 
 extension BackendMailMessage {
+    var envelopeDetails: MailEnvelopeDetails {
+        BackendMessageEnvelope(id: id, accountId: accountId, to: to, cc: cc, bcc: bcc,
+                               dkimSignatures: dkimSignatures, deliveryHeaders: deliveryHeaders).details
+    }
+
     func localMessage(identity: RemoteAccountIdentity) -> MailMessage {
         var message = MailMessage(id: Self.localID(identity.localID + ":" + id.uuidString), sender: from.name?.isEmpty == false ? from.name! : from.email,
                     senderEmail: from.email, initials: String((from.name ?? from.email).prefix(2)).uppercased(),
@@ -82,6 +111,8 @@ extension BackendMailMessage {
         message.rfcMessageID = rfcMessageId
         message.inReplyTo = inReplyTo
         message.references = references ?? []
+        message.envelopeDetails = envelopeDetails
+        message.restoreReceivedText(provider: identity.provider)
         return message
     }
 

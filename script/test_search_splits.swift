@@ -99,7 +99,7 @@ func runSearchSplitRegressions(directory: URL) throws {
     let senderSplit = InboxSplit(name: "Clara", criteria: SavedInboxCriteria(query: "from:clara"))
     let subjectSplit = InboxSplit(name: "Review", criteria: SavedInboxCriteria(query: "subject:review"))
     store.inboxSplits = [senderSplit, subjectSplit]
-    try check(store.splitMessages(senderSplit.id).count == 1 && store.splitUnreadCount(senderSplit.id) == 1, "tab unread counts deduplicate unread replies in one conversation")
+    try check(store.splitMessages(senderSplit.id).count == 1 && store.inboxTabCounts.splits[senderSplit.id] == 1, "tab unread counts deduplicate unread replies in one conversation")
     try check(store.splitMessages(subjectSplit.id).count == 1 && store.splitMessages(subjectSplit.id)[0].id == separate.id, "first-match assigns a complete conversation to one tab")
     try check(!store.splitMatchReasons(for: reply, splitID: senderSplit.id).isEmpty, "classification explanations include a matching earlier reply")
     store.inboxSplitOverlapPolicy = .allMatches

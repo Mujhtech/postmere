@@ -198,20 +198,14 @@ struct InboxTabsView: View {
     @Bindable var store: MailStore
     let onManage: () -> Void
 
-    private var allUnreadCount: Int {
-        Set(store.messages.filter {
-            $0.isUnread && store.matchesMailbox($0, mailbox: .inbox)
-                && (store.selectedAccount == nil || $0.account == store.selectedAccount)
-        }.map { store.conversationKey(for: $0) }).count
-    }
-
     var body: some View {
+        let counts = store.inboxTabCounts
         HStack(spacing: 5) {
             ScrollView(.horizontal) {
                 HStack(spacing: 5) {
-                    tab("All", id: nil, count: allUnreadCount)
+                    tab("All", id: nil, count: counts.all)
                     ForEach(store.visibleInboxSplits) { split in
-                        tab(split.name, id: split.id, count: store.splitUnreadCount(split.id))
+                        tab(split.name, id: split.id, count: counts.splits[split.id] ?? 0)
                     }
                 }
             }

@@ -24,7 +24,7 @@ cd "$project_root/postmere/postmere"
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/postmere-tests.XXXXXX")"
 trap 'rm -rf "$test_dir"' EXIT
 
-mail_models=(Models/MailMessage.swift Models/MailWorkflow.swift)
+mail_models=(Models/MailMessage.swift Models/ReceivedMailBody.swift Models/MailWorkflow.swift)
 backend_models=("${mail_models[@]}" Models/BackendMail.swift)
 store_sources=("${backend_models[@]}" Models/MailSearchQuery.swift Models/InboxSplit.swift
               Models/SampleMail.swift Stores/*.swift Support/ComposeAttachments.swift
@@ -48,8 +48,9 @@ run_suite() {
             ;;
         sender_context)
             flags=(-swift-version 6)
-            sources=("${store_sources[@]}" Services/MailContactNotesStore.swift "${theme[@]}" "${attachment_views[@]}"
-                     Views/SenderContextView.swift Views/RecipientSuggestionsView.swift)
+            sources=("${store_sources[@]}" Services/MailContactNotesStore.swift Services/MailRemoteParticipantImages.swift Services/BackendHTTPClient.swift Support/MailSenderDomain.swift
+                     "${theme[@]}" "${attachment_views[@]}" Views/SenderContextView.swift Views/RecipientSuggestionsView.swift
+                     "$script_dir/test_realtime_support.swift")
             ;;
         backend_client)
             flags=(-swift-version 6 -parse-as-library -O)

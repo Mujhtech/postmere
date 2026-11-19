@@ -5,7 +5,13 @@ import Observation
 @MainActor
 @Observable
 final class MailStore {
-    var messages: [MailMessage] { didSet { persistState(); syncProviderChanges(from: oldValue) } }
+    var messages: [MailMessage] {
+        didSet {
+            guard !updatingReaderMessage else { return }
+            persistState()
+            syncProviderChanges(from: oldValue)
+        }
+    }
     var selectedMailbox: Mailbox = .inbox
     var selectedAccount: String?
     var selectedMessageID: UUID? {
@@ -53,7 +59,16 @@ final class MailStore {
     var draftBodyRTF: Data? { didSet { draftChanged() } }
     var draftAttachments: [MailAttachment] = [] { didSet { draftChanged() } }
     var composeTitle = "New message"
-    var lastAction: String?
+    var lastAction: String? { didSet { actionRevision += 1 } }
+    private(set) var actionRevision = 0
+    private var undoRevision: Int?
+
+    var lastActionOffersUndo: Bool { undoRevision == actionRevision && canUndoMove }
+
+    func announceMove(_ message: String) {
+        lastAction = message
+        undoRevision = actionRevision
+    }
     var editingDraftID: UUID?
     var draftConversationID = UUID()
     var initialDraft = DraftSnapshot()
@@ -93,6 +108,10 @@ final class MailStore {
     @ObservationIgnored var suppressRemoteMutations = false
     @ObservationIgnored var remoteMutationTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored var persistence: MailPersistence?
+    @ObservationIgnored let saveQueue = DispatchQueue(label: "postmere.mail.persistence", qos: .utility)
+    @ObservationIgnored var pendingReaderSave: DispatchWorkItem?
+    @ObservationIgnored var saveRevision = 0
+    @ObservationIgnored private var updatingReaderMessage = false
     @ObservationIgnored var searchQueryCache: [String: MailSearchQuery] = [:]
     @ObservationIgnored var persistenceReady = false
     @ObservationIgnored var persistenceBlocked = false
@@ -185,6 +204,40 @@ final class MailStore {
         conversationMessages(for: message).count
     }
 
+    // Build thread counts once for the list. Older cached entries may lack a provider
+    // email, in which case sameMailAccount matches any identity on the local account.
+    func conversationCounts(for visible: [MailMessage]) -> [UUID: Int] {
+        struct Thread: Hashable {
+            let conversationID: UUID
+            let account: String
+            init(_ message: MailMessage) {
+                conversationID = message.conversationID
+                account = message.account
+            }
+        }
+        struct Counts {
+            var total = 0
+            var withoutIdentity = 0
+            var byEmail: [String: Int] = [:]
+        }
+        var counts: [Thread: Counts] = [:]
+        for message in messages where !message.isDraft && !message.isDeletedOnProvider && message.mailbox != .trash {
+            let thread = Thread(message)
+            counts[thread, default: Counts()].total += 1
+            if let email = message.providerAccountEmail {
+                counts[thread, default: Counts()].byEmail[email.lowercased(), default: 0] += 1
+            } else {
+                counts[thread, default: Counts()].withoutIdentity += 1
+            }
+        }
+        return Dictionary(uniqueKeysWithValues: visible.map { message in
+            if message.isDraft { return (message.id, 1) }
+            let thread = counts[Thread(message)] ?? Counts()
+            let count = message.providerAccountEmail.map { thread.withoutIdentity + thread.byEmail[$0.lowercased(), default: 0] } ?? thread.total
+            return (message.id, count + (message.mailbox == .trash && !message.isDeletedOnProvider ? 1 : 0))
+        })
+    }
+
     var unreadCount: Int {
         messages.filter { matchesMailbox($0, mailbox: .inbox) && $0.isUnread }.count
     }
@@ -241,8 +294,22 @@ final class MailStore {
     func markSelectedRead() {
         // Keep the unread results stable until the user leaves this filter.
         guard !unreadOnly,
-              let index = messages.firstIndex(where: { $0.id == selectedMessageID }) else { return }
+              let index = messages.firstIndex(where: { $0.id == selectedMessageID }), messages[index].isUnread else { return }
+        let previous = messages[index]
+        updatingReaderMessage = true
         messages[index].isUnread = false
+        updatingReaderMessage = false
+        persistReaderChange()
+        syncProviderChange(from: previous, to: messages[index])
+    }
+
+    func cacheEnvelope(_ details: MailEnvelopeDetails, messageID: UUID, account: String) {
+        guard let index = messages.firstIndex(where: { $0.id == messageID && $0.account == account }),
+              messages[index].envelopeDetails == nil else { return }
+        updatingReaderMessage = true
+        messages[index].envelopeDetails = details
+        updatingReaderMessage = false
+        persistReaderChange()
     }
 
     func selectAdjacent(_ offset: Int) {
@@ -526,7 +593,7 @@ final class MailStore {
             markSelectedRead()
         }
         reconcileSelection()
-        lastAction = "Moved to \(mailbox.title)"
+        announceMove("Moved to \(mailbox.title)")
         return true
     }
 

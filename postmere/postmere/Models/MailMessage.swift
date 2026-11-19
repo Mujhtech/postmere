@@ -201,6 +201,34 @@ struct MailAddressList {
     }
 }
 
+nonisolated struct MailDeliveryHeaders: Codable, Sendable {
+    var returnPath: String?
+    var receivedWith: String?
+}
+
+nonisolated struct MailEnvelopeDetails: Codable, Sendable {
+    var recipientNames: [String: String]
+    var signingDomains: [String]
+    var deliveryHeaders: MailDeliveryHeaders?
+
+    /// DKIM-Signature names a signer. Only the receiving service can verify it.
+    static func signingDomains(from signatures: [String]) -> [String] {
+        var domains: [String] = []
+        for signature in signatures {
+            let candidates = signature.split(separator: ";").compactMap { tag -> String? in
+                let parts = tag.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                guard parts.count == 2, parts[0].trimmingCharacters(in: .whitespacesAndNewlines) == "d" else { return nil }
+                return parts[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            }
+            guard candidates.count == 1, let domain = candidates.first, domain.utf8.count <= 253,
+                  domain.range(of: #"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"#,
+                               options: .regularExpression) != nil, !domains.contains(domain) else { continue }
+            domains.append(domain)
+        }
+        return domains
+    }
+}
+
 struct MailMessage: Codable, Identifiable {
     var id: UUID
     var conversationID: UUID
@@ -234,6 +262,7 @@ struct MailMessage: Codable, Identifiable {
     var references: [String]
     var bodyHTML: String?
     var providerLabelIDs: [String]
+    var envelopeDetails: MailEnvelopeDetails?
     var providerDeletedAt: Date?
     // Optional so mailbox snapshots created before unsubscribe support still decode.
     var unsubscribeHeaders: MailUnsubscribeHeaders?
@@ -256,6 +285,12 @@ struct MailMessage: Codable, Identifiable {
     }
 
     var isDraft: Bool { mailbox == .drafts || (mailbox == .trash && trashedFrom == .drafts) }
+
+    var receivedHTML: String? {
+        guard !isDraft, mailbox != .outbox, let bodyHTML,
+              bodyHTML.contains(where: { !$0.isWhitespace }) else { return nil }
+        return bodyHTML
+    }
 
     /// Compatibility for callers that only need the first attachment.
     var attachment: MailAttachment? {

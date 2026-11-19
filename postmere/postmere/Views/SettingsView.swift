@@ -14,6 +14,8 @@ struct SettingsView: View {
     @AppStorage("settingsTab") private var settingsTab = "general"
     @AppStorage("readingFontSize") private var readingFontSize = 14.0
     @AppStorage("showMessagePreviews") private var showMessagePreviews = true
+    @AppStorage("loadRemoteMailImagesAutomatically") private var loadRemoteMailImagesAutomatically = true
+    @AppStorage("blockSenderTrackingPixels") private var blockSenderTrackingPixels = true
     @AppStorage("appearance") private var appearance: MailAppearance = .system
     @AppStorage("defaultSendingAccount") private var defaultSendingAccount = ""
 
@@ -22,6 +24,7 @@ struct SettingsView: View {
             readingSettings.tabItem { PostmereLabel("General", symbol: "gearshape", size: 18) }.tag("general")
             composingSettings.tabItem { PostmereLabel("Composing", symbol: "square.and.pencil", size: 18) }.tag("composing")
             accountSettings.tabItem { PostmereLabel("Accounts", symbol: "person.crop.circle", size: 18) }.tag("accounts")
+            privacySettings.tabItem { PostmereLabel("Privacy", symbol: "shield", size: 18) }.tag("privacy")
             notificationSettings.tabItem { PostmereLabel("Notifications", symbol: "bell", size: 18) }.tag("notifications")
             screeningSettings.tabItem { PostmereLabel("Rules", symbol: "line.3.horizontal.decrease.circle", size: 18) }.tag("rules")
             shortcutSettings.tabItem { PostmereLabel("Shortcuts", symbol: "keyboard", size: 18) }.tag("shortcuts")
@@ -79,6 +82,36 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var privacySettings: some View {
+        Form {
+            Section("Incoming mail") {
+                privacyToggle("Load remote images automatically", isOn: $loadRemoteMailImagesAutomatically,
+                              detail: "Image hosts can see your IP address. Turn this off to choose which messages can load images.")
+                privacyToggle("Block sender tracking pixels", isOn: $blockSenderTrackingPixels,
+                              detail: "Keeps detected trackers from loading and shows the blocked count beside the recipients.")
+            }
+            Section("Profile photos") {
+                LabeledContent("Photos from Contacts") { ContactPhotoAccess() }
+                privacyToggle("Show website icons for organizations", isOn: Bindable(MailRemoteParticipantImages.websiteIcons).enabled,
+                              detail: "Bitwarden receives the website’s domain and your IP address. It can fetch the icon from the website.")
+                privacyToggle("Use Gravatar for missing photos", isOn: Bindable(MailRemoteParticipantImages.gravatar).enabled,
+                              detail: "Gravatar receives a hash of the email address and can recognize that address and see your IP address.")
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func privacyToggle(_ title: String, isOn: Binding<Bool>, detail: String) -> some View {
+        Toggle(isOn: isOn) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityLabel(title)
+        .accessibilityHint(detail)
     }
 
     private var composingSettings: some View {

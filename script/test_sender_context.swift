@@ -3,7 +3,27 @@ import Foundation
 @main
 private struct SenderContextChecks {
     @MainActor
-    static func main() throws {
+    static func main() async throws {
+        let domains = WebsiteIconDomains(listURL: URL(filePath: "Resources/public_suffix_list.dat"))
+        let senders: [(String, String?)] = [
+            ("Shipping <notice@unique.courier.co.uk>", "courier.co.uk"),
+            ("News <updates@E.STRIPE.COM>", "stripe.com"),
+            ("studio@mail.live.studio", "live.studio"), ("hi@account.github.io", "account.github.io"), ("hello@github.io", nil),
+            ("hi@public.city.kawasaki.jp", "city.kawasaki.jp"), ("hi@brand.kawasaki.jp", nil),
+            ("one@xn--bcher-kva.de", "xn--bcher-kva.de"), ("me@shop.xn--55qx5d.cn", "shop.xn--55qx5d.cn"),
+            ("me@googlemail.com", nil), ("You <me@yahoo.co.uk>", nil), ("you@icloud.com", nil),
+            ("foo@192.168.0.10", nil), ("test@dev.local", nil), ("x@co.uk", nil),
+            ("x@myrouter.home.arpa", nil), ("private@somehiddenservice.onion", nil),
+            ("hi@demo.example.com", nil), ("one@stripe.com, two@stripe.com", nil)
+        ]
+        for (address, expected) in senders {
+            let domain = MailSenderDomain.email(in: address).flatMap { domains.website(for: $0) }
+            precondition(domain == expected, "Unexpected domain for \(address): \(domain ?? "nil")")
+        }
+        precondition(WebsiteIconDomains(listURL: nil).website(for: "hello@stripe.com") == nil)
+        print("PASS: public suffixes, private tenants, wildcards and exceptions; excludes personal and private domains")
+        try await websiteIcons(domains)
+        try await gravatarPhotos()
         let priorAccounts = RemoteAccountRegistry.accounts
         defer { RemoteAccountRegistry.accounts = priorAccounts }
         let accountA = RemoteAccountIdentity(localID: "remote:workspace-a:account-a", accountID: UUID(), scope: "workspace-a", email: "me@example.com", displayName: "Me", provider: "google")
@@ -78,5 +98,119 @@ private struct SenderContextChecks {
         let preserved = try Data(contentsOf: url)
         precondition(preserved == corrupt)
         print("PASS: durable normalized private notes, workspace separation, owner-only permissions, deletion, and corruption protection")
+    }
+
+    @MainActor
+    private static func websiteIcons(_ domains: WebsiteIconDomains) async throws {
+        let suite = "PostmereWebsiteIcons-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let icons = MailRemoteParticipantImages(source: .websiteIcon, preferences: defaults,
+                                                configuration: RealtimeFixtureProtocol.configuration(), iconDomains: domains)
+        let recorder = RealtimeFixtureRecorder()
+        RealtimeFixtureProtocol.recorder = recorder
+        let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGNg9HMDIgYIBQAPRgJV0G6wuQAAAABJRU5ErkJggg==")!
+        RealtimeFixtureProtocol.handler = { _, fixture in fixture.response(200, headers: ["Content-Type": "image/png"], chunks: [png]) }
+        let privatePhoto = await icons.photo(email: "fixture@outlook.com")
+        let invalidPhoto = await icons.photo(email: "fixture@local.test")
+        let path = await icons.photo(email: "fixture@stripe.com/secret")
+        let embedded = await icons.photo(email: "fixture@stripe.com?mail=person@private.org")
+        try realtimeCheck(icons.enabled && privatePhoto == nil && invalidPhoto == nil && path == nil && embedded == nil &&
+                          recorder.requests.isEmpty,
+                          "Website lookup should default on but skip private and common personal mail domains")
+        async let first = icons.photo(email: "special-id@scheduled.unique-id.newshop.co.uk")
+        async let second = icons.photo(email: "different-person@support.newshop.co.uk")
+        let (row, profile) = await (first, second)
+        let request = recorder.requests.first!
+        try realtimeCheck(recorder.requests.count == 1 && row?.image.width == 2 && profile?.website == "newshop.co.uk" &&
+                          request.url?.absoluteString == "https://icons.bitwarden.net/newshop.co.uk/icon.png",
+                          "An uncatalogued domain must resolve once without any address or sender subdomain disclosure")
+        try realtimeCheck(["Cookie", "Authorization", "X-Ambient", "Referer"].allSatisfy { request.value(forHTTPHeaderField: $0) == nil },
+                          "Website icon request included credentials or metadata")
+        RealtimeFixtureProtocol.handler = { _, fixture in fixture.response(404, headers: ["Content-Type": "image/png"], chunks: [png]) }
+        let missing = await icons.photo(email: "fixture@metalwork.co.uk")
+        _ = await icons.photo(email: "two@news.metalwork.co.uk")
+        try realtimeCheck(missing == nil && recorder.requests.count == 2, "Missing website icons must be negative-cached")
+        RealtimeFixtureProtocol.handler = { _, fixture in fixture.response(302, headers: ["Location": "https://other.invalid/icon.png"]) }
+        let redirected = await icons.photo(email: "fixture@builders.co.uk")
+        try realtimeCheck(redirected == nil && recorder.requests.count == 3, "Icon redirect should produce initials")
+        // This ICO holds a 16px and a 32px square in one directory.
+        let ico = Data(base64Encoded: "AAABAAIAEBAAAAAAIABeAAAAJgAAACAgAAAAACAAcAAAAIQAAACJUE5HDQoaCgAAAA1JSERSAAAAEAAAABAIBgAAAB/z/2EAAAAlSURBVHicY7wjF/WfgQLARInmUQMggImBQsA0agDDqAEMlBsAALClAnN+lGHzAAAAAElFTkSuQmCCiVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAN0lEQVR4nO3QQREAMAgDQYoQhKG9XspUBZ+NgcvsudUvFpebcQcIECBAgAABAgQIECBAgACBTzCKpwKTBY+kSgAAAABJRU5ErkJggg==")!
+        RealtimeFixtureProtocol.handler = { _, fixture in fixture.response(200, headers: ["Content-Type": "image/x-icon"], chunks: [ico]) }
+        let favicon = await icons.photo(email: "fixture@bitmap.co.uk")
+        try realtimeCheck(favicon?.image.width == 32 && favicon?.image.height == 32 && recorder.requests.count == 4,
+                          "An ICO site icon should use its largest valid representation")
+        RealtimeFixtureProtocol.handler = { _, fixture in fixture.response(404, headers: ["Content-Type": "image/x-icon"], chunks: [ico]) }
+        let genericMissingIcon = await icons.photo(email: "fixture@nousericon.co.uk")
+        try realtimeCheck(genericMissingIcon == nil, "A 404 containing an ICO must still fall back to initials")
+        icons.enabled = false
+        let disabled = await icons.photo(email: "again@newshop.co.uk")
+        try realtimeCheck(disabled == nil && recorder.requests.count == 5 &&
+                          !MailRemoteParticipantImages(source: .websiteIcon, preferences: defaults).enabled,
+                          "Disabling website icons should suppress cached images and persist across launches")
+        defaults.removeObject(forKey: "showParticipantWebsiteIcons")
+        defaults.set(false, forKey: "loadRemoteMailImagesAutomatically")
+        let upgraded = MailRemoteParticipantImages(source: .websiteIcon, preferences: defaults)
+        try realtimeCheck(!upgraded.enabled, "Upgrades must preserve an existing remote-content opt-out")
+        upgraded.enabled = true
+        try realtimeCheck(MailRemoteParticipantImages(source: .websiteIcon, preferences: defaults).enabled,
+                          "The website preference should work independently after migration")
+        print("PASS: real website icon flow over isolated fixture HTTP, one request per organization, misses, privacy control")
+    }
+
+    @MainActor
+    private static func gravatarPhotos() async throws {
+        let suite = "PostmereSenderPhotos-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let photos = MailRemoteParticipantImages(source: .gravatar, preferences: defaults, configuration: RealtimeFixtureProtocol.configuration())
+        let recorder = RealtimeFixtureRecorder()
+        RealtimeFixtureProtocol.recorder = recorder
+        let (arrivals, continuation) = AsyncStream.makeStream(of: RealtimeFixtureProtocol.self)
+        defer { continuation.finish() }
+        RealtimeFixtureProtocol.handler = { _, fixture in continuation.yield(fixture) }
+        let address = "fixture@example.test"
+        let off = await photos.photo(email: address)
+        try realtimeCheck(off == nil && recorder.requests.isEmpty, "Disabled lookups must send zero requests")
+        photos.enabled = true
+        try realtimeCheck(MailRemoteParticipantImages(source: .gravatar, preferences: defaults).enabled, "Explicit photo preference did not survive restart")
+        var events = arrivals.makeAsyncIterator()
+        let first = Task { await photos.photo(email: " FIXTURE@Example.Test ") }
+        let second = Task { await photos.photo(email: address) }
+        let response = await events.next()!
+        let request = recorder.requests[0]
+        let url = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!
+        let hash = "715bfed2a3994e3624c5dbb39b733e19ff11fdf5395fee9ac3218197d512d3c2"
+        try realtimeCheck(url.scheme == "https" && url.host == "gravatar.com" && url.path == "/avatar/\(hash)" &&
+                          url.queryItems?.contains(URLQueryItem(name: "d", value: "404")) == true,
+                          "Photo requests must use the normalized SHA-256 Gravatar URL")
+        try realtimeCheck(["Cookie", "Authorization", "X-Ambient"].allSatisfy { request.value(forHTTPHeaderField: $0) == nil },
+                          "Photo request included ambient credentials or headers")
+        let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGNg9HMDIgYIBQAPRgJV0G6wuQAAAABJRU5ErkJggg==")!
+        response.response(200, headers: ["Content-Type": "image/png"], chunks: [png])
+        let a = await first.value, b = await second.value, cached = await photos.photo(email: address)
+        try realtimeCheck(a?.image.width == 2 && b?.image.width == 2 && cached?.image.width == 2 && recorder.requests.count == 1,
+                          "Concurrent row/profile requests must share one valid cached image")
+
+        RealtimeFixtureProtocol.handler = { _, fixture in fixture.response(404) }
+        let missing = await photos.photo(email: "missing@example.test")
+        _ = await photos.photo(email: "missing@example.test")
+        try realtimeCheck(missing == nil && recorder.requests.count == 2, "Missing Gravatars should fall back and be negative-cached")
+        RealtimeFixtureProtocol.handler = { _, fixture in fixture.response(200, headers: ["Content-Type": "image/png"], chunks: [Data("not an image".utf8)]) }
+        let invalid = await photos.photo(email: "invalid@example.test")
+        try realtimeCheck(invalid == nil, "A non-image response was displayed")
+        RealtimeFixtureProtocol.handler = { _, fixture in fixture.client?.urlProtocol(fixture, didFailWithError: URLError(.notConnectedToInternet)) }
+        let offline = await photos.photo(email: "offline@example.test")
+        try realtimeCheck(offline == nil, "A connection failure must leave the local fallback visible")
+
+        RealtimeFixtureProtocol.handler = { _, _ in }
+        let count = recorder.requests.count
+        let outstanding = Task { await photos.photo(email: "pending@example.test") }
+        try await eventually("Outstanding photo lookup never started") { recorder.requests.count > count }
+        photos.enabled = false
+        let cancelled = await outstanding.value
+        let previous = await photos.photo(email: address)
+        try realtimeCheck(cancelled == nil && previous == nil, "Disabling Gravatar must cancel in-flight requests and hide cached images")
+        print("PASS: opt-in only, hashed HTTPS URL, shared cache, missing and invalid images, network failure and opt-out")
     }
 }

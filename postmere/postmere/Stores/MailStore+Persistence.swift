@@ -74,20 +74,54 @@ extension MailStore {
         guard !persistenceBlocked else { return false }
         preserveRecoveredDraftDuringComposition()
         guard let persistence else { return true }
+        pendingReaderSave?.cancel()
+        pendingReaderSave = nil
+        saveRevision += 1
+        let snapshot = mailboxSnapshot
         do {
-            try persistence.save(MailStateSnapshot(messages: messages, savedViews: savedViews,
-                snippets: snippets, senderRules: senderRules, outgoingQueue: outgoingQueue,
-                activeDraft: isComposing ? activeDraftSnapshot : recoveredDraft,
-                senderScreeningEnabled: senderScreeningEnabled, inboxSplits: inboxSplits,
-                selectedInboxSplitID: selectedInboxSplitID, inboxSplitOverlapPolicy: inboxSplitOverlapPolicy,
-                vipContacts: vipContacts, backendSyncCursors: backendSyncCursors,
-                backendNotificationCutoffs: backendNotificationCutoffs))
+            try saveQueue.sync { try persistence.save(snapshot) }
             persistenceError = nil
             return true
         } catch {
             persistenceError = "Changes could not be saved: \(error.localizedDescription) Keep Postmere open and retry after resolving the storage problem."
             return false
         }
+    }
+
+    private var mailboxSnapshot: MailStateSnapshot {
+        MailStateSnapshot(messages: messages, savedViews: savedViews,
+                snippets: snippets, senderRules: senderRules, outgoingQueue: outgoingQueue,
+                activeDraft: isComposing ? activeDraftSnapshot : recoveredDraft,
+                senderScreeningEnabled: senderScreeningEnabled, inboxSplits: inboxSplits,
+                selectedInboxSplitID: selectedInboxSplitID, inboxSplitOverlapPolicy: inboxSplitOverlapPolicy,
+                vipContacts: vipContacts, backendSyncCursors: backendSyncCursors,
+                backendNotificationCutoffs: backendNotificationCutoffs)
+    }
+
+    // Selection and delivery metadata can be saved after the reader paints. Explicit
+    // transactions and lifecycle flushes share the queue so an older save cannot win.
+    func persistReaderChange() {
+        guard persistenceReady, persistenceSuspended == 0, !persistenceBlocked, let persistence else { return }
+        preserveRecoveredDraftDuringComposition()
+        pendingReaderSave?.cancel()
+        saveRevision += 1
+        let revision = saveRevision
+        let snapshot = mailboxSnapshot
+        let save = DispatchWorkItem { @Sendable [weak self] in
+            let result = Result { try persistence.save(snapshot) }
+            guard let self else { return }
+            Task { @MainActor in
+                guard self.saveRevision == revision else { return }
+                self.pendingReaderSave = nil
+                switch result {
+                case .success: self.persistenceError = nil
+                case .failure(let error):
+                    self.persistenceError = "Changes could not be saved: \(error.localizedDescription) Keep Postmere open and retry after resolving the storage problem."
+                }
+            }
+        }
+        pendingReaderSave = save
+        saveQueue.async(execute: save)
     }
 
     @discardableResult
@@ -188,35 +222,40 @@ extension MailStore {
     func syncProviderChanges(from previous: [MailMessage]) {
         guard persistenceReady, !suppressRemoteMutations else { return }
         let before = Dictionary(uniqueKeysWithValues: previous.map { ($0.id, $0) })
-        for message in messages where message.mailAccount.isRemote && message.providerMessageID != nil && !message.isDeletedOnProvider {
-            guard let old = before[message.id],
-                  old.isUnread != message.isUnread || old.isStarred != message.isStarred || old.mailbox != message.mailbox else { continue }
-            var expected = providerOverrides[message.id] ?? ProviderMessageOverride()
-            if old.isUnread != message.isUnread { expected.isUnread = message.isUnread }
-            if old.isStarred != message.isStarred { expected.isStarred = message.isStarred }
-            if old.mailbox != message.mailbox { expected.mailbox = message.mailbox }
-            providerOverrides[message.id] = expected
-            let priorTask = remoteMutationTasks[message.id]
-            remoteMutationTasks[message.id] = Task { [weak self] in
-                await priorTask?.value
-                guard let self else { return }
-                do {
-                    guard let remoteMutation = self.remoteMutation else { throw MailStorageError.missingSender }
-                    try await remoteMutation(old, message)
-                } catch {
-                    self.removeFailedProviderOverride(from: old, to: message)
-                    self.operationError = "The mail provider could not save that change: \(error.localizedDescription)"
-                    self.lastAction = "Provider change failed"
-                    guard let index = self.messages.firstIndex(where: { $0.id == message.id }) else { return }
-                    var current = self.messages[index]
-                    if current.isUnread == message.isUnread { current.isUnread = old.isUnread }
-                    if current.isStarred == message.isStarred { current.isStarred = old.isStarred }
-                    if current.mailbox == message.mailbox { current.mailbox = old.mailbox; current.trashedFrom = old.trashedFrom }
-                    self.suppressRemoteMutations = true
-                    self.messages[index] = current
-                    self.suppressRemoteMutations = false
-                    self.reconcileSelection()
-                }
+        for message in messages {
+            if let old = before[message.id] { syncProviderChange(from: old, to: message) }
+        }
+    }
+
+    func syncProviderChange(from old: MailMessage, to message: MailMessage) {
+        guard persistenceReady, !suppressRemoteMutations, message.mailAccount.isRemote,
+              message.providerMessageID != nil, !message.isDeletedOnProvider,
+              old.isUnread != message.isUnread || old.isStarred != message.isStarred || old.mailbox != message.mailbox else { return }
+        var expected = providerOverrides[message.id] ?? ProviderMessageOverride()
+        if old.isUnread != message.isUnread { expected.isUnread = message.isUnread }
+        if old.isStarred != message.isStarred { expected.isStarred = message.isStarred }
+        if old.mailbox != message.mailbox { expected.mailbox = message.mailbox }
+        providerOverrides[message.id] = expected
+        let priorTask = remoteMutationTasks[message.id]
+        remoteMutationTasks[message.id] = Task { [weak self] in
+            await priorTask?.value
+            guard let self else { return }
+            do {
+                guard let remoteMutation = self.remoteMutation else { throw MailStorageError.missingSender }
+                try await remoteMutation(old, message)
+            } catch {
+                self.removeFailedProviderOverride(from: old, to: message)
+                self.operationError = "The mail provider could not save that change: \(error.localizedDescription)"
+                self.lastAction = "Provider change failed"
+                guard let index = self.messages.firstIndex(where: { $0.id == message.id }) else { return }
+                var current = self.messages[index]
+                if current.isUnread == message.isUnread { current.isUnread = old.isUnread }
+                if current.isStarred == message.isStarred { current.isStarred = old.isStarred }
+                if current.mailbox == message.mailbox { current.mailbox = old.mailbox; current.trashedFrom = old.trashedFrom }
+                self.suppressRemoteMutations = true
+                self.messages[index] = current
+                self.suppressRemoteMutations = false
+                self.reconcileSelection()
             }
         }
     }
