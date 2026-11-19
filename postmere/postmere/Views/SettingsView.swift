@@ -2,6 +2,7 @@ import SwiftUI
 import UserNotifications
 
 struct SettingsView: View {
+    @Environment(\.postmereAccent) private var palette
     @Bindable var store: MailStore
     @Bindable var runtime: MailRuntime
     @Environment(\.openURL) private var openURL
@@ -17,6 +18,7 @@ struct SettingsView: View {
     @AppStorage("loadRemoteMailImagesAutomatically") private var loadRemoteMailImagesAutomatically = true
     @AppStorage("blockSenderTrackingPixels") private var blockSenderTrackingPixels = true
     @AppStorage("appearance") private var appearance: MailAppearance = .system
+    @AppStorage(PostmereAccent.preferenceKey) private var primaryColorRGB = PostmereAccent.defaultRGB
     @AppStorage("defaultSendingAccount") private var defaultSendingAccount = ""
 
     var body: some View {
@@ -30,7 +32,6 @@ struct SettingsView: View {
             shortcutSettings.tabItem { PostmereLabel("Shortcuts", symbol: "keyboard", size: 18) }.tag("shortcuts")
         }
         .padding(.top, 8)
-        .tint(PostmereTheme.accentInk)
         .frame(width: 640, height: 590)
         .sheet(isPresented: $showsInboxManager) { InboxManagementView(store: store) }
         .onChange(of: MailAccount.allCases.map(\.rawValue), initial: true) {
@@ -49,6 +50,23 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                LabeledContent("Primary color") {
+                    HStack(spacing: 10) {
+                        if primaryColorRGB != PostmereAccent.defaultRGB {
+                            Button("Reset") { primaryColorRGB = PostmereAccent.defaultRGB }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .accessibilityLabel("Reset primary color")
+                        }
+                        ColorPicker("Primary color", selection: Binding(
+                            get: { palette.swatch },
+                            set: { color in
+                                if let rgb = PostmereAccent.rgbValue(of: color) { primaryColorRGB = rgb }
+                            }
+                        ), supportsOpacity: false)
+                        .labelsHidden()
+                    }
+                }
             }
             Section("Reading") {
                 Toggle("Show message previews", isOn: $showMessagePreviews)
@@ -218,7 +236,7 @@ struct SettingsView: View {
                 Label {
                     Text("Allowed")
                 } icon: {
-                    PostmereIcon("checkmark.circle", size: 15).foregroundStyle(PostmereTheme.accentInk)
+                    PostmereIcon("checkmark.circle", size: 15).foregroundStyle(palette.accentInk)
                 }
                 .labelStyle(.titleAndIcon)
             case .provisional:

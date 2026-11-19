@@ -2,9 +2,6 @@ import SwiftUI
 import AppKit
 
 enum PostmereTheme {
-    // The app icon's forest green anchors every window. Control fills and
-    // foreground accents share a hue but keep their own contrast in Dark Mode.
-    // Filled controls need a deeper green than the native tab's selected glyph.
     static let accent = adaptive(light: 0x123F36, dark: 0x3B7C6B)
     static let accentInk = adaptive(light: 0x123F36, dark: 0x94C9BE)
     static let paper = adaptive(light: 0xFDFCF8, dark: 0x1E211F)
@@ -33,7 +30,17 @@ enum PostmereTheme {
 
 extension View {
     func postmereStyle() -> some View {
-        self.tint(PostmereTheme.accent)
+        modifier(PostmereStyle())
+    }
+}
+
+private struct PostmereStyle: ViewModifier {
+    @AppStorage(PostmereAccent.preferenceKey) private var rgb = PostmereAccent.defaultRGB
+
+    func body(content: Content) -> some View {
+        let palette = PostmereAccent(rgb: rgb)
+        content.environment(\.postmereAccent, palette)
+            .tint(palette.accent)
             .symbolRenderingMode(.monochrome)
     }
 }

@@ -23,7 +23,7 @@ struct WorkspaceView: View {
                 }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        }.frame(width: 790, height: 670).tint(PostmereTheme.accent)
+        }.frame(width: 790, height: 670)
     }
 }
 

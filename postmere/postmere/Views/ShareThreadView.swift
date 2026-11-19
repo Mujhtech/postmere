@@ -44,7 +44,7 @@ struct ShareThreadView: View {
                 Button(existing == nil ? "Share Snapshot" : "Save Access") { Task { await save() } }
                     .buttonStyle(.borderedProminent).disabled(busy || (existing == nil && !permissions.values.contains(where: { $0 != "none" })))
             }
-        }.padding(24).frame(width: 590, height: 470).tint(PostmereTheme.accent)
+        }.padding(24).frame(width: 590, height: 470)
             .task {
                 do {
                     let response: WorkspaceMembers = try await runtime.backend.request("GET", "/v1/workspace/members")

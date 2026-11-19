@@ -5,6 +5,7 @@ import SwiftUI
 /// This is the root of every window until the server verifies a workspace
 /// session. Completion is session state, never a dismissible local preference.
 struct WorkspaceOnboardingView: View {
+    @Environment(\.postmereAccent) private var palette
     @Bindable var session: BackendSession
     @State private var workspaceID = ""
     @State private var email = ""
@@ -76,7 +77,7 @@ struct WorkspaceOnboardingView: View {
             wordmark.padding(.bottom, 8)
             Text("Sign in to your workspace")
                 .font(.system(size: 30, weight: .semibold, design: .serif))
-                .foregroundStyle(PostmereTheme.accentInk)
+                .foregroundStyle(palette.accentInk)
                 .accessibilityAddTraits(.isHeader)
             Text("Use the server URL and workspace ID from your administrator. After signing in, you can add a Google or Outlook account.")
                 .font(.body)

@@ -3,6 +3,7 @@ import Observation
 import SwiftUI
 
 struct MailFormattingButton: View {
+    @Environment(\.postmereAccent) private var palette
     let title: String
     let symbol: String
     let active: Bool
@@ -12,8 +13,8 @@ struct MailFormattingButton: View {
         Button(action: action) {
             PostmereIcon(symbol, size: 14)
                 .frame(width: 26, height: 24)
-                .foregroundStyle(active ? PostmereTheme.accentInk : PostmereTheme.icon)
-                .background(active ? PostmereTheme.accentInk.opacity(0.12) : .clear, in: .rect(cornerRadius: 4))
+                .foregroundStyle(active ? palette.accentInk : PostmereTheme.icon)
+                .background(active ? palette.accentInk.opacity(0.12) : .clear, in: .rect(cornerRadius: 4))
                 .contentShape(.rect)
         }
         .buttonStyle(.borderless)

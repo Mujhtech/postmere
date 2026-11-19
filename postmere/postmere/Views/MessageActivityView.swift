@@ -24,6 +24,7 @@ nonisolated struct BackendActivityEvent: Decodable, Identifiable, Sendable {
 }
 
 struct MessageActivityView: View {
+    @Environment(\.postmereAccent) private var palette
     let message: MailMessage
     let session: BackendSession
     @State private var response: BackendActivityResponse?
@@ -88,13 +89,13 @@ struct MessageActivityView: View {
                     }
                 }.padding(24)
             }
-        }.frame(width: 570, height: 540).tint(PostmereTheme.accent)
+        }.frame(width: 570, height: 540)
             .task { await refresh() }
     }
 
     private func metric(_ title: String, value: Int, enabled: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(enabled ? value.formatted() : "Off").font(.system(size: 30, weight: .medium, design: .serif)).foregroundStyle(PostmereTheme.accentInk)
+            Text(enabled ? value.formatted() : "Off").font(.system(size: 30, weight: .medium, design: .serif)).foregroundStyle(palette.accentInk)
             Text(title).font(.caption).foregroundStyle(.secondary)
         }
     }

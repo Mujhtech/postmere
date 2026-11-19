@@ -4,6 +4,7 @@ import WebKit
 
 /// Displays one message inside the reader's scroll view. Each message owns its image-loading choice.
 struct HTMLMessageBody: View {
+    @Environment(\.postmereAccent) private var palette
     let html: String
     let paragraphs: [String]
     let fontSize: Double
@@ -32,7 +33,7 @@ struct HTMLMessageBody: View {
             if layout.hasRemoteImages && !loadsImages && !failed {
                 Button("Load Remote Images") { imageError = nil; consentedHTML = html }
                     .controlSize(.small)
-                    .tint(PostmereTheme.accentInk)
+                    .tint(palette.accentInk)
                     .help("Allow images from the sender’s servers for this message")
             }
             if let imageError { Text(imageError).font(.caption).foregroundStyle(.secondary) }

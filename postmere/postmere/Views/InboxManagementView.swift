@@ -195,6 +195,7 @@ private struct InboxSplitEditor: View {
 }
 
 struct InboxTabsView: View {
+    @Environment(\.postmereAccent) private var palette
     @Bindable var store: MailStore
     let onManage: () -> Void
 
@@ -223,9 +224,9 @@ struct InboxTabsView: View {
                 if count > 0 { Text(count.formatted()).monospacedDigit().font(.system(size: 10, weight: .semibold)) }
             }
             .font(.system(size: 11, weight: selected ? .semibold : .regular))
-            .foregroundStyle(selected ? PostmereTheme.accentInk : .secondary)
+            .foregroundStyle(selected ? palette.accentInk : .secondary)
             .padding(.horizontal, 9).frame(height: 27)
-            .background(selected ? PostmereTheme.accentInk.opacity(0.10) : .clear, in: .rect(cornerRadius: 6))
+            .background(selected ? palette.accentInk.opacity(0.10) : .clear, in: .rect(cornerRadius: 6))
         }.buttonStyle(.plain)
             .accessibilityLabel("\(title) inbox tab")
             .accessibilityValue("\(selected ? "Selected, " : "")\(count) unread conversations")

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SharedTemplatesView: View {
+    @Environment(\.postmereAccent) private var palette
     let runtime: MailRuntime
     @State private var summaries: [SharedSnippetSummary] = []
     @State private var detail: SharedSnippetDetail?
@@ -47,7 +48,7 @@ struct SharedTemplatesView: View {
                                 Button("Remove Shared Template", role: .destructive) { Task { await remove(detail.id) } }
                             }
                         } else { Text("Select a team template to preview its text, recipients, and files.").foregroundStyle(.secondary) }
-                        if let notice { Text(notice).font(.caption).foregroundStyle(PostmereTheme.accentInk) }
+                        if let notice { Text(notice).font(.caption).foregroundStyle(palette.accentInk) }
                         if let error { Text(error).font(.caption).foregroundStyle(.red) }
                     }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
                 }.frame(minWidth: 400)

@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ComposerView: View {
+    @Environment(\.postmereAccent) private var palette
     @Bindable var store: MailStore
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(MailRuntime.self) private var runtime
@@ -47,7 +48,6 @@ struct ComposerView: View {
         }
         .background(PostmereTheme.paper)
         .containerBackground(PostmereTheme.paper, for: .window)
-        .tint(PostmereTheme.accent)
         .frame(minWidth: 640, idealWidth: 840, minHeight: 520, idealHeight: 780)
         .navigationTitle(store.draftSubject.isEmpty ? "New Message" : store.draftSubject)
         .focusedSceneValue(\.mailStore, store)
@@ -214,7 +214,7 @@ struct ComposerView: View {
                 }
             } label: {
                 PostmereLabel(store.draftSendAt != nil ? "Schedule" : "Send", symbol: "arrow.up", size: 17)
-                    .foregroundStyle(store.canSendDraft ? PostmereTheme.accentInk : .secondary)
+                    .foregroundStyle(store.canSendDraft ? palette.accentInk : .secondary)
             } primaryAction: {
                 store.sendDraft()
             }
@@ -417,7 +417,6 @@ struct ComposerView: View {
             .glassEffect(.regular, in: .capsule)
         }
         .controlSize(.small)
-        .tint(PostmereTheme.accent)
         .padding(.trailing, 18)
         .padding(.top, 10)
         .padding(.bottom, 4)

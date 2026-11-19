@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SharedThreadView: View {
+    @Environment(\.postmereAccent) private var palette
     let runtime: MailRuntime
     let threadID: UUID
     @State private var detail: SharedThreadDetail?
@@ -56,7 +57,7 @@ struct SharedThreadView: View {
                         let present = detail.presence.filter { $0.userId != runtime.backend.credential?.userID && $0.expiresAt > .now }
                         if !present.isEmpty {
                             PostmereLabel(present.map(\.email).joined(separator: ", ") + " composing a reply", symbol: "square.and.pencil", size: 13)
-                                .font(.caption).foregroundStyle(PostmereTheme.accentInk)
+                                .font(.caption).foregroundStyle(palette.accentInk)
                         }
                         Divider()
                         Text("Discussion").font(.subheadline.weight(.semibold))

@@ -3,6 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SnippetPickerView: View {
+    @Environment(\.postmereAccent) private var palette
     let snippets: [MailSnippet]
     let draft: MailTemplateDraft
     let onSave: (MailSnippet) -> Void
@@ -108,7 +109,7 @@ struct SnippetPickerView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .menuStyle(.borderlessButton)
-            .tint(PostmereTheme.accentInk)
+            .tint(palette.accentInk)
             .padding(12)
         }.frame(width: 200)
     }

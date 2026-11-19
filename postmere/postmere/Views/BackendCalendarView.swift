@@ -36,12 +36,12 @@ struct CalendarHomeView: View {
             }
         }
         .frame(width: 680, height: 590)
-        .tint(PostmereTheme.accent)
         .sheet(item: $eventDraft) { CalendarEventDraftView(draft: $0) }
     }
 }
 
 struct BookingLinksView: View {
+    @Environment(\.postmereAccent) private var palette
     let session: BackendSession
     var onInsert: ((String) -> Void)?
     @State private var links: [BookingLink] = []
@@ -111,7 +111,7 @@ struct BookingLinksView: View {
                         }
                     }
                     if let error { Text(error).font(.caption).foregroundStyle(.red) }
-                    if let notice { Text(notice).font(.caption).foregroundStyle(PostmereTheme.accentInk) }
+                    if let notice { Text(notice).font(.caption).foregroundStyle(palette.accentInk) }
                 }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
             }
         }.task(id: session.scope) {
