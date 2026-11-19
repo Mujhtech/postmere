@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct RichTextMessageBody: View {
+    @Environment(\.postmereAccent) private var palette
     let rtf: Data?
     let paragraphs: [String]
     let fontSize: Double
@@ -10,22 +11,34 @@ struct RichTextMessageBody: View {
     @State private var finishedDecoding = false
 
     var body: some View {
+        let source = Source(rtf: rtf, paragraphs: paragraphs, context: quoteContext)
         Group {
-            if let formatted {
-                Text(formatted)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if rtf != nil && !finishedDecoding {
-                if let first = paragraphs.first(where: { !$0.isEmpty }) {
-                    Text(verbatim: String(first.prefix(600))).lineLimit(6)
-                } else {
-                    ProgressView("Loading message…").controlSize(.small)
-                }
-            } else {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    ForEach(paragraphs.indices, id: \.self) { index in
-                        Text(verbatim: paragraphs[index]).fixedSize(horizontal: false, vertical: true)
+            if let rendered {
+                VStack(alignment: .leading, spacing: 8) {
+                    content(rendered.reply)
+                    if let quote = rendered.quote {
+                        Button {
+                            showsQuote.toggle()
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: showsQuote ? "chevron.down" : "chevron.right")
+                                    .font(.caption2)
+                                Text(showsQuote ? "Show less" : rendered.title)
+                            }
+                        }
+                        .font(.callout)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(palette.accentInk)
+                        .accessibilityValue(showsQuote ? "Expanded" : "Collapsed")
+                        if showsQuote { content(quote) }
                     }
                 }
+            } else if rtf == nil && quoteContext == nil {
+                content(.plain(paragraphs))
+            } else if let first = paragraphs.first(where: { !$0.isEmpty }) {
+                Text(verbatim: String(first.prefix(600))).lineLimit(6)
+            } else {
+                ProgressView("Loading message…").controlSize(.small)
             }
         }
         .font(.system(size: fontSize))
@@ -40,8 +53,20 @@ struct RichTextMessageBody: View {
             formatted = nil
             let result = await Self.decode(rtf)
             guard !Task.isCancelled else { return }
-            formatted = result
-            finishedDecoding = true
+            rendered = result
+        }
+    }
+
+    @ViewBuilder private func content(_ body: TextBody) -> some View {
+        switch body {
+        case .formatted(let formatted):
+            Text(formatted).fixedSize(horizontal: false, vertical: true)
+        case .plain(let paragraphs):
+            LazyVStack(alignment: .leading, spacing: 18) {
+                ForEach(paragraphs.indices, id: \.self) { index in
+                    Text(verbatim: paragraphs[index]).fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 

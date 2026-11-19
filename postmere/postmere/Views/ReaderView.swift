@@ -270,7 +270,15 @@ struct ReaderView: View {
         .font(.system(size: 11))
     }
 
-    private func conversationMessage(_ message: MailMessage) -> some View {
+    private func revealMessageInThread(_ id: UUID) {
+        expandedMessageIDs.insert(id)
+        let anchor = ThreadGroupAnchor(firstMessage: id)
+        usesIndividualSourceTargets = true
+        summarySourceAnchor = anchor
+        readingPosition.scrollTo(id: anchor, anchor: .top)
+    }
+
+    private func conversationMessage(_ message: MailMessage, quoteThread: MailQuoteThread, prepared: Bool) -> some View {
         let isExpanded = expandedMessageIDs.contains(message.id)
         return HoverableMailMessage {
             VStack(alignment: .leading, spacing: 0) {
@@ -287,7 +295,7 @@ struct ReaderView: View {
         }
     }
 
-    private func messageContents(_ message: MailMessage) -> some View {
+    private func messageContents(_ message: MailMessage, trackerCount: Binding<Int>, quoteContext: MailQuoteContext? = nil) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Group {
                 if let html = message.receivedHTML {

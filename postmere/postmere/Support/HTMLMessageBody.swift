@@ -14,21 +14,23 @@ struct HTMLMessageBody: View {
     @AppStorage("blockSenderTrackingPixels") private var blocksTrackers = true
     @State private var layout = MessageHTMLLayout()
     @State private var page: WebPage?
+    @State private var loadedSource: Source?
     @State private var consentedHTML: String?
     @State private var imageError: String?
     @State private var failed = false
-    @State private var verticalEdges = HTMLScrollEdges()
+    @State private var documentGeneration = 0
 
     private var loadsImages: Bool { automaticImages || consentedHTML == html }
 
     private struct Source: Equatable {
         let html: String
-        let fontSize: Double
         let loadsImages: Bool
         let blocksTrackers: Bool
     }
 
     var body: some View {
+        let source = Source(html: html, loadsImages: loadsImages, blocksTrackers: blocksTrackers,
+                            quoteContext: quoteContext)
         VStack(alignment: .leading, spacing: 8) {
             if layout.hasRemoteImages && !loadsImages && !failed {
                 Button("Load Remote Images") { imageError = nil; consentedHTML = html }
@@ -67,39 +69,27 @@ struct HTMLMessageBody: View {
     }
 
     private func renderedMessage(_ page: WebPage) -> some View {
-        WebView(page)
-            .webViewLinkPreviews(.disabled)
-            .webViewBackForwardNavigationGestures(.disabled)
-            .webViewElementFullscreenBehavior(.disabled)
-            .webViewContentBackground(.hidden)
-            .webViewOnScrollGeometryChange(for: HTMLScrollEdges.self) { geometry in
-                HTMLScrollEdges(above: geometry.visibleRect.minY > 1,
-                                below: geometry.visibleRect.maxY < geometry.contentSize.height - 1)
-            } action: { _, edges in
-                verticalEdges = edges
-            }
-            .overlay {
-                HTMLWheelRouter(capped: layout.isHeightCapped, edges: verticalEdges)
-                    .accessibilityHidden(true)
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: layout.height)
+        MessageWebView(page: page, documentHeight: layout.height,
+                       needsReaderViewport: layout.needsReaderViewport || !layout.hasDocumentLayout)
             .opacity(layout.hasDocumentLayout ? 1 : 0)
             .accessibilityHidden(!layout.hasDocumentLayout)
             .accessibilityLabel("Message body")
     }
 
-    private func loadMessage() async {
+    private func loadMessage(_ source: Source) async {
+        loadedSource = nil
         page?.stopLoading()
         let currentPage = layout.makePage()
         page = currentPage
         failed = false
         imageError = nil
 
-        // Inspect sender markup under a data-only image policy before any remote
-        // request can start, including when automatic images are enabled.
         do {
-            for try await _ in currentPage.load(html: document(remoteImages: false)) { try Task.checkCancellation() }
+            // When both remote images and sender trackers are allowed, one navigation suffices.
+            // All other combinations start with a data-only policy for inspection.
+            let directDisplay = loadsImages && !blocksTrackers
+            try await loadDocument(in: currentPage, remoteImages: directDisplay)
+            if directDisplay { loadedSource = source; return }
             try Task.checkCancellation()
             let result = try await currentPage.callJavaScript("return globalThis.postmereImageAnalysis?.()",
                                                               contentWorld: .defaultClient)
@@ -114,7 +104,7 @@ struct HTMLMessageBody: View {
             }
             layout.blockedTrackerCount = blocksTrackers ? count : 0
             layout.hasRemoteImages = ordinary || (!blocksTrackers && trackingImages)
-            guard loadsImages, layout.hasRemoteImages else { return }
+            guard loadsImages, layout.hasRemoteImages else { loadedSource = source; return }
 
             if blocksTrackers && !resources.isEmpty {
                 do { try await layout.protectTrackingPixels(resources) }
@@ -124,7 +114,8 @@ struct HTMLMessageBody: View {
                 }
             }
             try Task.checkCancellation()
-            for try await _ in currentPage.load(html: document(remoteImages: true)) { try Task.checkCancellation() }
+            try await loadDocument(in: currentPage, remoteImages: true)
+            loadedSource = source
         } catch {
             guard !Task.isCancelled else { return }
             if layout.hasDocumentLayout { imageError = "Some message content could not be loaded." }
@@ -132,7 +123,15 @@ struct HTMLMessageBody: View {
         }
     }
 
-    private func document(remoteImages: Bool) -> String {
+    private func loadDocument(in page: WebPage, remoteImages: Bool) async throws {
+        let document = await Self.document(html: html, remoteImages: remoteImages, ink: palette.accentInkCSS)
+        try Task.checkCancellation()
+        for try await _ in page.load(html: document) { try Task.checkCancellation() }
+        try Task.checkCancellation()
+        documentGeneration += 1
+    }
+
+    @concurrent private static func document(html: String, remoteImages: Bool, ink: String) async -> String {
         let images = remoteImages ? "data: https:" : "data:"
         return """
         <!doctype html><html><head><meta charset="utf-8">
@@ -140,9 +139,9 @@ struct HTMLMessageBody: View {
         <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src \(images); form-action 'none'; base-uri 'none'">
         <meta http-equiv="x-dns-prefetch-control" content="off">
         <meta name="referrer" content="no-referrer">
-        <style>
-        :root { color-scheme: light dark; }
-        body { margin: 0; display: flow-root; font: \(fontSize)px -apple-system, sans-serif; overflow-wrap: anywhere; }
+        <style id="postmere-reader-styles">
+        :root { color-scheme: light dark; overflow-y: hidden !important; --postmere-quote-ink: \(ink); }
+        body { margin: 0; display: flow-root; font: 14px -apple-system, sans-serif; overflow-wrap: anywhere; }
         img, table { max-width: 100% !important; }
         img { object-fit: contain; }
         pre { white-space: pre-wrap; }
@@ -152,45 +151,97 @@ struct HTMLMessageBody: View {
     }
 }
 
-private struct HTMLScrollEdges: Hashable {
-    var above = false
-    var below = false
+/// Let AppKit scroll the web surface together with the message header. Only HTML
+/// whose layout depends on the viewport needs an independently positioned WebView.
+private struct MessageWebView: View {
+    let page: WebPage
+    let documentHeight: CGFloat
+    let needsReaderViewport: Bool
+
+    private nonisolated struct Window: Equatable, Sendable {
+        var height: CGFloat
+        var offset: CGFloat = 0
+    }
+    @State private var window = Window(height: 1)
+    @State private var webPosition = ScrollPosition(edge: .top)
+    @State private var horizontalOffset: CGFloat = 0
+
+    var body: some View {
+        let height = needsReaderViewport ? window.height : documentHeight
+        let offset = needsReaderViewport ? window.offset : 0
+        WebView(page)
+            .webViewLinkPreviews(.disabled)
+            .webViewBackForwardNavigationGestures(.disabled)
+            .webViewElementFullscreenBehavior(.disabled)
+            .webViewContentBackground(.hidden)
+            .webViewScrollPosition($webPosition)
+            .webViewOnScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }) { _, x in
+                horizontalOffset = x
+            }
+            .onChange(of: offset) { webPosition.scrollTo(x: horizontalOffset, y: offset) }
+            .frame(height: height)
+            .offset(y: offset)
+            .frame(height: documentHeight, alignment: .top)
+            .clipped()
+            .contentShape(Rectangle())
+            .overlay { HTMLWheelRouter().accessibilityHidden(true) }
+            .onGeometryChange(for: Window.self) { geometry in
+                guard needsReaderViewport, let viewport = geometry.bounds(of: .scrollView(axis: .vertical))
+                else { return Window(height: documentHeight) }
+                let height = max(1, viewport.height)
+                return Window(height: height, offset: min(max(0, viewport.minY), max(0, documentHeight - height)))
+            } action: { window = $0 }
+    }
 }
 
-/// The reader owns vertical input. WebKit handles clicks, text selection, horizontal input,
-/// and the part of a very long document that extends beyond its native view.
+/// Keep a trackpad gesture with one scroller, including its momentum. The
+/// first event often has zero delta, before AppKit knows its direction.
 private struct HTMLWheelRouter: NSViewRepresentable {
-    let capped: Bool
-    let edges: HTMLScrollEdges
-
     func makeNSView(context: Context) -> WheelView { WheelView() }
-
-    func updateNSView(_ view: WheelView, context: Context) {
-        view.capped = capped
-        view.edges = edges
-    }
+    func updateNSView(_ view: WheelView, context: Context) {}
 
     final class WheelView: NSView {
-        var capped = false
-        var edges = HTMLScrollEdges()
-        override var isFlipped: Bool { true }
+        private var passesHitThrough = false
+        private var vertical: Bool?
+        private var beginning: NSEvent?
+        private weak var horizontalTarget: NSView?
 
         override func hitTest(_ point: NSPoint) -> NSView? {
-            guard let event = NSApp.currentEvent, event.type == .scrollWheel,
-                  !event.modifierFlags.contains(.shift),
-                  abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX),
-                  super.hitTest(point) != nil else { return nil }
-
-            if capped {
-                if event.scrollingDeltaY > 0 && edges.above { return nil }
-                if event.scrollingDeltaY < 0 && edges.below && visibleRect.maxY >= bounds.maxY - 1 { return nil }
-            }
-            return self
+            guard !passesHitThrough, NSApp.currentEvent?.type == .scrollWheel else { return nil }
+            return super.hitTest(point)
         }
 
         override func scrollWheel(with event: NSEvent) {
-            if let scroll = enclosingScrollView { scroll.scrollWheel(with: event) }
-            else { super.scrollWheel(with: event) }
+            let phased = !event.phase.isEmpty || !event.momentumPhase.isEmpty
+            if !phased || event.phase.contains(.began) || event.phase.contains(.mayBegin) {
+                vertical = nil
+                beginning = nil
+                horizontalTarget = nil
+            }
+            if vertical == nil {
+                let x = abs(event.scrollingDeltaX), y = abs(event.scrollingDeltaY)
+                guard x > 0 || y > 0 else {
+                    if event.phase.contains(.began) { beginning = event }
+                    return
+                }
+                vertical = y >= x && !event.modifierFlags.contains(.shift)
+            }
+            if vertical == false, horizontalTarget == nil, let root = window?.contentView {
+                passesHitThrough = true
+                let point = root.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+                horizontalTarget = root.hitTest(point)
+                passesHitThrough = false
+            }
+            let target = vertical == true ? enclosingScrollView : horizontalTarget
+            if let beginning {
+                target?.scrollWheel(with: beginning)
+                self.beginning = nil
+            }
+            target?.scrollWheel(with: event)
+            if !phased || event.phase.contains(.cancelled) || event.momentumPhase.contains(.ended) {
+                vertical = nil
+                horizontalTarget = nil
+            }
         }
     }
 }
@@ -198,10 +249,9 @@ private struct HTMLWheelRouter: NSViewRepresentable {
 /// Measures the body independently of the viewport so widening the reader can also shrink its height.
 @Observable
 private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
-    static let maximumHeight: CGFloat = 32_768
     var height: CGFloat = 1
+    var needsReaderViewport = false
     var hasDocumentLayout = false
-    var isHeightCapped = false
     var hasRemoteImages = false
 
     var blockedTrackerCount = 0
@@ -210,7 +260,7 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
     func makePage() -> WebPage {
         height = 1
         hasDocumentLayout = false
-        isHeightCapped = false
+        needsReaderViewport = false
         blockedTrackerCount = 0
         hasRemoteImages = false
         let controller = WKUserContentController()
@@ -218,7 +268,8 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
         pageController = controller
         let measure = #"""
         let analyzed = false;
-        let lastHeight;
+        let lastHeight, lastViewport, lastWidth;
+        let needsReaderViewport = false;
         let hasOrdinaryImages = false;
         const blockedResources = new Set();
         const trackerURLs = new Set();
@@ -237,7 +288,7 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
             };
         };
         const remoteURL = value => {
-            if (!value) return null;
+            if (!value || /^\s*data:/i.test(value)) return null;
             try {
                 const url = new URL(value.trim().replace(/^\/\//, 'https://'));
                 url.hash = '';
@@ -247,10 +298,23 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
         const report = () => {
             const body = document.body;
             if (!body) return;
-            const height = Math.ceil(Math.max(body.getBoundingClientRect().bottom, body.scrollHeight));
-            if (height === lastHeight) return;
+            const box = body.getBoundingClientRect();
+            const bottomMargin = parseFloat(getComputedStyle(body).marginBottom) || 0;
+            const root = document.documentElement;
+            // The root's scrollHeight includes the viewport even for a short email.
+            const rootOverflow = root.scrollHeight > root.clientHeight ? root.scrollHeight : 0;
+            const height = Math.ceil(Math.max(rootOverflow,
+                window.scrollY + box.top + Math.max(box.height, body.scrollHeight) + bottomMargin));
+            // If stretching the web surface to its last measured content height
+            // changes the content height again, the email depends on its viewport.
+            if (lastHeight !== undefined && window.innerHeight === lastHeight &&
+                window.innerHeight !== lastViewport && window.innerWidth === lastWidth &&
+                Math.abs(height - lastHeight) > 1) needsReaderViewport = true;
+            if (height === lastHeight && window.innerHeight === lastViewport) return;
             lastHeight = height;
-            window.webkit.messageHandlers.messageLayout.postMessage({ height });
+            lastViewport = window.innerHeight;
+            lastWidth = window.innerWidth;
+            window.webkit.messageHandlers.messageLayout.postMessage({ height, needsReaderViewport });
         };
         document.addEventListener('securitypolicyviolation', event => {
             if (event.effectiveDirective !== 'img-src') return;
@@ -260,8 +324,41 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
         document.addEventListener('DOMContentLoaded', () => {
             if (!document.body) return;
             document.querySelectorAll('a[target]').forEach(link => link.target = '_self');
-            new ResizeObserver(report).observe(document.body);
-            report();
+            document.documentElement.style.setProperty('overflow-y', 'hidden', 'important');
+            // Some newsletters put the whole message in a fixed-height scrolling wrapper.
+            // Expand those containers while preserving clipped preheaders and horizontal overflow.
+            const readerStyle = document.getElementById('postmere-reader-styles');
+            const sheets = [...document.querySelectorAll('style')].filter(node => node !== readerStyle).map(node => node.textContent);
+            const isViewportSized = /(?:\d|\.)(?:[dsl]?v(?:h|b|min|max))\b|@media[^{}]*(?:height|orientation|aspect-ratio)\b/i;
+            needsReaderViewport = sheets.some(css => isViewportSized.test(css)) ||
+                [...document.querySelectorAll('[style*="vh" i],[style*="vb" i],[style*="vmin" i],[style*="vmax" i]')]
+                    .some(element => isViewportSized.test(element.getAttribute('style')));
+            const scrollerSelector = sheets.some(css => /\boverflow(?:-[xy]|-block|-inline)?\s*:/i.test(css)) ?
+                'body, body *' : '[style*="overflow" i]';
+            const scrollers = [...document.querySelectorAll(scrollerSelector)].reverse().filter(element =>
+                element instanceof HTMLElement && !element.matches('textarea, select, input') &&
+                ['auto', 'scroll'].includes(getComputedStyle(element).overflowY));
+            const fitScrollers = () => {
+                // Expand descendants first, so a fixed-height ancestor can see the new content size.
+                for (const element of scrollers) {
+                    if (!element.clientHeight || element.scrollHeight <= element.clientHeight + 1) continue;
+                    element.style.setProperty('height', 'auto', 'important');
+                    element.style.setProperty('max-height', 'none', 'important');
+                    element.style.setProperty('overflow-y', 'visible', 'important');
+                }
+                report();
+            };
+            let pending = false;
+            const scheduleFit = () => {
+                if (pending) return;
+                pending = true;
+                requestAnimationFrame(() => { pending = false; fitScrollers(); });
+            };
+            new ResizeObserver(scheduleFit).observe(document.body);
+            window.addEventListener('resize', scheduleFit);
+            document.addEventListener('load', scheduleFit, true);
+            document.addEventListener('toggle', scheduleFit, true);
+            fitScrollers();
             // The local document has no HTTPS base for scheme-relative image URLs.
             for (const node of document.querySelectorAll('img, picture source, [background]')) {
                 for (const attr of ['src', 'srcset', 'background']) {
@@ -273,9 +370,16 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
             }
             if (document.querySelector('meta[name="postmere-image-pass"]').content === 'display') return;
             const displayURLs = new Set();
-            const remoteStyles = [...document.querySelectorAll('style, [style]')]
-                .map(node => (node.tagName === 'STYLE' ? node.textContent : '') + (node.getAttribute('style') || ''))
-                .filter(css => /(?:url|image-set)\([^)]*(?:https:)?\/\//i.test(css));
+            const remoteStyles = [];
+            let hasRemoteStyleSheet = false;
+            for (const node of document.querySelectorAll('style, [style]')) {
+                const sheet = node.tagName === 'STYLE';
+                const css = sheet ? node.textContent + (node.getAttribute('style') || '') : node.getAttribute('style');
+                if (/(?:url|image-set)\([^)]*(?:https:)?\/\//i.test(css)) {
+                    remoteStyles.push(css);
+                    if (sheet) hasRemoteStyleSheet = true;
+                }
+            }
             // A missing image can have a zero layout size. A hidden responsive
             // banner is not a beacon just because it is currently invisible.
             const pixelLength = value => {
@@ -330,8 +434,6 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
             const cssURLs = css => [...css.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/gi)]
                 .map(match => remoteURL(match[1])).filter(Boolean);
             // Include background pixels applied by newsletter CSS as well as HTML attributes.
-            const hasRemoteStyleSheet = [...document.querySelectorAll('style')].some(node =>
-                remoteStyles.includes(node.textContent));
             const backgrounds = document.querySelectorAll(hasRemoteStyleSheet ? '*' : '[background], [style*="background" i]');
             for (const element of backgrounds) {
                 const urls = cssURLs(getComputedStyle(element).backgroundImage);
@@ -364,15 +466,9 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
     /// block a detected pixel URL if another element or a stylesheet references it.
     func protectTrackingPixels(_ trackingURLs: [String]) async throws {
         guard let controller = pageController else { throw URLError(.cancelled) }
-        let rules = try MailTrackingPixelRules.encoded(for: trackingURLs)
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        guard let store = WKContentRuleListStore(url: folder) else { throw URLError(.cannotCreateFile) }
-        let list = try await store.compileContentRuleList(forIdentifier: "mail-tracking-pixels",
-                                                          encodedContentRuleList: rules)
+        let list = try await MessageTrackerRuleCache.rules(for: trackingURLs)
         try Task.checkCancellation()
-        guard let list, controller === pageController else { throw URLError(.cancelled) }
+        guard controller === pageController else { throw URLError(.cancelled) }
         controller.add(list)
     }
 
@@ -380,10 +476,43 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
         guard message.frameInfo.isMainFrame, userContentController === pageController,
               let values = message.body as? [String: Any] else { return }
         guard let height = values["height"] as? Double, height.isFinite else { return }
-        // Very long messages retain WebKit scrolling beyond the native view's drawing area.
-        isHeightCapped = height > Self.maximumHeight
-        self.height = min(Self.maximumHeight, max(1, height))
+        let nextHeight = max(1, height)
+        if nextHeight != self.height { self.height = nextHeight }
+        needsReaderViewport = values["needsReaderViewport"] as? Bool == true
         hasDocumentLayout = true
+    }
+}
+
+/// Reopening an email can reuse a compiled blocker. Each document still inspects its
+/// own markup and must produce the same resource list before it can use the blocker.
+@MainActor private enum MessageTrackerRuleCache {
+    private static let cache: NSCache<NSArray, WKContentRuleList> = {
+        let cache = NSCache<NSArray, WKContentRuleList>()
+        cache.countLimit = 24
+        cache.totalCostLimit = 256 * 1024
+        return cache
+    }()
+
+    static func rules(for urls: [String]) async throws -> WKContentRuleList {
+        let key = urls as NSArray
+        if let cached = cache.object(forKey: key) { return cached }
+        let (rules, folder) = try await prepare(urls)
+        defer { Task.detached(priority: .utility) { try? FileManager.default.removeItem(at: folder) } }
+        try Task.checkCancellation()
+        guard let store = WKContentRuleListStore(url: folder),
+              let list = try await store.compileContentRuleList(forIdentifier: "mail-tracking-pixels",
+                                                                 encodedContentRuleList: rules)
+        else { throw URLError(.cannotCreateFile) }
+        cache.setObject(list, forKey: key, cost: rules.utf8.count)
+        return list
+    }
+
+    @concurrent private static func prepare(_ urls: [String]) async throws -> (String, URL) {
+        try Task.checkCancellation()
+        let rules = try MailTrackingPixelRules.encoded(for: urls)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return (rules, folder)
     }
 }
 
