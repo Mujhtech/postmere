@@ -38,12 +38,14 @@ struct MessageActivityButton: View {
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             MessageActivityView(message: message, session: session)
                 .id(message.id)
+                .onExitCommand { isPresented = false }
         }
     }
 }
 
 private struct MessageActivityView: View {
     @Environment(\.postmereAccent) private var palette
+    @Environment(\.dismiss) private var dismiss
     let message: MailMessage
     let session: BackendSession
     @State private var response: BackendActivityResponse?
@@ -72,6 +74,11 @@ private struct MessageActivityView: View {
                                 .accessibilityLabel("Refresh activity")
                         }
                     }
+                    Button { dismiss() } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.borderless)
+                        .keyboardShortcut(.cancelAction)
+                        .help("Close message activity")
+                        .accessibilityLabel("Close message activity")
                 }
                 if !isTracked {
                     Text("Tracking was off for this message. You can enable it in the Send menu before sending.")
