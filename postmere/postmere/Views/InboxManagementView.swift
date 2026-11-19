@@ -199,36 +199,138 @@ struct InboxTabsView: View {
     @Bindable var store: MailStore
     let onManage: () -> Void
 
+    @State private var loadedCounts: (key: InboxTabCountKey, counts: InboxTabCounts)?
+
+    private let rowHeight: CGFloat = 27
+    private let tabPadding: CGFloat = 9
+    private let spacing: CGFloat = 5
+
     var body: some View {
-        let counts = store.inboxTabCounts
-        HStack(spacing: 5) {
-            ScrollView(.horizontal) {
-                HStack(spacing: 5) {
-                    tab("All", id: nil, count: counts.all)
-                    ForEach(store.visibleInboxSplits) { split in
-                        tab(split.name, id: split.id, count: counts.splits[split.id] ?? 0)
-                    }
+        let key = store.inboxTabCountKey
+        let counts = loadedCounts.flatMap { result in
+            result.key.account == key.account && result.key.accounts == key.accounts ? result.counts : nil
+        }
+        GeometryReader { geometry in
+            let tabs = fittingTabs(width: geometry.size.width, counts: counts)
+            HStack(spacing: spacing) {
+                tab("All", id: nil, count: counts?.all).fixedSize()
+                ForEach(tabs.visible) { split in
+                    tab(split.name, id: split.id, count: counts.map { $0.splits[split.id] ?? 0 })
                 }
+                Spacer(minLength: 0)
+                moreTabs(tabs.overflow, counts: counts?.splits ?? [:])
             }
-            Button(action: onManage) {
-                PostmereIcon("ellipsis.circle", size: 16).foregroundStyle(PostmereTheme.icon).frame(width: 24, height: 27)
-            }.buttonStyle(.plain).help("Manage inbox tabs and VIPs").accessibilityLabel("Manage inbox tabs and VIPs")
-        }.padding(.horizontal, 14).padding(.bottom, 11)
+        }
+        .task(id: key) {
+            let counts = await store.loadInboxTabCounts()
+            guard !Task.isCancelled, key == store.inboxTabCountKey else { return }
+            loadedCounts = (key, counts)
+        }
+        .task(id: store.hasSearchCriteria ? nil : key, priority: .utility) {
+            await store.prepareInboxTabs()
+        }
+        .frame(height: rowHeight)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 11)
     }
 
-    private func tab(_ title: String, id: UUID?, count: Int) -> some View {
+    private func fittingTabs(width: CGFloat, counts: InboxTabCounts?) -> (visible: [InboxSplit], overflow: [InboxSplit]) {
+        let splits = store.visibleInboxSplits
+        let selected = splits.first { $0.id == store.selectedInboxSplitID }
+        var available = width - rowHeight - 2 * spacing - tabWidth("All", count: counts?.all)
+        // Reserve space for the selected tab. Even a very long selected name has a place and a tooltip.
+        if let selected { available -= tabWidth(selected.name, count: counts?.splits[selected.id]) + spacing }
+        var visible: [InboxSplit] = []
+        var overflow: [InboxSplit] = []
+        for split in splits {
+            if split.id == selected?.id {
+                visible.append(split)
+                continue
+            }
+            if !overflow.isEmpty {
+                overflow.append(split)
+                continue
+            }
+            let needed = tabWidth(split.name, count: counts?.splits[split.id]) + spacing
+            if needed <= available {
+                visible.append(split)
+                available -= needed
+            } else {
+                overflow.append(split)
+            }
+        }
+        return (visible, overflow)
+    }
+
+    private func tabWidth(_ title: String, count: Int?) -> CGFloat {
+        // Measure the selected weight so clicking a visible tab never pushes a sibling into the menu.
+        let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        let titleWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
+        guard let count, count > 0 else { return 2 * tabPadding + titleWidth }
+        let digits = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
+        let countWidth = ceil((count.formatted() as NSString).size(withAttributes: [.font: digits]).width)
+        return 2 * tabPadding + titleWidth + 5 + countWidth
+    }
+
+    @ViewBuilder
+    private func moreTabs(_ overflow: [InboxSplit], counts: [UUID: Int]) -> some View {
+        if overflow.isEmpty {
+            Button(action: onManage) {
+                moreIcon
+            }
+            .buttonStyle(.plain)
+            .help("Manage inbox tabs and VIPs")
+            .accessibilityLabel("Manage inbox tabs and VIPs")
+        } else {
+            Menu {
+                ForEach(overflow) { split in
+                    let count = counts[split.id] ?? 0
+                    Button(count > 0 ? "\(split.name) (\(count.formatted()))" : split.name) {
+                        store.selectInboxSplit(split.id)
+                    }
+                }
+                Divider()
+                Button("Manage Inbox Tabs and VIPs…", action: onManage)
+            } label: {
+                moreIcon
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("More inbox tabs")
+            .help("More inbox tabs")
+        }
+    }
+
+    private var moreIcon: some View {
+        PostmereIcon("ellipsis.circle", size: 16)
+            .foregroundStyle(.secondary)
+            .frame(width: rowHeight, height: rowHeight)
+            .contentShape(Rectangle())
+    }
+
+    private func tab(_ title: String, id: UUID?, count: Int?) -> some View {
         let selected = store.selectedInboxSplitID == id
         return Button { store.selectInboxSplit(id) } label: {
             HStack(spacing: 5) {
                 Text(title).lineLimit(1)
-                if count > 0 { Text(count.formatted()).monospacedDigit().font(.system(size: 10, weight: .semibold)) }
+                if let count, count > 0 {
+                    Text(count.formatted())
+                        .monospacedDigit()
+                        .font(.system(size: 10, weight: .semibold))
+                        .fixedSize()
+                }
             }
             .font(.system(size: 11, weight: selected ? .semibold : .regular))
             .foregroundStyle(selected ? palette.accentInk : .secondary)
-            .padding(.horizontal, 9).frame(height: 27)
+            .padding(.horizontal, tabPadding).frame(height: rowHeight)
             .background(selected ? palette.accentInk.opacity(0.10) : .clear, in: .rect(cornerRadius: 6))
+            .contentShape(Rectangle())
         }.buttonStyle(.plain)
+            .help(title)
             .accessibilityLabel("\(title) inbox tab")
-            .accessibilityValue("\(selected ? "Selected, " : "")\(count) unread conversations")
+            .accessibilityValue(count.map { $0 == 1 ? "1 unread conversation" : "\($0.formatted()) unread conversations" } ?? "Loading unread count")
+            .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
