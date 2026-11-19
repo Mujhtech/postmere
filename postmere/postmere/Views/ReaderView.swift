@@ -594,21 +594,45 @@ struct ReaderView: View {
                     store.moveSelected(to: .inbox)
                 } else { store.archiveSelected() }
             } label: {
-                PostmereIcon(returnsToInbox ? "tray.and.arrow.down" : "archivebox", size: 17).foregroundStyle(PostmereTheme.icon)
+                PostmereLabel(moveActionTitle, symbol: returnsToInbox ? "tray.and.arrow.down" : "archivebox", size: 17)
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(PostmereTheme.icon)
             }
-            .help(moveActionTitle)
-            .accessibilityLabel(moveActionTitle)
+            .help(returnsToInbox ? moveActionTitle : "\(moveActionTitle) · ⇧⌘A")
             .disabled(store.selectedMessage == nil || (store.selectedMessage?.mailbox != .trash && !store.canMoveSelected(to: returnsToInbox ? .inbox : .archive)))
 
-            Button { store.deleteSelected() } label: { PostmereIcon("trash", size: 17).foregroundStyle(PostmereTheme.icon) }
+            Button { store.deleteSelected() } label: {
+                PostmereLabel("Move to Trash", symbol: "trash", size: 17)
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(PostmereTheme.icon)
+            }
                 .help("Move to Trash · ⌘Delete")
-                .accessibilityLabel("Move to Trash")
                 .disabled(!store.canMoveSelected(to: .trash))
         }
-        ToolbarItem(placement: .primaryAction) {
-            conversationTools
+        if !compactToolbar { ToolbarSpacer(.fixed, placement: .primaryAction) }
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                if let message = syncedToolbarMessage { presentedSheet = .ai(message, .summary) }
+            } label: {
+                PostmereLabel("Summarize Conversation", symbol: "sparkles", size: 17)
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(PostmereTheme.icon)
+            }
+            .help("Summarize this conversation")
+            .disabled(syncedToolbarMessage == nil)
+
+            Menu { additionalMessageActions } label: {
+                PostmereLabel("More Message Actions", symbol: "ellipsis", size: 17)
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(PostmereTheme.icon)
+            }
+            .menuIndicator(.hidden)
+            .help("More message actions")
+            .popover(item: $toolbarDetailsTarget) { message in
+                MessageEnvelopeDetailsView(message: message).id(message.id)
+            }
+            .disabled(store.selectedMessage == nil)
         }
-        .sharedBackgroundVisibility(.hidden)
         .visibilityPriority(.high)
         if !compactToolbar { ToolbarSpacer(.fixed, placement: .primaryAction) }
         ToolbarItem(placement: .primaryAction) {
@@ -621,6 +645,7 @@ struct ReaderView: View {
                 .disabled(store.isComposing || store.selectedMessageIDs.count > 1)
             } else {
                 Menu {
+                    Button("Reply", action: replyToSelectedMessage)
                     Button("Reply All") {
                         if let message = store.selectedMessage { store.beginReplyAll(message) }
                     }
@@ -641,39 +666,6 @@ struct ReaderView: View {
             }
         }
         .visibilityPriority(.high)
-    }
-
-    private var conversationTools: some View {
-        HStack(spacing: 0) {
-            Button {
-                if let message = syncedToolbarMessage { presentedSheet = .ai(message, .summary) }
-            } label: {
-                PostmereIcon("sparkles", size: 17)
-                    .frame(width: 33, height: 36)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Summarize conversation")
-            .help("Summarize this conversation")
-            .disabled(syncedToolbarMessage == nil)
-            Menu { additionalMessageActions } label: {
-                PostmereLabel("More message actions", symbol: "ellipsis", size: 17)
-                    .labelStyle(.iconOnly)
-                    .frame(width: 33, height: 36)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .accessibilityLabel("More message actions")
-            .help("More message actions")
-            .popover(item: $toolbarDetailsTarget) { message in
-                MessageEnvelopeDetailsView(message: message).id(message.id)
-            }
-            .disabled(store.selectedMessage == nil)
-        }
-        .foregroundStyle(PostmereTheme.icon)
-        .padding(.horizontal, 2)
-        .glassEffect(.regular, in: .capsule)
     }
 
     @ViewBuilder private var additionalMessageActions: some View {
@@ -757,7 +749,7 @@ struct ReaderView: View {
         if let message = store.selectedMessage, message.mailbox == .trash {
             return "Restore to \(store.restoreDestination(for: message).title)"
         }
-        return returnsToInbox ? "Move to Inbox" : "Archive message · ⇧⌘A"
+        return returnsToInbox ? "Move to Inbox" : "Archive Message"
     }
 }
 
