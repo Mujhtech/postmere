@@ -86,7 +86,6 @@ struct SidebarView: View {
                     }
                 }
             }
-            .scrollIndicators(.never)
             .listStyle(.sidebar)
             .accessibilityLabel("Mailboxes and account inboxes")
 

@@ -87,7 +87,7 @@ struct MessageActivityView: View {
                         Button("Try Again") { Task { await refresh() } }
                     }
                 }.padding(24)
-            }.scrollIndicators(.never)
+            }
         }.frame(width: 570, height: 540).tint(PostmereTheme.accent)
             .task { await refresh() }
     }

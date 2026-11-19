@@ -40,7 +40,7 @@ struct CalendarAgendaView: View {
                             Spacer()
                             if !event.isBusy { Text("Free").font(.caption).foregroundStyle(.secondary) }
                         }.padding(.vertical, 6)
-                    }.listStyle(.inset).scrollIndicators(.never)
+                    }.listStyle(.inset)
                 }
             }
         }
@@ -226,7 +226,7 @@ struct AvailabilityPickerView: View {
                     }
                 }
                 if slots.isEmpty && !isLoading { Text("No times are available during 9 am–5 pm for this day.").foregroundStyle(.secondary).padding() }
-            }.frame(minHeight: 120, maxHeight: 210).scrollIndicators(.never)
+            }.frame(minHeight: 120, maxHeight: 210)
             Divider()
             HStack {
                 Text("\(selectedSlots.count) selected").font(.system(size: 12, weight: .medium))
@@ -236,7 +236,7 @@ struct AvailabilityPickerView: View {
             ScrollView {
                 Text(selectedSlots.isEmpty ? "Your availability text will appear here." : MailAvailability.text(for: selectedSlots))
                     .font(.system(size: 12)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-            }.frame(height: 100).scrollIndicators(.never)
+            }.frame(height: 100)
             if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(.red) }
             HStack {
                 Spacer()

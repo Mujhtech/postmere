@@ -57,7 +57,6 @@ struct AttachmentPreviewSheet: View {
     }
 }
 
-/// PDFs stay in-process so their scroll views can honor the app's indicator policy.
 private struct PDFAttachmentPreview: View {
     let url: URL
     let attachment: MailAttachment
@@ -92,8 +91,8 @@ private struct PDFAttachmentPreview: View {
 private struct NativePDFPreview: NSViewRepresentable {
     let document: PDFDocument
 
-    func makeNSView(context: Context) -> ScrollbarFreePDFView {
-        let view = ScrollbarFreePDFView(frame: .zero)
+    func makeNSView(context: Context) -> PDFView {
+        let view = PDFView(frame: .zero)
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
         view.autoScales = true
@@ -101,82 +100,14 @@ private struct NativePDFPreview: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ view: ScrollbarFreePDFView, context: Context) {
+    func updateNSView(_ view: PDFView, context: Context) {
         guard view.document !== document else { return }
         view.document = document
         view.layoutDocumentView()
     }
 
-    static func dismantleNSView(_ view: ScrollbarFreePDFView, coordinator: ()) {
+    static func dismantleNSView(_ view: PDFView, coordinator: ()) {
         view.document = nil
-    }
-}
-
-/// Only removes visual indicators; PDFKit keeps scrolling, zooming, and selection.
-private final class ScrollbarFreePDFView: PDFView {
-    private var scrollViewObservations: [ObjectIdentifier: [NSKeyValueObservation]] = [:]
-    private var scrollerObservations: [ObjectIdentifier: [NSKeyValueObservation]] = [:]
-    private var isSuppressingIndicators = false
-
-    override func layout() {
-        super.layout()
-        hideScrollbars(in: self)
-    }
-
-    override func layoutDocumentView() {
-        super.layoutDocumentView()
-        hideScrollbars(in: self)
-    }
-
-    override func didAddSubview(_ subview: NSView) {
-        super.didAddSubview(subview)
-        hideScrollbars(in: subview)
-    }
-
-    private func hideScrollbars(in view: NSView) {
-        if let scrollView = view as? NSScrollView {
-            observeScrollView(scrollView)
-            suppressIndicators(in: scrollView)
-        }
-        for child in view.subviews { hideScrollbars(in: child) }
-    }
-
-    private func observeScrollView(_ scrollView: NSScrollView) {
-        let id = ObjectIdentifier(scrollView)
-        guard scrollViewObservations[id] == nil else { return }
-        // PDFKit can restore these properties after its layout pass. Keep this
-        // policy attached only to the scroll views belonging to this preview.
-        scrollViewObservations[id] = [
-            scrollView.observe(\.hasVerticalScroller) { [weak self] view, _ in self?.suppressIndicators(in: view) },
-            scrollView.observe(\.hasHorizontalScroller) { [weak self] view, _ in self?.suppressIndicators(in: view) },
-            scrollView.observe(\.verticalScroller) { [weak self] view, _ in self?.suppressIndicators(in: view) },
-            scrollView.observe(\.horizontalScroller) { [weak self] view, _ in self?.suppressIndicators(in: view) },
-            scrollView.observe(\.scrollerStyle) { [weak self] view, _ in self?.suppressIndicators(in: view) }
-        ]
-    }
-
-    private func suppressIndicators(in scrollView: NSScrollView) {
-        guard !isSuppressingIndicators else { return }
-        isSuppressingIndicators = true
-        defer { isSuppressingIndicators = false }
-        if scrollView.scrollerStyle != .overlay { scrollView.scrollerStyle = .overlay }
-        if scrollView.hasVerticalScroller { scrollView.hasVerticalScroller = false }
-        if scrollView.hasHorizontalScroller { scrollView.hasHorizontalScroller = false }
-        for scroller in [scrollView.verticalScroller, scrollView.horizontalScroller].compactMap({ $0 }) {
-            let id = ObjectIdentifier(scroller)
-            if scrollerObservations[id] == nil {
-                scrollerObservations[id] = [
-                    scroller.observe(\.isHidden) { [weak self, weak scrollView] _, _ in
-                        if let scrollView { self?.suppressIndicators(in: scrollView) }
-                    },
-                    scroller.observe(\.alphaValue) { [weak self, weak scrollView] _, _ in
-                        if let scrollView { self?.suppressIndicators(in: scrollView) }
-                    }
-                ]
-            }
-            if !scroller.isHidden { scroller.isHidden = true }
-            if scroller.alphaValue != 0 { scroller.alphaValue = 0 }
-        }
     }
 }
 
@@ -185,7 +116,7 @@ private struct NativeAttachmentPreview: NSViewRepresentable {
     let url: URL
 
     func makeNSView(context: Context) -> QLPreviewView {
-        let view = ScrollbarFreePreviewView(frame: .zero, style: .normal)!
+        let view = QLPreviewView(frame: .zero, style: .normal)!
         view.shouldCloseWithWindow = false
         view.autostarts = false
         return view
@@ -199,26 +130,5 @@ private struct NativeAttachmentPreview: NSViewRepresentable {
 
     static func dismantleNSView(_ view: QLPreviewView, coordinator: ()) {
         view.close()
-    }
-}
-
-/// Quick Look is an AppKit view and does not inherit SwiftUI's indicator visibility.
-private final class ScrollbarFreePreviewView: QLPreviewView {
-    override func layout() {
-        super.layout()
-        hideScrollbars(in: self)
-    }
-
-    override func didAddSubview(_ subview: NSView) {
-        super.didAddSubview(subview)
-        hideScrollbars(in: subview)
-    }
-
-    private func hideScrollbars(in view: NSView) {
-        if let scrollView = view as? NSScrollView {
-            if scrollView.hasVerticalScroller { scrollView.hasVerticalScroller = false }
-            if scrollView.hasHorizontalScroller { scrollView.hasHorizontalScroller = false }
-        }
-        for child in view.subviews { hideScrollbars(in: child) }
     }
 }

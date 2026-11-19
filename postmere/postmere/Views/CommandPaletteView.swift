@@ -109,7 +109,7 @@ struct CommandPaletteView: View {
                         .accessibilityHint(action.shortcut.isEmpty ? "Run command" : "Shortcut \(action.shortcut)")
                         .accessibilityAddTraits(.isButton)
                         .accessibilityAction { execute(action) }
-                }.listStyle(.inset).scrollIndicators(.never).frame(height: 330)
+                }.listStyle(.inset).frame(height: 330)
                     .onSubmit(executeSelection)
             }
             HStack {

@@ -77,7 +77,6 @@ struct MailListView: View {
                         }
                     }
                 }
-                .scrollIndicators(.never)
                 .listStyle(.inset)
                 .alternatingRowBackgrounds(.disabled)
                 .focused($isListFocused)

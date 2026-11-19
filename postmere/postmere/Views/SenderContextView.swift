@@ -89,7 +89,7 @@ private struct SenderHistoryView: View {
                                 }
                             }.padding(.vertical, 5).frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
                         }.buttonStyle(.plain)
-                    }.listStyle(.inset).scrollIndicators(.never)
+                    }.listStyle(.inset)
                 }
             } else {
                 if context.attachments.isEmpty {
@@ -109,7 +109,7 @@ private struct SenderHistoryView: View {
                             }.padding(.vertical, 4).contentShape(.rect)
                         }.buttonStyle(.plain)
                             .disabled(item.attachment.localURL == nil && item.attachment.providerAttachmentID == nil)
-                    }.listStyle(.inset).scrollIndicators(.never)
+                    }.listStyle(.inset)
                 }
             }
         }.frame(maxHeight: .infinity)
@@ -148,7 +148,7 @@ private struct ContactNoteEditor: View {
                     saveError = nil
                 } catch { saveError = error.localizedDescription }
             }))
-            .font(.system(size: 12)).scrollContentBackground(.hidden).scrollIndicators(.never)
+            .font(.system(size: 12)).scrollContentBackground(.hidden)
             .frame(height: 105).padding(7)
             .background(PostmereTheme.subtleFill, in: .rect(cornerRadius: 6))
             .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(PostmereTheme.rule) }

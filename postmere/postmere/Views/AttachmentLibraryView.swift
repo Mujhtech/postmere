@@ -78,7 +78,7 @@ struct AttachmentLibraryView: View {
                         } label: { PostmereIcon("arrow.up.forward.square", size: 16).foregroundStyle(PostmereTheme.icon) }
                             .help("Open message").accessibilityLabel("Open message for \(entry.attachment.name)")
                     }.padding(.vertical, 7).controlSize(.small)
-                }.listStyle(.inset).scrollIndicators(.never)
+                }.listStyle(.inset)
             }
         }.frame(width: 720, height: 510)
             .sheet(item: $preview) { AttachmentPreviewSheet(attachment: $0) }

@@ -3,8 +3,10 @@ import AppKit
 @MainActor
 final class PostmereAppDelegate: NSObject, NSApplicationDelegate {
     weak var runtime: MailRuntime?
+    private let scrollbars = PostmereScrollbars()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        scrollbars.start()
         // Device registration is separate from authorization to show alerts.
         // NotificationService installs UNUserNotificationCenter's delegate in
         // App.init, before either launch or notification callbacks can arrive.

@@ -36,7 +36,7 @@ struct ShareThreadView: View {
                         }
                     }
                 }
-            }.scrollIndicators(.never)
+            }
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
                 if busy { ProgressView().controlSize(.small) }

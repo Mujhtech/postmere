@@ -115,7 +115,6 @@ struct BackendConnectionView: View {
             }
         }
         .formStyle(.grouped)
-        .scrollIndicators(.never)
         .onDisappear(perform: cancelConnection)
         .confirmationDialog("Disconnect mail account?", isPresented: Binding(
             get: { accountToDisconnect != nil },

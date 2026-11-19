@@ -61,7 +61,7 @@ struct PrivateNoteSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Private note").font(PostmereTheme.sheetTitle)
             Text(message.displaySubject).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-            TextEditor(text: $note).font(.system(size: 13)).scrollIndicators(.never)
+            TextEditor(text: $note).font(.system(size: 13))
                 .scrollContentBackground(.hidden)
                 .frame(height: 180).accessibilityLabel("Private note")
                 .padding(8)
@@ -93,7 +93,7 @@ struct SavedInboxViewEditor: View {
             Form {
                 Section { TextField("Name", text: $name) }
                 MailCriteriaFields(criteria: $criteria)
-            }.formStyle(.grouped).scrollIndicators(.never)
+            }.formStyle(.grouped)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)

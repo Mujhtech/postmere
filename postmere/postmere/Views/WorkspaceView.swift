@@ -42,7 +42,7 @@ private struct SharedThreadsView: View {
                         Text(thread.ownerEmail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         Text("\(thread.messageCount) messages · \(thread.permission)").font(.caption2).foregroundStyle(.secondary)
                     }.padding(.vertical, 5).tag(thread.id)
-                }.scrollIndicators(.never)
+                }
                 if let error { Text(error).font(.caption).foregroundStyle(.red).padding() }
             }.frame(minWidth: 210, idealWidth: 240, maxWidth: 290)
             if let selected { SharedThreadView(runtime: runtime, threadID: selected).id(selected) }
@@ -97,7 +97,7 @@ private struct WorkspaceMembersView: View {
                 }
             }
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
-        }.formStyle(.grouped).scrollIndicators(.never).task { await load() }
+        }.formStyle(.grouped).task { await load() }
             .confirmationDialog("Revoke workspace access?", isPresented: Binding(get: { revoking != nil }, set: { if !$0 { revoking = nil } }), titleVisibility: .visible) {
                 if let member = revoking {
                     Button("Revoke \(member.email)", role: .destructive) {

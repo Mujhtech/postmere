@@ -40,7 +40,7 @@ struct MailAIAssistantView: View {
                     if busy { ProgressView("Working…").controlSize(.small) }
                     if let error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
                 }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
-            }.scrollIndicators(.never)
+            }
             if let result, mode == .draft {
                 Divider()
                 HStack {

@@ -98,7 +98,7 @@ struct SnippetPickerView: View {
                     Text(snippet.body.replacingOccurrences(of: "\n", with: " "))
                         .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
                 }.padding(.vertical, 3).tag(snippet.id)
-            }.listStyle(.sidebar).scrollIndicators(.never)
+            }.listStyle(.sidebar)
             Divider()
             Menu {
                 Button("New Snippet") { editingSnippet = MailSnippet(title: "", body: "") }
@@ -177,7 +177,7 @@ struct SnippetPickerView: View {
                         Text(error.localizedDescription).font(.caption).foregroundStyle(.secondary)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-            }.scrollIndicators(.never)
+            }
             HStack {
                 Button("Delete", role: .destructive) {
                     onDelete(snippet.id)
@@ -370,7 +370,7 @@ private struct SnippetEditorView: View {
                             }.padding(6).background(PostmereTheme.subtleFill, in: .rect(cornerRadius: 6))
                         }
                     }
-                }.scrollIndicators(.never)
+                }
             }
         }
     }

@@ -95,7 +95,6 @@ struct ReaderView: View {
                     .padding(.horizontal, 20)
                     .padding(.vertical, 22)
                 }
-                .scrollIndicators(.never)
                 .id(message.id)
             } else {
                 ContentUnavailableView {
@@ -463,7 +462,6 @@ struct ReaderView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(24)
             }
-            .scrollIndicators(.never)
         }
         .frame(width: 480, height: 340, alignment: .topLeading)
     }

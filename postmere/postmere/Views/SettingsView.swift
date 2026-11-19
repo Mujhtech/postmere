@@ -77,7 +77,6 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .scrollIndicators(.never)
         .formStyle(.grouped)
     }
 
@@ -110,7 +109,6 @@ struct SettingsView: View {
                 })
             }
         }
-        .scrollIndicators(.never)
         .formStyle(.grouped)
     }
 
@@ -177,7 +175,7 @@ struct SettingsView: View {
                 Text("Apple push delivery follows your account schedules and system Focus settings while you stay signed in. Sign-in continues until you sign out or workspace access is revoked. Accounts with local sender screening or blocking rules use local notifications while Postmere is open.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-        }.formStyle(.grouped).scrollIndicators(.never)
+        }.formStyle(.grouped)
             .task { await runtime.notifications.refreshAuthorization() }
     }
 
@@ -233,7 +231,7 @@ struct SettingsView: View {
                 }
                 if store.senderRules.isEmpty { Text("No sender rules yet.").foregroundStyle(.secondary) }
             }
-        }.formStyle(.grouped).scrollIndicators(.never)
+        }.formStyle(.grouped)
     }
 
     private var shortcutSettings: some View {
@@ -266,7 +264,6 @@ struct SettingsView: View {
                 shortcut("Close composer", "Esc")
             }
         }
-        .scrollIndicators(.never)
         .formStyle(.grouped)
     }
 

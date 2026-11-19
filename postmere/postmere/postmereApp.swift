@@ -20,7 +20,6 @@ struct postmereApp: App {
                 ContentView(store: store)
             }
                 .preferredColorScheme(appearance.colorScheme)
-                .scrollIndicators(.never)
                 .postmereStyle()
         }
         .defaultSize(width: 1280, height: 820)
@@ -32,7 +31,6 @@ struct postmereApp: App {
                 ComposerView(store: store)
             }
                 .preferredColorScheme(appearance.colorScheme)
-                .scrollIndicators(.never)
                 .postmereStyle()
         }
         .defaultSize(width: 840, height: 780)
@@ -46,7 +44,6 @@ struct postmereApp: App {
                 SettingsView(store: store, runtime: runtime)
             }
                 .preferredColorScheme(appearance.colorScheme)
-                .scrollIndicators(.never)
                 .postmereStyle()
         }
     }

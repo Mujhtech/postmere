@@ -77,7 +77,7 @@ struct SharedThreadView: View {
                         }
                         if detail.comments.isEmpty { Text("No comments yet.").font(.caption).foregroundStyle(.secondary) }
                     }.padding(20)
-                }.scrollIndicators(.never)
+                }
                 if detail.thread.permission != "view" {
                     Divider()
                     HStack(alignment: .bottom, spacing: 10) {

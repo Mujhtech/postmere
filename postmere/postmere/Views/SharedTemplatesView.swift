@@ -24,7 +24,7 @@ struct SharedTemplatesView: View {
                         VStack(alignment: .leading, spacing: 5) { Text(item.title).font(.system(size: 13, weight: .medium)); Text(item.ownerEmail).font(.caption).foregroundStyle(.secondary) }
                             .padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }.buttonStyle(.plain)
-                }.scrollIndicators(.never).frame(minWidth: 210, idealWidth: 240, maxWidth: 290)
+                }.frame(minWidth: 210, idealWidth: 240, maxWidth: 290)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         if let detail {
@@ -50,7 +50,7 @@ struct SharedTemplatesView: View {
                         if let notice { Text(notice).font(.caption).foregroundStyle(PostmereTheme.accentInk) }
                         if let error { Text(error).font(.caption).foregroundStyle(.red) }
                     }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
-                }.scrollIndicators(.never).frame(minWidth: 400)
+                }.frame(minWidth: 400)
             }
         }.task { await reload() }
             .sheet(isPresented: $showsPublish) { publishSheet }
@@ -73,7 +73,7 @@ struct SharedTemplatesView: View {
                         Text(snippet.body)
                         ForEach(snippet.attachments) { Text("File: \($0.name)") }
                     }.font(.system(size: 13)).frame(maxWidth: .infinity, alignment: .leading)
-                }.scrollIndicators(.never)
+                }
             }
             Text("Everyone in this workspace can read and copy this template, including its recipients and file contents.").font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }

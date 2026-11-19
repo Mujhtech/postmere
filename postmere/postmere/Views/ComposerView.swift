@@ -455,7 +455,6 @@ struct ComposerView: View {
                 }
             }
         }
-        .scrollIndicators(.never)
         .frame(height: min(CGFloat(store.draftAttachments.count) * 56, 106))
         .padding(.horizontal, 16)
         .padding(.bottom, 10)

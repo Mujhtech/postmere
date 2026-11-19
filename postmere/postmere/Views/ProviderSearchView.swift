@@ -59,7 +59,7 @@ struct ProviderSearchView: View {
                             }.padding(.vertical, 5).contentShape(Rectangle())
                         }.buttonStyle(.plain)
                     }
-                }.scrollIndicators(.never)
+                }
             }
             if hasMore {
                 Button(busy ? "Loading…" : "Load older results") { Task { await search(loadMore: true) } }

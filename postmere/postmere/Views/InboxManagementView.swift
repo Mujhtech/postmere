@@ -103,7 +103,7 @@ struct InboxManagementView: View {
             Section {
                 Button("Manage VIP people and domains") { section = 1 }
             }
-        }.formStyle(.grouped).scrollIndicators(.never)
+        }.formStyle(.grouped)
     }
 
     private var vipSettings: some View {
@@ -149,7 +149,7 @@ struct InboxManagementView: View {
                 Text("Use is:vip in any search or inbox tab. VIP status applies to senders; starring applies to individual messages.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-        }.formStyle(.grouped).scrollIndicators(.never)
+        }.formStyle(.grouped)
     }
 
     private func orderButton(_ label: String, symbol: String, disabled: Bool, action: @escaping () -> Void) -> some View {
@@ -177,7 +177,7 @@ private struct InboxSplitEditor: View {
             Form {
                 Section { TextField("Name", text: $split.name) }
                 MailCriteriaFields(criteria: $split.criteria, showsMailbox: false)
-            }.formStyle(.grouped).scrollIndicators(.never)
+            }.formStyle(.grouped)
             if let error { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal, 24) }
             HStack {
                 if isExisting {
@@ -214,7 +214,7 @@ struct InboxTabsView: View {
                         tab(split.name, id: split.id, count: store.splitUnreadCount(split.id))
                     }
                 }
-            }.scrollIndicators(.never)
+            }
             Button(action: onManage) {
                 PostmereIcon("ellipsis.circle", size: 16).foregroundStyle(PostmereTheme.icon).frame(width: 24, height: 27)
             }.buttonStyle(.plain).help("Manage inbox tabs and VIPs").accessibilityLabel("Manage inbox tabs and VIPs")

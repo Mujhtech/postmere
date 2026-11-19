@@ -113,7 +113,7 @@ struct BookingLinksView: View {
                     if let error { Text(error).font(.caption).foregroundStyle(.red) }
                     if let notice { Text(notice).font(.caption).foregroundStyle(PostmereTheme.accentInk) }
                 }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
-            }.scrollIndicators(.never)
+            }
         }.task(id: session.scope) {
             links = []; bookings = []; error = nil; notice = nil; disabling = nil; cancelling = nil; updatingBooking = nil
             if session.isConnected { await load() }
@@ -269,7 +269,7 @@ private struct CreateBookingLinkView: View {
                     Text("Anyone with the link can book a time. All selected calendars are checked again before an invitation is created in your booking calendar.")
                         .font(.caption).foregroundStyle(.secondary)
                 }.disabled(busy)
-            }.scrollIndicators(.never).frame(maxHeight: 480)
+            }.frame(maxHeight: 480)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -401,7 +401,7 @@ private struct SharedAvailabilityView: View {
                 if calendars.isEmpty { Text("Connect an account with calendar access or ask a teammate to share their availability.").font(.caption).foregroundStyle(.secondary) }
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
             }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
-        }.scrollIndicators(.never).task(id: session.scope) {
+        }.task(id: session.scope) {
             calendars = []; selected = []; result = nil; error = nil
             if session.isConnected { await load() }
         }.onChange(of: day) { result = nil }

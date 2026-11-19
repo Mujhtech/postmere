@@ -15,7 +15,7 @@ Messages, unfinished drafts, rich text, attachments, snippets, saved views, send
 - **Sender rules:** Settings → Rules enables screening of unfamiliar incoming senders and routes accepted senders to Inbox, Archive, Needs Reply, or Trash.
 - **Attachment library:** ⌥⌘A searches files by name, sender, or subject and supports Quick Look, Save As, and opening the source message. Attachments download through the workspace on demand.
 
-Conversations expand earlier messages individually or together. Scroll indicators remain hidden while scrolling stays available.
+Conversations expand earlier messages individually or together. A thin overlay scrollbar shows your position and supports dragging.
 
 Postmere uses a shared custom vector icon family for navigation, actions, and formatting. Attachments have distinct file-type artwork and extension badges across the reader, composer, library, and preview window. Available local files can show a Quick Look content thumbnail; remote, missing, or unsupported files keep their type artwork without downloading anything. Thumbnail work is asynchronous, cached, and cancelled when no longer needed.
 

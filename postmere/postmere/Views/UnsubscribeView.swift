@@ -128,7 +128,6 @@ struct UnsubscribeView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .scrollIndicators(.never)
         }
         .padding(24)
         .frame(width: 500, height: 530)

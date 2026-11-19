@@ -12,7 +12,7 @@ struct MailSearchTokenControls: View {
                             SearchTokenChip(store: store, token: token)
                         }
                     }
-                }.scrollIndicators(.never)
+                }
             }
             ForEach(Array(store.searchIssues.prefix(2))) { issue in
                 Text(issue.message).font(.system(size: 11)).foregroundStyle(.red)
