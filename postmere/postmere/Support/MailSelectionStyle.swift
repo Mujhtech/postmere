@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 extension View {
@@ -34,6 +35,31 @@ private struct MailSelectionStyle: ViewModifier {
                 }
             }
             .padding(.horizontal, 6)
+            .background { MailSelectionTableConfiguration().frame(width: 0, height: 0) }
             .accessibilityHidden(true)
+    }
+}
+
+/// The List still owns focus, keyboard navigation and selection. Its rows supply the highlight.
+private struct MailSelectionTableConfiguration: NSViewRepresentable {
+    func makeNSView(context: Context) -> Anchor { Anchor() }
+    func updateNSView(_ view: Anchor, context: Context) { view.configureTable() }
+
+    final class Anchor: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            configureTable()
+        }
+
+        func configureTable() {
+            var ancestor = superview
+            while let view = ancestor {
+                if let table = view as? NSTableView {
+                    if table.selectionHighlightStyle != .none { table.selectionHighlightStyle = .none }
+                    return
+                }
+                ancestor = view.superview
+            }
+        }
     }
 }
