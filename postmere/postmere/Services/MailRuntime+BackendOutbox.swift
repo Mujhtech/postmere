@@ -58,8 +58,9 @@ extension MailRuntime {
                 }
             }
         }
-        guard forceRefresh || (Date.now.timeIntervalSince(lastBackendOutboxRefresh) >= 5
-              && store.outgoingQueue.contains(where: { $0.serverJobID != nil })) else { return }
+        let hasActiveJobs = store.outgoingQueue.contains { $0.serverJobID != nil && $0.status != .failed }
+        // Committed job transitions also arrive over the event stream.
+        guard !store.outgoingQueue.isEmpty, forceRefresh || (hasActiveJobs && Date.now.timeIntervalSince(lastBackendOutboxRefresh) >= 60) else { return }
         lastBackendOutboxRefresh = .now
         do {
             let response: BackendOutboxList = try await backend.request("GET", "/v1/mail/outbox")
@@ -154,6 +155,13 @@ extension MailRuntime {
               let messageIndex = store.messages.firstIndex(where: { $0.id == job.clientId }),
               let identity = store.messages[messageIndex].mailAccount.remote,
               identity.scope == backend.scope, identity.accountID == job.accountId else { return }
+        let item = store.outgoingQueue[queueIndex]
+        if item.serverJobID == job.id && item.serverState == job.status
+            && item.scheduledAt == job.scheduledAt && item.undoUntil == job.undoUntil
+            && store.messages[messageIndex].backendOutboxID == job.id
+            && (job.status == "pending" && item.status == .pending
+                || job.status == "delivering" && item.status == .delivering
+                || ["failed", "uncertain"].contains(job.status) && item.status == .failed) { return }
         store.persistenceSuspended += 1
         store.suppressRemoteMutations = true
         defer {
@@ -181,6 +189,7 @@ extension MailRuntime {
             store.messages[messageIndex].workflow.needsReply = false
             if store.messages[messageIndex].workflow.followUpAt != nil { store.messages[messageIndex].workflow.followUpReferenceDate = .now }
             store.outgoingQueue.remove(at: queueIndex)
+            store.reconcileSentDelivery(store.messages[messageIndex])
             store.lastAction = "Message sent"
         case "cancelled":
             store.messages[messageIndex].backendOutboxID = nil

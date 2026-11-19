@@ -96,8 +96,8 @@ nonisolated struct MailboxViewData: Sendable {
             guard !message.isDraft, message.providerDeletedAt == nil, message.mailbox != .trash else { continue }
             let thread = Thread(message)
             counts[thread, default: Counts()].total += 1
-            if let email = message.providerAccountEmail {
-                counts[thread, default: Counts()].byEmail[email.lowercased(), default: 0] += 1
+            if let email = message.legacyAccountAddress {
+                counts[thread, default: Counts()].byEmail[email, default: 0] += 1
             } else {
                 counts[thread, default: Counts()].withoutIdentity += 1
             }

@@ -82,6 +82,11 @@ nonisolated struct MailPersistence: Sendable {
         decoder.dateDecodingStrategy = .millisecondsSince1970
         let state = try decoder.decode(MailStateSnapshot.self, from: Data(contentsOf: fileURL))
         guard state.schemaVersion == 1 else { throw MailStorageError.unsupportedVersion(state.schemaVersion) }
+        let draftID = state.activeDraft?.editingMessageID
+        let repair = MailSyncRepair.collapse(state.messages, preferring: Set([draftID].compactMap { $0 }))
+        state.messages = repair.messages
+        if !repair.replacedIDs.isEmpty { state.replyIndexVersion = 0 }
+        if let draftID, let survivor = repair.replacedIDs[draftID] { state.activeDraft?.editingMessageID = survivor }
         guard Set(state.messages.map(\.id)).count == state.messages.count else {
             throw MailStorageError.invalidSnapshot("The mailbox contains duplicate message identifiers.")
         }

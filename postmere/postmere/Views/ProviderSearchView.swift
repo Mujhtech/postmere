@@ -55,7 +55,8 @@ struct ProviderSearchView: View {
                                     Text(message.sentAt, format: .dateTime.month(.abbreviated).day().year()).font(.caption).foregroundStyle(.secondary)
                                 }
                                 Text(message.displaySubject).lineLimit(1)
-                                Text(message.preview).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                let preview = message.displayPreview
+                                if !preview.isEmpty { Text(verbatim: preview).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
                             }.padding(.vertical, 5).contentShape(Rectangle())
                         }.buttonStyle(.plain)
                     }
@@ -91,16 +92,30 @@ struct ProviderSearchView: View {
             }
             guard await runtime.store.mergeReceivedPage(incoming, read: read, isCurrent: isCurrent),
                   isCurrent() else { return }
-            if loadMore {
-                let known = Set(messages.map(\.id))
-                messages.append(contentsOf: incoming.filter { !known.contains($0.id) })
-            } else { messages = incoming }
+            let results = await Self.storedResults(for: loadMore ? messages + incoming : incoming,
+                                                   in: runtime.store.messages, account: identity.localID)
+            guard isCurrent() else { return }
+            messages = results
             cursor = page.nextCursor
             hasMore = page.hasMore
             searchedQuery = captured
             didSearch = true
         } catch {
             if self.accountID == accountID && runtime.backend.realtimeGeneration == sessionID { self.error = error.localizedDescription }
+        }
+    }
+
+    /// The store may have kept a local sent message's UUID when it received its provider copy.
+    @concurrent private static func storedResults(for hits: [MailMessage], in mailbox: [MailMessage],
+                                                  account: String) async -> [MailMessage] {
+        let ids = Set(hits.compactMap(\.backendMessageID))
+        var stored: [UUID: MailMessage] = [:]
+        for row in mailbox where row.account == account && !row.isDeletedOnProvider {
+            if let id = row.backendMessageID, ids.contains(id) { stored[id] = row }
+        }
+        return hits.compactMap { hit in
+            guard let id = hit.backendMessageID else { return nil }
+            return stored.removeValue(forKey: id)
         }
     }
 }

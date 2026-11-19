@@ -160,20 +160,23 @@ extension MailStore {
     private struct MergeInputs: Sendable {
         let messages: [MailMessage]
         let overrides: [UUID: ProviderMessageOverride]
+        let selectedIDs: Set<UUID>
         let rules: [SenderRule]
         let screening: Bool
     }
 
     private var mergeInputs: MergeInputs {
-        MergeInputs(messages: messages, overrides: providerOverrides, rules: senderRules, screening: senderScreeningEnabled)
+        MergeInputs(messages: messages, overrides: providerOverrides, selectedIDs: selectedMessageIDs,
+                    rules: senderRules, screening: senderScreeningEnabled)
     }
 
     /// A page can finish while the user is editing a message or a sender rule. Commit only against the snapshot we merged.
     func mergeReceivedPage(_ incoming: [MailMessage], deletedIDs: Set<UUID> = [], read: ProviderPageRead,
-                           isCurrent: () -> Bool, beforeSave: (() -> Void)? = nil) async -> Bool {
+                           trackInsertions: Bool = false, isCurrent: () -> Bool,
+                           beforeSave: ((_ messagesChanged: Bool, _ insertions: [(id: UUID, index: Int)]) -> Void)? = nil) async -> Bool {
         if incoming.isEmpty && deletedIDs.isEmpty {
             guard !Task.isCancelled, isCurrent() else { return false }
-            beforeSave?()
+            beforeSave?(false, [])
             return true
         }
         // Opening mail only updates its read flag and cached envelope. Replay those small edits
@@ -188,7 +191,7 @@ extension MailStore {
             let inputs = mergeInputs
             let newerLabels = read.newerLabels
             var result = await prepareMerge(incoming, into: inputs, deletedIDs: deletedIDs,
-                                            account: read.account, keepingLabelsFor: newerLabels)
+                                            account: read.account, keepingLabelsFor: newerLabels, trackInsertions: trackInsertions)
             let offsets = readerChanges.isEmpty ? [:] : await mergedPositions(result.messages)
             guard !Task.isCancelled, isCurrent() else { return false }
             guard revision &+ readerChanges.count == mailboxDataRevision, newerLabels == read.newerLabels,
@@ -198,13 +201,14 @@ extension MailStore {
                 switch change {
                 case .read(let id):
                     expectedOverrides[id] = providerOverrides[id]
-                    guard let index = offsets[id], !result.messages[index].isDeletedOnProvider else { continue }
+                    let owner = result.replacedIDs[id] ?? id
+                    guard let index = offsets[owner], !result.messages[index].isDeletedOnProvider else { continue }
                     result.messages[index].isUnread = false
-                    var pending = result.overrides[id] ?? ProviderMessageOverride()
+                    var pending = result.overrides[owner] ?? ProviderMessageOverride()
                     pending.isUnread = providerOverrides[id]?.isUnread
                     result.overrides[id] = pending.isEmpty ? nil : pending
                 case .envelope(let id, let details):
-                    if let index = offsets[id] { result.messages[index].envelopeDetails = details }
+                    if let index = offsets[result.replacedIDs[id] ?? id] { result.messages[index].envelopeDetails = details }
                 }
             }
             guard expectedOverrides == providerOverrides else { continue }
@@ -214,7 +218,7 @@ extension MailStore {
             if let beforeSave {
                 persistenceSuspended += 1
                 installMerge(result, processDates: !incoming.isEmpty)
-                beforeSave()
+                beforeSave(result.messagesChanged, result.insertions)
                 persistenceSuspended -= 1
             } else {
                 installMerge(result, processDates: !incoming.isEmpty)
@@ -224,19 +228,26 @@ extension MailStore {
         return false
     }
 
-    private typealias MergeResult = (messages: [MailMessage], overrides: [UUID: ProviderMessageOverride])
+    private typealias MergeResult = (messages: [MailMessage], overrides: [UUID: ProviderMessageOverride],
+                                     replacedIDs: [UUID: UUID], messagesChanged: Bool, insertions: [(id: UUID, index: Int)])
 
     @concurrent private func mergedPositions(_ messages: [MailMessage]) async -> [UUID: Int] {
-        Dictionary(uniqueKeysWithValues: messages.indices.map { (messages[$0].id, $0) })
+        Dictionary(messages.indices.map { (messages[$0].id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     @concurrent private func prepareMerge(_ incoming: [MailMessage], into inputs: MergeInputs,
-                                          deletedIDs: Set<UUID>, account: String, keepingLabelsFor newerLabels: Set<UUID>) async -> MergeResult {
-        var result = merge(incoming, into: inputs, keepingLabelsFor: newerLabels)
+                                          deletedIDs: Set<UUID>, account: String, keepingLabelsFor newerLabels: Set<UUID>,
+                                          trackInsertions: Bool) async -> MergeResult {
+        var result = merge(incoming, into: inputs, keepingLabelsFor: newerLabels, trackInsertions: trackInsertions)
         if !deletedIDs.isEmpty {
+            var affected = Set<UUID>()
             for index in result.messages.indices where result.messages[index].account == account {
                 if let id = result.messages[index].backendMessageID, deletedIDs.contains(id) {
-                    result.messages[index].isDeletedOnProvider = true
+                    if !result.messages[index].isDeletedOnProvider {
+                        affected.insert(result.messages[index].conversationID)
+                        result.messages[index].isDeletedOnProvider = true
+                        result.messagesChanged = true
+                    }
                     result.overrides[result.messages[index].id] = nil
                 }
             }
@@ -244,16 +255,56 @@ extension MailStore {
         return result
     }
 
-    private nonisolated func merge(_ incoming: [MailMessage], into inputs: MergeInputs, keepingLabelsFor newerLabels: Set<UUID> = []) -> MergeResult {
+    private nonisolated func merge(_ incoming: [MailMessage], into inputs: MergeInputs, keepingLabelsFor newerLabels: Set<UUID> = [],
+                                   trackInsertions: Bool = false) -> MergeResult {
         var combined = inputs.messages
         var overrides = inputs.overrides
-        guard !incoming.isEmpty else { return (combined, overrides) }
+        var replacedIDs: [UUID: UUID] = [:]
+        guard !incoming.isEmpty else { return (combined, overrides, replacedIDs, false, []) }
+        var insertedIDs: Set<UUID> = []
+        var messagesChanged = false
+        var needsSort = false
+        var positions = MailMergePositions(combined)
+        var replyThreads = Set<UUID>()
         for var message in incoming {
             if message.providerMessageID != nil { message.providerDeletedAt = nil }
-            let existingIndex = combined.firstIndex {
-                ($0.id == message.id
-                    || (message.providerMessageID != nil && $0.providerMessageID == message.providerMessageID)
-                    || (message.rfcMessageID != nil && $0.rfcMessageID == message.rfcMessageID)) && sameMailAccount($0, message)
+            var matches = positions.matches(message)
+            if message.backendMessageID != nil, let queuedID = message.postmereSendID,
+               let index = positions.local(queuedID, in: message),
+               combined[index].backendMessageID == nil, combined[index].isOutgoing,
+               combined[index].providerMessageID?.isEmpty != false || combined[index].providerMessageID == message.providerMessageID,
+               combined[index].mailbox == .outbox || combined[index].mailbox == .sent,
+               combined[index].postmereSendID == queuedID {
+                matches.insert(index)
+            }
+            var existingIndex = matches.min()
+            if matches.count > 1, message.account.hasPrefix("remote:") {
+                messagesChanged = true
+                needsSort = true
+                let indices = matches.sorted()
+                let copies = indices.map { combined[$0] }
+                let survivor = MailSyncRepair.mergeCopies(copies, preferring: inputs.selectedIDs)
+                if !insertedIDs.isEmpty {
+                    let allNew = copies.allSatisfy { insertedIDs.contains($0.id) }
+                    insertedIDs.subtract(copies.map(\.id))
+                    if allNew { insertedIDs.insert(survivor.id) }
+                }
+                for copy in copies where copy.id != survivor.id {
+                    for (id, owner) in replacedIDs where owner == copy.id { replacedIDs[id] = survivor.id }
+                    replacedIDs[copy.id] = survivor.id
+                    if let pending = overrides.removeValue(forKey: copy.id) {
+                        var kept = overrides[survivor.id] ?? ProviderMessageOverride()
+                        kept.isUnread = kept.isUnread ?? pending.isUnread
+                        kept.isStarred = kept.isStarred ?? pending.isStarred
+                        kept.mailbox = kept.mailbox ?? pending.mailbox
+                        overrides[survivor.id] = kept
+                    }
+                }
+                let slot = indices[0]
+                for index in indices.dropFirst().reversed() { combined.remove(at: index) }
+                combined[slot] = survivor
+                positions = MailMergePositions(combined)
+                existingIndex = slot
             }
             if let existingIndex {
                 let previous = combined[existingIndex]
@@ -271,15 +322,12 @@ extension MailStore {
                     pending.apply(to: &message)
                     overrides[message.id] = pending.isEmpty ? nil : pending
                 }
-                message.attachments = message.attachments.map { attachment in
-                    var result = attachment
-                    if let old = previous.attachments.first(where: {
-                        $0.id == attachment.id || (attachment.providerAttachmentID != nil && $0.providerAttachmentID == attachment.providerAttachmentID)
-                    }) { result.localURL = old.localURL ?? result.localURL }
-                    return result
+                if message.mailbox == .trash, previous.mailbox == .trash {
+                    message.trashedFrom = previous.trashedFrom
                 }
-                if previous.mailbox != .outbox { combined[existingIndex] = message }
-                else if message.backendMessageID != nil {
+                message.retainDownloads(from: previous)
+                if previous.mailbox == .outbox {
+                    guard message.backendMessageID != nil else { continue }
                     // Cache sync may see Sent before the outbox poll does. Keep
                     // queue state, but retain the identifiers before its cursor
                     // advances past this message permanently.
@@ -288,7 +336,14 @@ extension MailStore {
                     queued.providerMessageID = message.providerMessageID
                     queued.providerThreadID = message.providerThreadID
                     queued.rfcMessageID = message.rfcMessageID
-                    combined[existingIndex] = queued
+                    message = queued
+                }
+                if message != previous {
+                    replyThreads.insert(message.conversationID)
+                    messagesChanged = true
+                    if previous.sentAt != message.sentAt { needsSort = true }
+                    combined[existingIndex] = message
+                    positions.replace(previous, with: message, at: existingIndex)
                 }
             } else {
                 if let context = combined.first(where: {
@@ -302,17 +357,31 @@ extension MailStore {
                     if let rule = inputs.rules.first(where: { matchesRule($0, message: message) }) { applyRule(rule, to: &message) }
                     else if inputs.screening { message.workflow.screeningState = .pending }
                 }
+                messagesChanged = true
+                needsSort = true
+                replyThreads.insert(message.conversationID)
+                positions.insert(message, at: combined.count)
                 combined.append(message)
+                if trackInsertions { insertedIDs.insert(message.id) }
             }
         }
         return (combined.sorted { $0.sentAt > $1.sentAt }, overrides)
     }
 
     private func installMerge(_ result: MergeResult, processDates: Bool) {
-        providerOverrides = result.overrides
+        if providerOverrides != result.overrides { providerOverrides = result.overrides }
+        // A replay can acknowledge an optimistic flag without changing any displayed message.
+        guard result.messagesChanged else { return }
+        let wasSuppressing = suppressRemoteMutations
         suppressRemoteMutations = true
         messages = result.messages
-        suppressRemoteMutations = false
+        suppressRemoteMutations = wasSuppressing
+        if !result.replacedIDs.isEmpty {
+            isUpdatingSelection = true
+            if let id = selectedMessageID, let owner = result.replacedIDs[id] { selectedMessageID = owner }
+            selectedMessageIDs = Set(selectedMessageIDs.map { result.replacedIDs[$0] ?? $0 })
+            isUpdatingSelection = false
+        }
         if processDates { processWorkflowDates() }
         reconcileSelection()
     }

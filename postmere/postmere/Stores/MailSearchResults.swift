@@ -10,7 +10,7 @@ extension MailStore {
 }
 
 nonisolated extension MailMessage {
-    var searchConversationKey: String { "\(account)|\(providerAccountEmail?.lowercased() ?? "")|\(conversationID.uuidString)" }
+    var searchConversationKey: String { "\(account)|\(legacyAccountAddress ?? "")|\(conversationID.uuidString)" }
 
     func belongs(to mailbox: Mailbox) -> Bool {
         let available = !isDraft && self.mailbox != .trash && self.mailbox != .outbox

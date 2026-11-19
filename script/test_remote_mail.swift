@@ -20,9 +20,13 @@ import Foundation
     needsReply.workflow.needsReply = true
     var earlier = needsReply
     earlier.id = UUID()
+    earlier.backendMessageID = UUID()
+    earlier.providerMessageID = "earlier-message"
     earlier.sentAt = needsReply.sentAt.addingTimeInterval(-60)
     var reminder = one
     reminder.id = UUID()
+    reminder.backendMessageID = UUID()
+    reminder.providerMessageID = "follow-up-message"
     reminder.conversationID = UUID()
     reminder.mailbox = .sent
     reminder.workflow.followUpAt = .now
@@ -43,10 +47,27 @@ import Foundation
     let store = MailStore(messages: [two], persistenceURL: stateURL)
     let page = BackendMailPage(messages: [payload], nextCursor: "cursor-one", hasMore: false)
     try check(await store.applyBackendPage(page, identity: first), "remote page and cursor persist successfully")
+    store.selectedMessageID = one.id
+    await store.loadMailboxView()
+    let quietRevision = store.mailboxDataRevision, quietSave = store.saveRevision
+    let quiet = BackendMailPage(messages: [], nextCursor: "cursor-one", hasMore: false)
+    try check(await store.applyBackendPage(quiet, identity: first), "an empty incremental poll completes")
+    try check(await store.applyBackendPage(page, identity: first) && store.mailboxDataRevision == quietRevision
+              && store.saveRevision == quietSave && store.selectedMessageIDs == [one.id]
+              && store.mailboxViewData?.key.messageRevision == quietRevision,
+              "empty polls and identical deliveries preserve painted rows, selection and the durable snapshot")
     let reopened = MailStore(messages: [], persistenceURL: stateURL)
     try check(reopened.backendSyncCursors[first.localID] == "cursor-one" && reopened.messages.contains { $0.id == one.id }, "remote cursor never outruns its durable messages")
     let deleted = BackendMailPage(messages: [], nextCursor: "cursor-two", hasMore: false, deletedMessageIds: [messageID])
     try check(await store.applyBackendPage(deleted, identity: first), "explicit provider deletion page persists")
+    let deletionRevision = store.mailboxDataRevision, deletionSave = store.saveRevision
+    try check(await store.applyBackendPage(deleted, identity: first) && store.mailboxDataRevision == deletionRevision
+              && store.saveRevision == deletionSave, "replayed tombstones skip mailbox and disk updates")
+    let advance = BackendMailPage(messages: [], nextCursor: "cursor-three", hasMore: false)
+    try check(await store.applyBackendPage(advance, identity: first) && store.mailboxDataRevision == deletionRevision
+              && store.saveRevision == deletionSave + 1
+              && MailStore(messages: [], persistenceURL: stateURL).backendSyncCursors[first.localID] == "cursor-three",
+              "an advancing empty page persists its cursor without rebuilding rows")
     try check(store.messages.first { $0.id == one.id }?.isDeletedOnProvider == true && store.messages.first { $0.id == two.id }?.isDeletedOnProvider == false, "deletion affects only its server-account namespace")
 
     let backgroundURL = directory.appendingPathComponent("sync-during-input.json")
@@ -176,7 +197,8 @@ import Foundation
     policyStore.senderScreeningEnabled = false
     try check(policyEdits == 8, "screening/rule additions, edits and removals do not immediately request remote-policy synchronization")
 
-    let queueStore = MailStore(messages: [], persistenceURL: directory.appendingPathComponent("remote-queue.json"))
+    let queueFile = directory.appendingPathComponent("remote-queue.json")
+    let queueStore = MailStore(messages: [], persistenceURL: queueFile)
     queueStore.beginCompose(account: MailAccount(rawValue: first.localID)!)
     queueStore.draftTo = "recipient@example.com"
     queueStore.draftSubject = "Remote delivery"
@@ -198,7 +220,7 @@ import Foundation
               && queueStore.messages[0].paragraphs == ["Delivery belongs to the workspace server"], "sync before an outbox poll preserves pending state and remote identifiers without duplicating the message")
     await queueStore.processDueWork(now: .now.addingTimeInterval(600))
     try check(queueStore.outgoingQueue.first?.status == .pending && queueStore.messages.first?.mailbox == .outbox, "local delivery worker never sends a server-owned queue item")
-    let resumedQueue = MailStore(messages: [], persistenceURL: directory.appendingPathComponent("remote-queue.json"))
+    let resumedQueue = MailStore(messages: [], persistenceURL: queueFile)
     try check(resumedQueue.outgoingQueue.first?.id == queueStore.outgoingQueue.first?.id, "remote delivery idempotency ID survives restart")
     try check(resumedQueue.messages.count == 1 && resumedQueue.messages[0].backendMessageID == messageID
               && resumedQueue.messages[0].rfcMessageID == earlySent.rfcMessageId
@@ -227,6 +249,8 @@ import Foundation
     func cached(_ paragraphs: [String], preview: String, html: String?) -> MailMessage {
         var message = source
         message.id = UUID()
+        message.backendMessageID = UUID()
+        message.providerMessageID = message.id.uuidString
         message.paragraphs = paragraphs
         message.preview = preview
         message.bodyHTML = html

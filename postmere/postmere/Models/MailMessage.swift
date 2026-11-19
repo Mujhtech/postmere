@@ -201,12 +201,12 @@ struct MailAddressList {
     }
 }
 
-nonisolated struct MailDeliveryHeaders: Codable, Sendable {
+nonisolated struct MailDeliveryHeaders: Codable, Equatable, Sendable {
     var returnPath: String?
     var receivedWith: String?
 }
 
-nonisolated struct MailEnvelopeDetails: Codable, Sendable {
+nonisolated struct MailEnvelopeDetails: Codable, Equatable, Sendable {
     var recipientNames: [String: String]
     var signingDomains: [String]
     var deliveryHeaders: MailDeliveryHeaders?
@@ -271,6 +271,12 @@ struct MailMessage: Codable, Identifiable {
     var backendOutboxID: UUID?
     var trackOpens: Bool?
     var trackLinks: Bool?
+
+    /// Connected accounts include the workspace and provider account ID in their key.
+    /// Only legacy account keys need an email address to distinguish mailboxes.
+    nonisolated var legacyAccountAddress: String? {
+        account.hasPrefix("remote:") ? nil : providerAccountEmail?.lowercased()
+    }
 
     nonisolated var isDeletedOnProvider: Bool {
         get { providerDeletedAt != nil }

@@ -8,6 +8,16 @@ import Foundation
 }
 
 extension MailStore {
+    /// Some providers omit the outbound Message-ID when Sent first syncs. The
+    /// acceptance receipt can be the first common key between the two rows.
+    func reconcileSentDelivery(_ receipt: MailMessage) {
+        guard let providerID = receipt.providerMessageID, !providerID.isEmpty,
+              let cached = messages.first(where: {
+                  $0.id != receipt.id && $0.account == receipt.account && $0.backendMessageID != nil && $0.providerMessageID == providerID
+              }) else { return }
+        mergeIncoming([cached])
+    }
+
     func beginProviderPage(for account: String) -> ProviderPageRead {
         let read = ProviderPageRead(account: account)
         activeProviderPages.append(read)
