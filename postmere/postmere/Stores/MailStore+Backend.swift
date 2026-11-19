@@ -1,15 +1,32 @@
 import Foundation
 
+/// Only overlapping requests need ordering. A later fetch starts with no protected label values.
+@MainActor final class ProviderPageRead {
+    let account: String
+    var newerLabels: Set<UUID> = []
+    init(account: String) { self.account = account }
+}
+
 extension MailStore {
+    func beginProviderPage(for account: String) -> ProviderPageRead {
+        let read = ProviderPageRead(account: account)
+        activeProviderPages.append(read)
+        return read
+    }
+
+    func endProviderPage(_ read: ProviderPageRead) {
+        activeProviderPages.removeAll { $0 === read }
+    }
+
     /// Establish once, before the account's first network sync. Paging older
     /// history and replaying a retired cursor must not redefine what is new.
     /// Keeping this date across launches still admits mail received while the
     /// Mac was closed, including arrivals in the first response after setup.
-    func prepareBackendNotifications(for identity: RemoteAccountIdentity, now: Date = .now) -> Bool {
+    func prepareBackendNotifications(for identity: RemoteAccountIdentity, now: Date = .now) async -> Bool {
         guard backendNotificationCutoffs[identity.localID] == nil else { return true }
         backendNotificationCutoffs[identity.localID] = now
-        guard persistState() else {
-            backendNotificationCutoffs[identity.localID] = nil
+        guard await persistStateAsync() else {
+            if backendNotificationCutoffs[identity.localID] == now { backendNotificationCutoffs[identity.localID] = nil }
             return false
         }
         return true
@@ -26,30 +43,21 @@ extension MailStore {
 
     /// Persist message changes and their resume cursor together so a failed disk
     /// write never skips changes on the next launch.
-    func applyBackendPage(_ page: BackendMailPage, identity: RemoteAccountIdentity) -> Bool {
+    func applyBackendPage(_ page: BackendMailPage, identity: RemoteAccountIdentity, read: ProviderPageRead? = nil,
+                          isCurrent: () -> Bool = { true }) async -> Bool {
+        let pageRead = read ?? beginProviderPage(for: identity.localID)
+        defer { if read == nil { endProviderPage(pageRead) } }
+        guard pageRead.account == identity.localID, isCurrent(),
+              let incoming = try? await page.localMessages(for: identity) else { return false }
         let oldCursor = backendSyncCursors[identity.localID]
-        persistenceSuspended += 1
-        mergeIncoming(page.messages.filter { $0.accountId == identity.accountID }.map { $0.localMessage(identity: identity) })
-        let deleted = Set(page.deletedMessageIds ?? [])
-        if !deleted.isEmpty {
-            var updated = messages
-            for index in updated.indices where updated[index].account == identity.localID {
-                if let backendID = updated[index].backendMessageID, deleted.contains(backendID) {
-                    updated[index].isDeletedOnProvider = true
-                    providerOverrides[updated[index].id] = nil
-                }
-            }
-            suppressRemoteMutations = true
-            messages = updated
-            suppressRemoteMutations = false
-        }
-        backendSyncCursors[identity.localID] = page.nextCursor
-        persistenceSuspended -= 1
-        guard persistState() else {
-            backendSyncCursors[identity.localID] = oldCursor
+        guard await mergeReceivedPage(incoming, deletedIDs: Set(page.deletedMessageIds ?? []),
+                                      read: pageRead, isCurrent: isCurrent, beforeSave: {
+            self.backendSyncCursors[identity.localID] = page.nextCursor
+        }) else { return false }
+        guard await persistStateAsync() else {
+            if backendSyncCursors[identity.localID] == page.nextCursor { backendSyncCursors[identity.localID] = oldCursor }
             return false
         }
-        reconcileSelection()
         return true
     }
 }

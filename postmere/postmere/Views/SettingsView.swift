@@ -188,6 +188,7 @@ struct SettingsView: View {
                     notificationPermissionControl
                 }
                 if let error = runtime.notifications.authorizationError { Text(error).font(.caption).foregroundStyle(.red) }
+                Toggle("Show unread count on Dock icon", isOn: Bindable(runtime.mailboxCounts).showsUnreadInDock)
             }
             Section("Account notifications") {
                 if MailAccount.allCases.isEmpty {

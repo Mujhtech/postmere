@@ -66,7 +66,7 @@ struct MailSnippet: Codable, Equatable, Identifiable {
     }
 }
 
-struct SavedInboxCriteria: Codable, Equatable {
+nonisolated struct SavedInboxCriteria: Codable, Equatable {
     var query = ""
     var account: String?
     var unreadOnly = false
@@ -199,9 +199,21 @@ struct MailNotificationSchedule: Codable, Equatable, Identifiable {
     var kind: Kind
 }
 
-struct ProviderMessageOverride {
+nonisolated struct ProviderMessageOverride: Equatable, Sendable {
     var isUnread: Bool?
     var isStarred: Bool?
     var mailbox: Mailbox?
     var isEmpty: Bool { isUnread == nil && isStarred == nil && mailbox == nil }
+
+    mutating func apply(to message: inout MailMessage) {
+        if let value = isUnread {
+            if message.isUnread == value { isUnread = nil } else { message.isUnread = value }
+        }
+        if let value = isStarred {
+            if message.isStarred == value { isStarred = nil } else { message.isStarred = value }
+        }
+        if let value = mailbox {
+            if message.mailbox == value { mailbox = nil } else { message.mailbox = value }
+        }
+    }
 }

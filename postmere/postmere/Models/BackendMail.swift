@@ -29,6 +29,18 @@ nonisolated struct BackendMailPage: Decodable, Sendable {
     let nextCursor: String?
     let hasMore: Bool
     var deletedMessageIds: [UUID]? = nil
+
+    @concurrent func localMessages(for identity: RemoteAccountIdentity) async throws -> [MailMessage] {
+        var converted: [MailMessage] = []
+        converted.reserveCapacity(messages.count)
+        for row in messages where row.accountId == identity.accountID {
+            try Task.checkCancellation()
+            var message = await row.makeLocalMessage(identity: identity)
+            message.restoreReceivedText(provider: identity.provider)
+            converted.append(message)
+        }
+        return converted
+    }
 }
 
 nonisolated struct BackendMailMessage: Decodable, Sendable {
@@ -88,6 +100,12 @@ extension BackendMailMessage {
     }
 
     func localMessage(identity: RemoteAccountIdentity) -> MailMessage {
+        var message = makeLocalMessage(identity: identity)
+        message.restoreReceivedText(provider: identity.provider)
+        return message
+    }
+
+    fileprivate func makeLocalMessage(identity: RemoteAccountIdentity) -> MailMessage {
         var message = MailMessage(id: Self.localID(identity.localID + ":" + id.uuidString), sender: from.name?.isEmpty == false ? from.name! : from.email,
                     senderEmail: from.email, initials: String((from.name ?? from.email).prefix(2)).uppercased(),
                     subject: subject, preview: preview, paragraphs: [textBody],
@@ -112,7 +130,6 @@ extension BackendMailMessage {
         message.inReplyTo = inReplyTo
         message.references = references ?? []
         message.envelopeDetails = envelopeDetails
-        message.restoreReceivedText(provider: identity.provider)
         return message
     }
 

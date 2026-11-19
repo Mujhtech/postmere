@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 
 struct ReaderView: View {
+    @Environment(\.postmereAccent) private var palette
     @Bindable var store: MailStore
     var compactToolbar = false
     @Environment(MailRuntime.self) private var runtime
@@ -12,6 +13,23 @@ struct ReaderView: View {
     @State private var attachmentError: String?
     @State private var expandedMessageIDs: Set<UUID> = []
     @State private var loadingAttachmentID: UUID?
+    @State private var readingPosition = ScrollPosition(edge: .top)
+    @State private var detectedDates: (source: DateSource, suggestions: [MailDateSuggestion])?
+
+    private struct DateSource: Equatable, Sendable {
+        let messageID: UUID
+        let paragraphs: [String]
+
+        init(_ message: MailMessage) {
+            messageID = message.id
+            paragraphs = message.paragraphs
+        }
+
+        @concurrent func suggestions() async -> [MailDateSuggestion] {
+            guard !Task.isCancelled, !paragraphs.isEmpty else { return [] }
+            return MailDateDetector.suggestions(in: paragraphs.joined(separator: "\n\n"))
+        }
+    }
 
     private enum ReaderSheet: Identifiable {
         case attachment(MailAttachment)
@@ -51,7 +69,8 @@ struct ReaderView: View {
                     }
                 }
             } else if let message = store.selectedMessage {
-                let conversation = message.isDraft || message.mailbox == .outbox ? [message] : store.conversationMessages(for: message)
+                let conversation = store.selectedConversation
+                let dateSource = DateSource(message)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         Text(message.displaySubject)
@@ -61,31 +80,10 @@ struct ReaderView: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityAddTraits(.isHeader)
                             .padding(.bottom, conversation.count > 1 ? 10 : 16)
-                        workflowSummary(message)
-                        MailDateSuggestionsView(title: message.subject, paragraphs: message.paragraphs) {
-                            presentedSheet = .calendar($0)
-                        }.padding(.bottom, 10)
-                        if message.isOutgoing && message.mailbox == .sent {
-                            HStack {
-                                Button { presentedSheet = .activity(message) } label: {
-                                    PostmereLabel("Message activity", symbol: "eye", size: 14)
-                                }.buttonStyle(.borderless)
-                                Spacer()
-                                if message.trackOpens != true && message.trackLinks != true { Text("Tracking off").foregroundStyle(.secondary) }
-                            }.font(.caption).padding(.bottom, 16)
-                        }
-                        if MailUnsubscribeService.options(for: message).isAvailable {
-                            HStack(spacing: 9) {
-                                PostmereIcon("envelope", size: 14).foregroundStyle(PostmereTheme.icon)
-                                Text("Mailing list").font(.caption).foregroundStyle(.secondary)
-                                Spacer()
-                                Button("Unsubscribe…") { presentedSheet = .unsubscribe(message) }
-                                    .buttonStyle(.borderless).font(.caption)
-                            }.padding(.bottom, 16)
-                        }
                         if conversation.count > 1 {
                             conversationSummary(conversation, selected: message)
-                                .padding(.bottom, 20)
+                                .padding(.bottom, 16)
+                            workflowSummary(message)
                             VStack(spacing: 12) {
                                 ForEach(conversation) { entry in
                                     conversationMessage(entry)
@@ -94,8 +92,9 @@ struct ReaderView: View {
                         } else {
                             HoverableMailMessage {
                                 VStack(alignment: .leading, spacing: 0) {
-                                    senderHeader(message)
-                                    Divider().padding(.vertical, 18)
+                                    senderHeader(message, presentation: .single)
+                                    Divider().padding(.vertical, 14)
+                                    workflowSummary(message)
                                     messageContents(message)
                                 }
                             }
@@ -105,7 +104,12 @@ struct ReaderView: View {
                     .padding(.horizontal, 20)
                     .padding(.vertical, 22)
                 }
-                .id(message.id)
+                .scrollPosition($readingPosition)
+                .task(id: dateSource, priority: .utility) {
+                    let suggestions = await dateSource.suggestions()
+                    guard !Task.isCancelled else { return }
+                    detectedDates = (dateSource, suggestions)
+                }
             } else if store.isSearchActive {
                 searchPlaceholder
             } else {
@@ -159,8 +163,10 @@ struct ReaderView: View {
             }
         }
         .onChange(of: store.selectedMessageID, initial: true) {
+            readingPosition.scrollTo(edge: .top)
             presentedSheet = nil
             toolbarDetailsTarget = nil
+            detectedDates = nil
             blockedTrackers.removeAll()
             expandedMessageIDs = Set([store.selectedMessageID].compactMap { $0 })
         }
@@ -269,65 +275,19 @@ struct ReaderView: View {
 
     private func conversationMessage(_ message: MailMessage) -> some View {
         let isExpanded = expandedMessageIDs.contains(message.id)
-        let sender = message.isOutgoing ? "You" : message.sender
         return HoverableMailMessage {
-            conversationCard(message, sender: sender, isExpanded: isExpanded)
-        }
-    }
-
-    private func conversationCard(_ message: MailMessage, sender: String, isExpanded: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 10) {
-                senderAvatar(message, size: 32)
-                VStack(alignment: .leading, spacing: 5) {
-                    Button {
-                        if isExpanded { expandedMessageIDs.remove(message.id) }
-                        else { expandedMessageIDs.insert(message.id) }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                                Text(sender)
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .lineLimit(1)
-                                Spacer(minLength: 4)
-                                Text("\(message.dateLabel), \(message.timeLabel)")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                PostmereIcon(isExpanded ? "chevron.down" : "chevron.right", size: 12)
-                                    .foregroundStyle(.secondary)
-                            }
-                            if !isExpanded {
-                                Text(message.preview).font(.system(size: 12))
-                                    .foregroundStyle(.secondary).lineLimit(1)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("\(isExpanded ? "Collapse" : "Expand") message from \(sender), \(message.dateLabel), \(message.timeLabel)")
-                    .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-                    if isExpanded {
-                        HStack {
-                            recipientSummary(message)
-                            Spacer(minLength: 4)
-                            hoverResponseButtons(message)
-                        }
-                    }
+            VStack(alignment: .leading, spacing: 0) {
+                senderHeader(message, presentation: isExpanded ? .expanded : .collapsed)
+                    .padding(16)
+                if isExpanded {
+                    Divider().padding(.horizontal, 16)
+                    messageContents(message).padding(16)
                 }
-
             }
-            .padding(16)
-
-            if isExpanded {
-                Divider().padding(.horizontal, 16)
-                messageContents(message)
-                    .padding(18)
-            }
+            .background(isExpanded ? Color.clear : PostmereTheme.subtleFill)
+            .clipShape(RoundedRectangle(cornerRadius: PostmereTheme.cardRadius))
+            .overlay { RoundedRectangle(cornerRadius: PostmereTheme.cardRadius).strokeBorder(PostmereTheme.rule) }
         }
-        .background(isExpanded ? Color.clear : PostmereTheme.subtleFill)
-        .clipShape(RoundedRectangle(cornerRadius: PostmereTheme.cardRadius))
-        .overlay { RoundedRectangle(cornerRadius: PostmereTheme.cardRadius).strokeBorder(PostmereTheme.rule) }
     }
 
     private func messageContents(_ message: MailMessage) -> some View {
@@ -363,30 +323,108 @@ struct ReaderView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func senderHeader(_ message: MailMessage) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            senderAvatar(message, size: 36)
+    private enum HeaderPresentation {
+        case single, expanded, collapsed
+    }
+
+    private func senderHeader(_ message: MailMessage, presentation: HeaderPresentation) -> some View {
+        let name = message.isOutgoing ? (presentation == .single ? message.mailAccount.displayName : "You") : message.sender
+        let sender = name.isEmpty ? message.senderEmail : name
+        return HStack(alignment: .top, spacing: 10) {
+            senderAvatar(message, size: presentation == .single ? 36 : 32)
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(message.isOutgoing ? message.mailAccount.displayName : message.sender)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
+                if presentation == .single {
+                    senderLine(message, sender: sender, presentation: presentation)
+                        .textSelection(.enabled)
+                } else {
+                    Button {
+                        if presentation == .expanded { expandedMessageIDs.remove(message.id) }
+                        else { expandedMessageIDs.insert(message.id) }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            senderLine(message, sender: sender, presentation: presentation)
+                            if presentation == .collapsed {
+                                Text(message.preview).font(.system(size: 12))
+                                    .foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(presentation == .expanded ? "Collapse" : "Expand") message from \(sender), \(message.dateLabel), \(message.timeLabel)")
+                    .accessibilityValue(presentation == .expanded ? "Expanded" : "Collapsed")
                 }
-                Text(message.senderEmail)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(message.senderEmail)
-                    .textSelection(.enabled)
-                recipientSummary(message)
-                Text("\(message.dateLabel), \(message.timeLabel) · \(message.accountLabel)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 2)
+                if presentation != .collapsed {
+                    HStack(spacing: 6) {
+                        recipientSummary(message)
+                        Spacer(minLength: 0)
+                        hoverResponseButtons(message)
+                    }
+                    messageNotices(message)
+                }
             }
-            hoverResponseButtons(message)
+        }
+    }
+
+    private func senderLine(_ message: MailMessage, sender: String, presentation: HeaderPresentation) -> some View {
+        let name = Text(sender).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+        let address = Text(message.senderEmail).font(.system(size: 12)).foregroundStyle(.secondary)
+            .lineLimit(1).truncationMode(.middle).help(message.senderEmail)
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if presentation != .collapsed, !message.senderEmail.isEmpty,
+               sender.caseInsensitiveCompare(message.senderEmail) != .orderedSame {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        name
+                        address
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                    VStack(alignment: .leading, spacing: 3) {
+                        name
+                        address
+                    }
+                }
+            } else {
+                name
+            }
+            Spacer(minLength: 0)
+            Text("\(message.dateLabel), \(message.timeLabel)")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize()
+            if presentation != .single {
+                PostmereIcon(presentation == .expanded ? "chevron.down" : "chevron.right", size: 12)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private func messageNotices(_ message: MailMessage) -> some View {
+        let trackerCount = blockedTrackers[message.id, default: 0]
+        let canUnsubscribe = MailUnsubscribeService.options(for: message).isAvailable
+        let showsActivity = message.isOutgoing && message.mailbox == .sent
+        if trackerCount > 0 || canUnsubscribe || showsActivity {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                if trackerCount > 0 {
+                    Label(trackerCount == 1 ? "1 tracker blocked" : "\(trackerCount) trackers blocked", systemImage: "eye.slash")
+                        .foregroundStyle(.secondary)
+                        .help("Postmere prevented these tracking pixels from loading.")
+                }
+                if canUnsubscribe {
+                    Button("Unsubscribe…") { presentedSheet = .unsubscribe(message) }
+                        .foregroundStyle(palette.accentInk)
+                        .help("Review unsubscribe options for this mailing list")
+                }
+                if showsActivity {
+                    Button { presentedSheet = .activity(message) } label: {
+                        PostmereLabel("Message activity", symbol: "eye", size: 12)
+                    }
+                    .foregroundStyle(palette.accentInk)
+                    if message.trackOpens != true && message.trackLinks != true {
+                        Text("Tracking off").foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .font(.caption)
+            .buttonStyle(.plain)
         }
     }
 
@@ -400,7 +438,8 @@ struct ReaderView: View {
     }
 
     private func senderAvatar(_ message: MailMessage, size: CGFloat) -> some View {
-        MailParticipantAvatar(address: message.senderEmail, name: message.isOutgoing ? message.mailAccount.displayName : message.sender, size: size)
+        MailParticipantAvatar(address: message.senderEmail, name: message.isOutgoing ? message.mailAccount.displayName : message.sender,
+                              size: size, messageID: message.id)
     }
 
     private func recipientAddresses(_ values: [String]) -> [String] {
@@ -421,17 +460,12 @@ struct ReaderView: View {
         return HStack(spacing: 5) {
             Text("To:")
             if let first = addresses.first {
-                MailParticipantAvatar(address: first, name: recipientName(first, message: message), size: 20)
+                MailParticipantAvatar(address: first, name: recipientName(first, message: message), size: 20, messageID: message.id)
                 Text(first).lineLimit(1).truncationMode(.middle)
             } else {
                 Text("—")
             }
             MessageDetailsDisclosure(message: message, additionalRecipients: max(0, addresses.count - 1))
-            if let count = blockedTrackers[message.id], count > 0 {
-                Label(count == 1 ? "1 tracker blocked" : "\(count) trackers blocked", systemImage: "eye.slash")
-                    .font(.caption)
-                    .help("Postmere prevented these tracking pixels from loading.")
-            }
         }
         .font(.system(size: 12))
         .foregroundStyle(.secondary)
@@ -528,6 +562,7 @@ struct ReaderView: View {
     private var readerToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .automatic) {
             let message = toolbarMessage
+
             let starred = message?.isStarred == true
             let starTitle = starred ? "Remove Star" : "Star Message"
             Button {
@@ -535,7 +570,7 @@ struct ReaderView: View {
             } label: {
                 PostmereLabel(starTitle, symbol: starred ? "star.fill" : "star", size: 17)
                     .labelStyle(.iconOnly)
-                    .foregroundStyle(starred ? PostmereTheme.accentInk : PostmereTheme.icon)
+                    .foregroundStyle(starred ? palette.accentInk : PostmereTheme.icon)
             }
             .help(starTitle)
             .accessibilityValue(starred ? "On" : "Off")
@@ -670,6 +705,16 @@ struct ReaderView: View {
                 }
             }
             Divider()
+            if store.selectedMessageIDs.count <= 1, let detectedDates,
+               detectedDates.source == DateSource(message), !detectedDates.suggestions.isEmpty {
+                Menu("Create Calendar Event") {
+                    ForEach(detectedDates.suggestions) { suggestion in
+                        Button(suggestion.matchedText) {
+                            presentedSheet = .calendar(suggestion.eventDraft(title: message.subject))
+                        }
+                    }
+                }
+            }
             Button("Message Details") { toolbarDetailsTarget = message }.disabled(store.selectedMessageIDs.count > 1)
         }
     }

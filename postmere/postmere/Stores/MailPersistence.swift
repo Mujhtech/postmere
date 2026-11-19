@@ -1,6 +1,6 @@
 import Foundation
 
-nonisolated struct MailStateSnapshot: Encodable, @MainActor Decodable, Sendable {
+nonisolated struct MailStateSnapshot: Codable, Sendable {
     var schemaVersion = 1
     var messages: [MailMessage]
     var savedViews: [SavedInboxView]
@@ -45,7 +45,6 @@ nonisolated struct MailStateSnapshot: Encodable, @MainActor Decodable, Sendable 
         self.backendNotificationCutoffs = backendNotificationCutoffs
     }
 
-    @MainActor
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
@@ -77,7 +76,6 @@ nonisolated struct MailPersistence: Sendable {
         fileURL.deletingLastPathComponent().appendingPathComponent("Attachments", isDirectory: true)
     }
 
-    @MainActor
     func load() throws -> MailStateSnapshot? {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         let decoder = JSONDecoder()
@@ -91,8 +89,9 @@ nonisolated struct MailPersistence: Sendable {
               Set(state.vipContacts.map(\.id)).count == state.vipContacts.count else {
             throw MailStorageError.invalidSnapshot("The inbox settings contain duplicate identifiers.")
         }
-        guard Set(state.outgoingQueue.map(\.id)).count == state.outgoingQueue.count,
-              state.outgoingQueue.allSatisfy({ queued in state.messages.contains { $0.id == queued.id && $0.mailbox == .outbox } }) else {
+        let queuedIDs = Set(state.outgoingQueue.map(\.messageID))
+        guard queuedIDs.count == state.outgoingQueue.count,
+              queuedIDs.isEmpty || queuedIDs.isSubset(of: state.messages.lazy.filter { $0.mailbox == .outbox }.map(\.id)) else {
             throw MailStorageError.invalidSnapshot("The outgoing queue is inconsistent with the saved mailbox.")
         }
         return state

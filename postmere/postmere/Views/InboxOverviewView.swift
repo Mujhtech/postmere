@@ -5,7 +5,16 @@ struct InboxOverviewView: View {
     @Environment(MailRuntime.self) private var runtime
 
     var body: some View {
-        let overview = InboxOverview(store: store)
+        if let overview = store.mailboxViewData?.overview {
+            content(overview)
+        } else {
+            ProgressView("Loading mailbox…")
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func content(_ overview: InboxOverview) -> some View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
@@ -30,13 +39,13 @@ struct InboxOverviewView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 6) {
                                 Text(section.title).fontWeight(.semibold)
-                                Text(section.messages.count.formatted()).monospacedDigit()
+                                Text(section.count.formatted()).monospacedDigit()
                             }
                             .foregroundStyle(.secondary)
                             .font(.callout)
                             .accessibilityElement(children: .combine)
                             .accessibilityAddTraits(.isHeader)
-                            ForEach(section.messages.prefix(3)) { message in
+                            ForEach(section.messages) { message in
                                 Button { open(message, in: section.mailbox) } label: {
                                     HStack(spacing: 10) {
                                         ParticipantPhoto(address: message.senderEmail, name: message.sender, size: 32)
@@ -89,7 +98,9 @@ struct InboxOverviewView: View {
     }
 
     private func open(_ message: MailMessage, in mailbox: Mailbox?) {
-        if let mailbox, !store.filteredMessages.contains(where: { $0.id == message.id }) { store.selectedMailbox = mailbox }
+        if let mailbox, store.mailboxViewData?.messages.contains(where: { $0.id == message.id }) != true {
+            store.selectedMailbox = mailbox
+        }
         store.select(message)
     }
 

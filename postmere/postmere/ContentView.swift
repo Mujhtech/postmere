@@ -15,7 +15,7 @@ struct ContentView: View {
     @State private var editingCompactSearch = false
 
     private var showsSearchButton: Bool {
-        isCompact && !store.selectedMessageIDs.isEmpty && !editingCompactSearch
+        isCompact && store.hasMessageSelection && !editingCompactSearch
     }
 
     private var showsSidebar: Bool {
@@ -57,7 +57,7 @@ struct ContentView: View {
             }
             .frame(minWidth: 300)
             .toolbar {
-                if store.selectedMessageIDs.isEmpty && !store.isSearchActive {
+                if !store.hasMessageSelection && !store.isSearchActive {
                     // Keep the toolbar divider aligned with the list when the reader has no actions.
                     ToolbarSpacer(.flexible, placement: .automatic)
                 }
@@ -82,8 +82,8 @@ struct ContentView: View {
             if searchPresented { store.beginSearch() }
             else if store.isSearchActive && !showsSearchButton { store.endSearch() }
         }
-        .onChange(of: store.selectedMessageIDs) {
-            if !store.selectedMessageIDs.isEmpty { editingCompactSearch = false }
+        .onChange(of: editingCompactSearch ? store.selectedMessageID : nil) { _, selected in
+            if selected != nil { editingCompactSearch = false }
         }
         .onChange(of: searchFocused) {
             if !searchFocused { editingCompactSearch = false }
@@ -128,7 +128,6 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 640, minHeight: 560)
-        .tint(PostmereTheme.accent)
         .focusedSceneValue(\.mailStore, store)
         .focusedSceneValue(\.isComposerWindow, false)
         .onAppear { runtime.openMailWindow = { openWindow(id: "mail") } }

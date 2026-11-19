@@ -8,6 +8,7 @@ import UserNotifications
 final class MailRuntime {
     let store: MailStore
     let backend = BackendSession()
+    let mailboxCounts: MailboxCounts
     let notifications = MailNotificationService()
     let push = MailPushService()
     var shouldFocusMailSearch = false
@@ -53,7 +54,17 @@ final class MailRuntime {
     private var isFlushingDeferredNotifications = false
 
     init(store: MailStore? = nil) {
-        self.store = store ?? MailStore()
+        self.store = store ?? MailStore(openInBackground: true)
+        mailboxCounts = MailboxCounts(store: self.store, dockAccounts: { [backend] in
+            guard backend.canAccessWorkspace, let scope = backend.scope else { return [] }
+            let disconnecting = backend.disconnectingAccountIDs
+            return Set(RemoteAccountRegistry.accounts.lazy.filter {
+                $0.scope == scope && $0.status == "connected" && !disconnecting.contains($0.accountID)
+            }.map(\.localID))
+        }, writeBadge: { count in
+            let label = count?.formatted()
+            if let tile = NSApp?.dockTile, tile.badgeLabel != label { tile.badgeLabel = label }
+        })
         backend.pushInstallationID = push.installationID
         backend.onAccountCatalogChanged = { [weak self] in
             PostmereFocusFilter.invalidateFocusFilterAppContext()
@@ -149,6 +160,7 @@ final class MailRuntime {
     func run() async {
         guard !started else { return }
         started = true
+        await store.openingTask?.value
         store.onCancelRemoteSend = { [weak self] id in Task { await self?.cancelBackendSend(id) } }
         store.onRetryRemoteSend = { [weak self] id in Task { await self?.retryBackendSend(id) } }
         store.remoteMutation = { [weak self] before, after in
@@ -179,7 +191,7 @@ final class MailRuntime {
                 Task { await processBackendOutbox() }
                 await refreshSharedPresence()
             }
-            await notifications.reconcileReminders(messages: store.messages)
+            await notifications.reconcileReminders(messages: store.messages, revision: store.mailboxDataRevision)
             do { try await Task.sleep(for: .seconds(1)) }
             catch { break }
         }
@@ -247,11 +259,8 @@ final class MailRuntime {
         let generation = backend.realtimeGeneration
         if !store.messages.contains(where: { $0.backendMessageID == destination.messageID && $0.account == destination.filterCriteria }) {
             do {
-                let response: BackendMailMessage = try await backend.request("GET", "/v1/mail/messages/\(destination.messageID.uuidString)")
-                guard backend.realtimeGeneration == generation, validPushDestination(destination),
-                      response.id == destination.messageID, response.accountId == destination.accountID,
-                      let account = RemoteAccountRegistry.accounts.first(where: { $0.localID == destination.filterCriteria }) else { return false }
-                store.mergeIncoming([response.localMessage(identity: account)])
+                guard let account = RemoteAccountRegistry.accounts.first(where: { $0.localID == destination.filterCriteria }) else { return false }
+                _ = try await fetchProviderMessage(destination.messageID, for: account)
             } catch { return false }
         }
         guard backend.realtimeGeneration == generation, validPushDestination(destination),
@@ -269,11 +278,8 @@ final class MailRuntime {
         defer { isOpeningPushDestination = false }
         do {
             if !store.messages.contains(where: { $0.backendMessageID == destination.messageID && $0.account == destination.filterCriteria }) {
-                let response: BackendMailMessage = try await backend.request("GET", "/v1/mail/messages/\(destination.messageID.uuidString)")
-                guard backend.realtimeGeneration == generation, validPushDestination(destination), response.id == destination.messageID,
-                      response.accountId == destination.accountID,
-                      let account = RemoteAccountRegistry.accounts.first(where: { $0.localID == destination.filterCriteria }) else { return }
-                store.mergeIncoming([response.localMessage(identity: account)])
+                guard let account = RemoteAccountRegistry.accounts.first(where: { $0.localID == destination.filterCriteria }) else { return }
+                _ = try await fetchProviderMessage(destination.messageID, for: account)
             }
             guard backend.realtimeGeneration == generation, validPushDestination(destination),
                   let message = store.messages.first(where: { $0.backendMessageID == destination.messageID && $0.account == destination.filterCriteria }) else { return }

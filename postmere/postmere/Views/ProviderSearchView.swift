@@ -65,7 +65,7 @@ struct ProviderSearchView: View {
                 Button(busy ? "Loading…" : "Load older results") { Task { await search(loadMore: true) } }
                     .disabled(busy || query.trimmingCharacters(in: .whitespacesAndNewlines) != searchedQuery).padding(14)
             }
-        }.frame(width: 620, height: 610).tint(PostmereTheme.accent)
+        }.frame(width: 620, height: 610)
             .onAppear {
                 query = runtime.store.searchText
                 accountID = runtime.store.selectedAccount.flatMap { MailAccount(rawValue: $0) }?.remote?.accountID
@@ -75,17 +75,22 @@ struct ProviderSearchView: View {
     }
 
     private func search(loadMore: Bool) async {
-        guard !busy, let accountID, let identity = RemoteAccountRegistry.accounts.first(where: { $0.accountID == accountID }) else { return }
+        guard !busy, let sessionID = runtime.backend.realtimeGeneration, let accountID, let identity = RemoteAccountRegistry.accounts.first(where: { $0.accountID == accountID }) else { return }
         busy = true
         error = nil
         defer { busy = false }
         let captured = query.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
+            let read = runtime.store.beginProviderPage(for: identity.localID)
+            defer { runtime.store.endProviderPage(read) }
             let page: BackendMailPage = try await runtime.backend.request("POST", "/v1/mail/accounts/\(accountID.uuidString)/search",
                 body: BackendSearchRequest(query: captured, limit: 50, cursor: loadMore ? cursor : nil))
-            guard self.accountID == accountID, runtime.backend.scope == identity.scope else { return }
-            let incoming = page.messages.filter { $0.accountId == accountID }.map { $0.localMessage(identity: identity) }
-            runtime.store.mergeIncoming(incoming)
+            let incoming = try await page.localMessages(for: identity)
+            func isCurrent() -> Bool {
+                self.accountID == accountID && runtime.backend.realtimeGeneration == sessionID && runtime.backend.isAccountConnected(accountID, scope: identity.scope)
+            }
+            guard await runtime.store.mergeReceivedPage(incoming, read: read, isCurrent: isCurrent),
+                  isCurrent() else { return }
             if loadMore {
                 let known = Set(messages.map(\.id))
                 messages.append(contentsOf: incoming.filter { !known.contains($0.id) })
@@ -94,6 +99,8 @@ struct ProviderSearchView: View {
             hasMore = page.hasMore
             searchedQuery = captured
             didSearch = true
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            if self.accountID == accountID && runtime.backend.realtimeGeneration == sessionID { self.error = error.localizedDescription }
+        }
     }
 }

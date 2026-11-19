@@ -1,5 +1,15 @@
 import Foundation
 
+private nonisolated struct MailboxSave: Sendable {
+    let destination: MailPersistence
+    let snapshot: MailStateSnapshot
+    let revision: Int
+
+    func write() -> Result<Void, Error> {
+        Result { try destination.save(snapshot) }
+    }
+}
+
 extension MailStore {
     var draftRecoveryAvailable: Bool {
         guard !isComposing, let draft = recoveredDraft else { return false }
@@ -32,8 +42,29 @@ extension MailStore {
 
     func loadPersistentState() {
         guard let persistence else { return }
+        applyPersistentState(saveQueue.sync { Result { try persistence.load() } })
+    }
+
+    func beginOpeningMailbox(_ persistence: MailPersistence) {
+        isOpeningMailbox = true
+        let queue = saveQueue
+        openingTask = Task { [weak self] in
+            let result = await withCheckedContinuation { continuation in
+                queue.async { continuation.resume(returning: Result { try persistence.load() }) }
+            }
+            guard let self else { return }
+            self.applyPersistentState(result)
+            self.selectFirstMailboxRow(markRead: false)
+            self.persistenceReady = true
+            self.schedulePersistence()
+            self.isOpeningMailbox = false
+            self.openingTask = nil
+        }
+    }
+
+    private func applyPersistentState(_ result: Result<MailStateSnapshot?, Error>) {
         do {
-            guard let saved = try persistence.load() else { return }
+            guard let saved = try result.get() else { return }
             messages = saved.messages
             savedViews = saved.savedViews
             inboxSplits = saved.inboxSplits.map { split in
@@ -48,9 +79,16 @@ extension MailStore {
             selectedInboxSplitID = inboxSplits.first(where: { $0.id == saved.selectedInboxSplitID && !$0.isHidden })?.id
             snippets = saved.snippets
             senderRules = saved.senderRules
+            let legacyQueuedMessageIDs: Set<UUID>
+            if saved.outgoingQueue.isEmpty {
+                legacyQueuedMessageIDs = []
+            } else {
+                let queuedIDs = Set(saved.outgoingQueue.map(\.messageID))
+                legacyQueuedMessageIDs = Set(saved.messages.lazy.filter { queuedIDs.contains($0.id) && !$0.mailAccount.isRemote }.map(\.id))
+            }
             outgoingQueue = saved.outgoingQueue.map { item in
                 var recovered = item
-                if let message = saved.messages.first(where: { $0.id == item.id }), !message.mailAccount.isRemote {
+                if legacyQueuedMessageIDs.contains(item.id) {
                     recovered = stoppedLegacySend(recovered)
                 } else if recovered.status == .delivering && recovered.serverJobID == nil {
                     recovered.status = .failed
@@ -68,24 +106,43 @@ extension MailStore {
         }
     }
 
-    @discardableResult
-    func persistState() -> Bool {
-        guard persistenceReady, persistenceSuspended == 0 else { return true }
-        guard !persistenceBlocked else { return false }
+    private func nextSave() -> MailboxSave? {
+        guard persistenceReady, persistenceSuspended == 0, !persistenceBlocked else { return nil }
         preserveRecoveredDraftDuringComposition()
-        guard let persistence else { return true }
-        pendingReaderSave?.cancel()
-        pendingReaderSave = nil
+        guard let persistence else { return nil }
+        pendingSave?.cancel()
+        pendingSave = nil
         saveRevision += 1
-        let snapshot = mailboxSnapshot
-        do {
-            try saveQueue.sync { try persistence.save(snapshot) }
-            persistenceError = nil
+        return MailboxSave(destination: persistence, snapshot: mailboxSnapshot, revision: saveRevision)
+    }
+
+    @discardableResult
+    private func finishSave(_ result: Result<Void, Error>, revision: Int) -> Bool {
+        switch result {
+        case .success:
+            if revision == saveRevision { persistenceError = nil }
             return true
-        } catch {
-            persistenceError = "Changes could not be saved: \(error.localizedDescription) Keep Postmere open and retry after resolving the storage problem."
+        case .failure(let error):
+            if revision == saveRevision {
+                persistenceError = "Changes could not be saved: \(error.localizedDescription) Keep Postmere open and retry after resolving the storage problem."
+            }
             return false
         }
+    }
+
+    @discardableResult
+    func persistState() -> Bool {
+        guard let save = nextSave() else { return !persistenceBlocked || !persistenceReady || persistenceSuspended > 0 }
+        return finishSave(saveQueue.sync { save.write() }, revision: save.revision)
+    }
+
+    /// A sync cursor or provider operation can await a durable write while the main actor handles input.
+    func persistStateAsync() async -> Bool {
+        guard let save = nextSave() else { return !persistenceBlocked || !persistenceReady || persistenceSuspended > 0 }
+        let result = await withCheckedContinuation { continuation in
+            saveQueue.async { continuation.resume(returning: save.write()) }
+        }
+        return finishSave(result, revision: save.revision)
     }
 
     private var mailboxSnapshot: MailStateSnapshot {
@@ -98,30 +155,19 @@ extension MailStore {
                 backendNotificationCutoffs: backendNotificationCutoffs)
     }
 
-    // Selection and delivery metadata can be saved after the reader paints. Explicit
-    // transactions and lifecycle flushes share the queue so an older save cannot win.
-    func persistReaderChange() {
-        guard persistenceReady, persistenceSuspended == 0, !persistenceBlocked, let persistence else { return }
-        preserveRecoveredDraftDuringComposition()
-        pendingReaderSave?.cancel()
-        saveRevision += 1
-        let revision = saveRevision
-        let snapshot = mailboxSnapshot
-        let save = DispatchWorkItem { @Sendable [weak self] in
-            let result = Result { try persistence.save(snapshot) }
-            guard let self else { return }
-            Task { @MainActor in
-                guard self.saveRevision == revision else { return }
-                self.pendingReaderSave = nil
-                switch result {
-                case .success: self.persistenceError = nil
-                case .failure(let error):
-                    self.persistenceError = "Changes could not be saved: \(error.localizedDescription) Keep Postmere open and retry after resolving the storage problem."
-                }
+    /// Coalesce ordinary edits. Commits that must precede delivery and the final quit flush share this queue.
+    func schedulePersistence() {
+        guard let save = nextSave() else { return }
+        let work = DispatchWorkItem { @Sendable [weak self] in
+            let result = save.write()
+            Task { @MainActor [weak self] in
+                guard let self, self.saveRevision == save.revision else { return }
+                self.pendingSave = nil
+                self.finishSave(result, revision: save.revision)
             }
         }
-        pendingReaderSave = save
-        saveQueue.async(execute: save)
+        pendingSave = work
+        saveQueue.async(execute: work)
     }
 
     @discardableResult
@@ -138,7 +184,7 @@ extension MailStore {
     }
 
     func draftChanged() {
-        if isComposing { persistState() }
+        if isComposing { schedulePersistence() }
     }
 
     func recoverDraft() {
@@ -221,16 +267,16 @@ extension MailStore {
 
     func syncProviderChanges(from previous: [MailMessage]) {
         guard persistenceReady, !suppressRemoteMutations else { return }
-        let before = Dictionary(uniqueKeysWithValues: previous.map { ($0.id, $0) })
+        let indices = Dictionary(uniqueKeysWithValues: previous.indices.lazy.map { (previous[$0].id, $0) })
         for message in messages {
-            if let old = before[message.id] { syncProviderChange(from: old, to: message) }
+            if let index = indices[message.id] { syncProviderChange(from: previous[index], to: message) }
         }
     }
 
     func syncProviderChange(from old: MailMessage, to message: MailMessage) {
-        guard persistenceReady, !suppressRemoteMutations, message.mailAccount.isRemote,
-              message.providerMessageID != nil, !message.isDeletedOnProvider,
-              old.isUnread != message.isUnread || old.isStarred != message.isStarred || old.mailbox != message.mailbox else { return }
+        guard old.isUnread != message.isUnread || old.isStarred != message.isStarred || old.mailbox != message.mailbox,
+              persistenceReady, !suppressRemoteMutations, message.mailAccount.isRemote,
+              message.providerMessageID != nil, !message.isDeletedOnProvider else { return }
         var expected = providerOverrides[message.id] ?? ProviderMessageOverride()
         if old.isUnread != message.isUnread { expected.isUnread = message.isUnread }
         if old.isStarred != message.isStarred { expected.isStarred = message.isStarred }
@@ -265,20 +311,6 @@ extension MailStore {
         if old.isUnread != message.isUnread && pending.isUnread == message.isUnread { pending.isUnread = nil }
         if old.isStarred != message.isStarred && pending.isStarred == message.isStarred { pending.isStarred = nil }
         if old.mailbox != message.mailbox && pending.mailbox == message.mailbox { pending.mailbox = nil }
-        providerOverrides[message.id] = pending.isEmpty ? nil : pending
-    }
-
-    func preservePendingProviderChanges(in message: inout MailMessage) {
-        guard var pending = providerOverrides[message.id] else { return }
-        if let value = pending.isUnread {
-            if message.isUnread == value { pending.isUnread = nil } else { message.isUnread = value }
-        }
-        if let value = pending.isStarred {
-            if message.isStarred == value { pending.isStarred = nil } else { message.isStarred = value }
-        }
-        if let value = pending.mailbox {
-            if message.mailbox == value { pending.mailbox = nil } else { message.mailbox = value }
-        }
         providerOverrides[message.id] = pending.isEmpty ? nil : pending
     }
 }

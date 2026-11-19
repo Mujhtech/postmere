@@ -5,6 +5,8 @@ struct SidebarView: View {
     var onSelect: (() -> Void)?
     @State private var showsViewEditor = false
     @State private var editingSavedView: SavedInboxView?
+    @Environment(MailRuntime.self) private var runtime
+    @Environment(\.postmereAccent) private var accent
     private var accounts: [MailAccount] { MailAccount.allCases }
 
     private var mailboxSelection: Binding<String?> {
@@ -21,17 +23,19 @@ struct SidebarView: View {
     }
 
     var body: some View {
+        let counts = runtime.mailboxCounts.snapshot
+        let current = counts?.accounts == store.searchableAccounts ? counts : nil
         VStack(spacing: 0) {
             List(selection: mailboxSelection) {
                 Section("Favorites") {
                     ForEach([Mailbox.inbox, .starred, .needsReply]) { mailbox in
-                        mailboxRow(mailbox)
+                        mailboxRow(mailbox, count: current?.mailboxes[mailbox, default: 0])
                     }
                 }
 
                 Section("Later") {
                     ForEach([Mailbox.snoozed, .followUps, .newSenders]) { mailbox in
-                        mailboxRow(mailbox)
+                        mailboxRow(mailbox, count: current?.mailboxes[mailbox, default: 0])
                     }
                 }
 
@@ -43,6 +47,7 @@ struct SidebarView: View {
                         }
                             .font(.system(size: 13))
                             .padding(.vertical, 3)
+                            .mailSelection(store.selectedSavedViewID == view.id)
                             .tag("view:\(view.id.uuidString)")
                             .contextMenu {
                                 Button("Edit View…") { editView(view) }
@@ -74,14 +79,14 @@ struct SidebarView: View {
 
                 Section("Mailboxes") {
                     ForEach([Mailbox.drafts, .outbox, .sent, .archive, .trash]) { mailbox in
-                        mailboxRow(mailbox)
+                        mailboxRow(mailbox, count: current?.mailboxes[mailbox, default: 0])
                     }
                 }
 
                 if !accounts.isEmpty {
                     Section("Accounts") {
                         ForEach(accounts) { account in
-                            accountRow(account)
+                            accountRow(account, unread: current?.unreadByAccount[account.rawValue, default: 0])
                         }
                     }
                 }
@@ -113,31 +118,30 @@ struct SidebarView: View {
         showsViewEditor = true
     }
 
-    private func mailboxRow(_ mailbox: Mailbox) -> some View {
+    private func mailboxRow(_ mailbox: Mailbox, count: Int?) -> some View {
         let selected = store.selectedMailbox == mailbox && store.selectedAccount == nil && store.selectedSavedViewID == nil
         return HStack(spacing: 8) {
             navigationIcon(mailbox.systemImage, selected: selected)
             Text(mailbox == .inbox ? "All Inboxes" : mailbox.title).lineLimit(1)
             Spacer(minLength: 4)
-            let count = store.count(for: mailbox)
-            if count > 0 && [.inbox, .drafts, .needsReply, .snoozed, .followUps, .newSenders, .outbox].contains(mailbox) {
+            if let count, count > 0, [.inbox, .drafts, .needsReply, .snoozed, .followUps, .newSenders, .outbox].contains(mailbox) {
                 Text(count, format: .number)
                     .font(.system(size: 11))
                     .monospacedDigit()
-                    .foregroundStyle(selected ? HierarchicalShapeStyle.primary : .secondary)
+                    .foregroundStyle(selected ? AnyShapeStyle(accent.selectionSecondaryInk) : AnyShapeStyle(.secondary))
             }
         }
         .font(.system(size: 13))
         .padding(.vertical, 3)
+        .mailSelection(selected)
         .tag(mailbox.rawValue)
         .help(mailbox == .inbox ? "Inbox messages from all accounts" : "\(mailbox.title) across all accounts")
         .accessibilityElement(children: .combine)
-        .accessibilityValue(mailbox == .inbox ? "\(store.count(for: mailbox)) unread messages" : "\(store.count(for: mailbox)) messages")
+        .accessibilityValue(count.map { mailbox == .inbox ? "\($0) unread messages" : "\($0) messages" } ?? "Loading count")
     }
 
-    private func accountRow(_ account: MailAccount) -> some View {
-        let unread = store.messages.filter { store.matchesMailbox($0, mailbox: .inbox) && $0.account == account.rawValue && $0.isUnread }.count
-        let selected = store.selectedAccount == account.rawValue
+    private func accountRow(_ account: MailAccount, unread: Int?) -> some View {
+        let selected = store.selectedSavedViewID == nil && store.selectedAccount == account.rawValue
         return HStack(spacing: 8) {
             navigationIcon("envelope", selected: selected)
             VStack(alignment: .leading, spacing: 2) {
@@ -145,29 +149,30 @@ struct SidebarView: View {
                     .font(.system(size: 13))
                 Text(account.isConnected ? account.email : "\(account.email) · Reconnect")
                     .font(.system(size: 11))
-                    .foregroundStyle(selected ? HierarchicalShapeStyle.primary : .secondary)
+                    .foregroundStyle(selected ? AnyShapeStyle(accent.selectionSecondaryInk) : AnyShapeStyle(.secondary))
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             Spacer(minLength: 4)
-            if unread > 0 {
+            if let unread, unread > 0 {
                 Text(unread, format: .number)
                     .font(.system(size: 11))
                     .monospacedDigit()
-                    .foregroundStyle(selected ? HierarchicalShapeStyle.primary : .secondary)
+                    .foregroundStyle(selected ? AnyShapeStyle(accent.selectionSecondaryInk) : AnyShapeStyle(.secondary))
             }
         }
         .padding(.vertical, 3)
+        .mailSelection(selected)
         .tag("account:\(account.rawValue)")
         .help("\(account.name) Inbox · \(account.email)")
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(account.name) Inbox, \(account.email)")
-        .accessibilityValue("\(unread) unread messages")
+        .accessibilityValue(unread.map { "\($0) unread messages" } ?? "Loading count")
     }
 
     private func navigationIcon(_ name: String, selected: Bool = false) -> some View {
         PostmereIcon(name, size: 14)
-            .foregroundStyle(selected ? AnyShapeStyle(HierarchicalShapeStyle.primary) : AnyShapeStyle(PostmereTheme.icon))
+            .foregroundStyle(selected ? accent.selectionInk : PostmereTheme.icon)
             .frame(width: 18)
             .accessibilityHidden(true)
     }

@@ -13,7 +13,7 @@ enum MailTrackingPixelRules {
     }
 }
 
-extension MailMessage {
+nonisolated extension MailMessage {
     /// Older workspace responses stored an empty Gmail body or just Graph's
     /// bodyPreview alongside the original HTML. Repair those cached alternatives
     /// before search, reply quoting and message-list rows use them.

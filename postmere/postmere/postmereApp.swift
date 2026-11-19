@@ -58,7 +58,11 @@ private struct WorkspaceSceneGate<Content: View>: View {
 
     var body: some View {
         Group {
-            if runtime.backend.canAccessWorkspace {
+            if runtime.store.isOpeningMailbox {
+                ProgressView("Opening mailbox…")
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if runtime.backend.canAccessWorkspace {
                 if isComposer && !runtime.canResumeComposer {
                     ContentUnavailableView {
                         PostmereLabel.emptyState("Draft kept in another workspace", symbol: "doc", size: 38)
@@ -90,7 +94,7 @@ private struct WorkspaceSceneGate<Content: View>: View {
                     await runtime.synchronizePush(forceStatus: true)
                 }
             } else {
-                runtime.store.flushPersistence()
+                runtime.store.schedulePersistence()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in

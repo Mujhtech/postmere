@@ -2,8 +2,6 @@ import SwiftUI
 import AppKit
 
 enum PostmereTheme {
-    static let accent = adaptive(light: 0x123F36, dark: 0x3B7C6B)
-    static let accentInk = adaptive(light: 0x123F36, dark: 0x94C9BE)
     static let paper = adaptive(light: 0xFDFCF8, dark: 0x1E211F)
     static let ink = Color.primary
     static let secondary = Color.secondary

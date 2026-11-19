@@ -11,7 +11,7 @@ enum InboxSplitOverlapPolicy: String, Codable, CaseIterable {
     }
 }
 
-struct InboxSplit: Codable, Equatable, Identifiable {
+nonisolated struct InboxSplit: Codable, Equatable, Identifiable {
     var id = UUID()
     var name: String
     var criteria: SavedInboxCriteria

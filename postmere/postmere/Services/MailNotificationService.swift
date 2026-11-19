@@ -25,9 +25,9 @@ private final class SystemMailNotificationClient: MailNotificationClient {
     func removeDelivered(_ identifiers: [String]) { center.removeDeliveredNotifications(withIdentifiers: identifiers) }
 }
 
-enum MailReminderKind: String, Codable { case snooze, followup }
+nonisolated enum MailReminderKind: String, Codable, Sendable { case snooze, followup }
 
-struct MailReminderSource {
+nonisolated struct MailReminderSource: Sendable {
     let kind: MailReminderKind
     let message: MailMessage
     let originalDate: Date
@@ -40,21 +40,29 @@ struct MailReminderSource {
 }
 
 enum MailReminderPlanning {
-    static func conversationKey(_ message: MailMessage) -> String {
+    nonisolated static func conversationKey(_ message: MailMessage) -> String {
         let identity = "\(message.account)|\(message.providerAccountEmail?.lowercased() ?? "")"
         return "\(Data(identity.utf8).base64EncodedString()).\(message.conversationID.uuidString)"
     }
 
     static func isAvailable(_ message: MailMessage) -> Bool {
-        guard !message.isDraft, !message.isDeletedOnProvider, message.mailbox != .trash, message.mailbox != .outbox,
-              message.workflow.screeningState == .accepted else { return false }
-        return message.mailAccount.isConnected
+        isAvailable(message, connected: message.mailAccount.isConnected)
+    }
+
+    private nonisolated static func isAvailable(_ message: MailMessage, connected: Bool) -> Bool {
+        connected && !message.isDraft && message.providerDeletedAt == nil && message.mailbox != .trash &&
+            message.mailbox != .outbox && message.workflow.screeningState == .accepted
     }
 
     static func sources(messages: [MailMessage], dueSnoozes: [String: Date] = [:]) -> [MailReminderSource] {
+        let accounts = Set(RemoteAccountRegistry.accounts.filter { $0.status == "connected" }.map(\.localID))
+        return sources(messages: messages, dueSnoozes: dueSnoozes, accounts: accounts)
+    }
+
+    private nonisolated static func sources(messages: [MailMessage], dueSnoozes: [String: Date], accounts: Set<String>) -> [MailReminderSource] {
         var result: [MailReminderSource] = []
         for (key, conversation) in Dictionary(grouping: messages, by: { conversationKey($0) }) {
-            let available = conversation.filter { isAvailable($0) }.sorted {
+            let available = conversation.filter { isAvailable($0, connected: accounts.contains($0.account)) }.sorted {
                 $0.sentAt == $1.sentAt ? $0.id.uuidString < $1.id.uuidString : $0.sentAt > $1.sentAt
             }
             guard let newest = available.first else { continue }
@@ -74,6 +82,15 @@ enum MailReminderPlanning {
             }
         }
         return result.sorted { $0.identifier < $1.identifier }
+    }
+
+    @concurrent static func prepare(messages: [MailMessage], dueSnoozes: [String: Date],
+                                    accounts: Set<String>, policy: String, revisionKey: String?) async -> ([MailReminderSource], String) {
+        let sources = sources(messages: messages, dueSnoozes: dueSnoozes, accounts: accounts)
+        if let revisionKey { return (sources, revisionKey) }
+        let occurrences = sources.map { "\($0.identifier)|\($0.occurrence)|\($0.message.id)|\($0.message.subject)" }.joined(separator: "\n")
+        let states = messages.map { "\($0.id)|\($0.isUnread)|\($0.mailbox.rawValue)|\($0.workflow.screeningState.rawValue)" }.sorted().joined(separator: ";")
+        return (sources, "\(policy)|\(occurrences)|\(states)")
     }
 }
 
@@ -114,6 +131,7 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
     @ObservationIgnored private var dueSnoozes: [String: Date]
     @ObservationIgnored private var incomingRecords: [String: IncomingNotificationRecord]
     @ObservationIgnored private var latestMessages: [MailMessage] = []
+    @ObservationIgnored private var latestMessageRevision: Int?
     @ObservationIgnored private var latestDate = Date.now
     @ObservationIgnored private var latestCalendar = Calendar.current
     @ObservationIgnored private var isReconciling = false
@@ -170,8 +188,9 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
         await refreshAuthorization()
     }
 
-    func reconcileReminders(messages: [MailMessage], now: Date = .now, calendar: Calendar = .current) async {
+    func reconcileReminders(messages: [MailMessage], revision: Int? = nil, now: Date = .now, calendar: Calendar = .current) async {
         latestMessages = messages
+        latestMessageRevision = revision
         latestDate = now
         latestCalendar = calendar
         if isReconciling { needsReconciliation = true; return }
@@ -231,11 +250,13 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
         let messages = latestMessages
         reconcileAccounts()
         let activeAccounts = RemoteAccountRegistry.accounts.filter { $0.status == "connected" }.map(\.localID).sorted()
-        let sources = MailReminderPlanning.sources(messages: messages, dueSnoozes: dueSnoozes)
-        let sourceFingerprint = sources.map { "\($0.identifier)|\($0.occurrence)|\($0.message.id)|\($0.message.subject)" }.joined(separator: "\n")
         let profileFingerprint = profiles.map { "\(timingSignature($0, calendar: calendar, now: now))|\($0.showPreview)" }.joined(separator: "\n")
-        let messageStates = messages.map { "\($0.id)|\($0.isUnread)|\($0.mailbox.rawValue)|\($0.workflow.screeningState.rawValue)" }.sorted().joined(separator: ";")
-        let fingerprint = "\(sourceFingerprint)|\(profileFingerprint)|\(messageStates)|\(activeAccounts.joined(separator: ";"))|\(authorizationStatus.rawValue)"
+        let policy = "\(profileFingerprint)|\(activeAccounts.joined(separator: ";"))|\(authorizationStatus.rawValue)"
+        let revisionKey = latestMessageRevision.map { "revision=\($0)|\(policy)" }
+        if revisionKey == scheduledFingerprint, now < nextReconciliation { return }
+        let (sources, fingerprint) = await MailReminderPlanning.prepare(messages: messages, dueSnoozes: dueSnoozes,
+            accounts: Set(activeAccounts), policy: policy, revisionKey: revisionKey)
+        guard !needsReconciliation else { return }
         guard fingerprint != scheduledFingerprint || now >= nextReconciliation else { return }
 
         let pending = await client.pendingRequests()

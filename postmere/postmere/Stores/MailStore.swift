@@ -7,12 +7,23 @@ import Observation
 final class MailStore {
     var messages: [MailMessage] {
         didSet {
+            mailboxDataRevision &+= 1
             guard !updatingReaderMessage else { return }
-            persistState()
+            schedulePersistence()
             syncProviderChanges(from: oldValue)
             if isSearchActive { refreshSearch() }
         }
     }
+    private(set) var mailboxDataRevision = 0
+    var mailboxRulesRevision = 0
+    var loadedMailboxView: MailboxViewData?
+    @ObservationIgnored var preparedInboxTabs: [MailboxViewData] = []
+    @ObservationIgnored var preparedInboxKey: InboxTabCountKey?
+    @ObservationIgnored var isSelectingInboxTab = false
+    @ObservationIgnored var usesMailboxViewData = false
+    @ObservationIgnored var mailboxViewTask: Task<Void, Never>?
+    @ObservationIgnored var loadingMailboxKey: MailboxViewKey?
+    @ObservationIgnored var pendingMailboxSelection: (scope: MailboxViewScope, previous: UUID?, markRead: Bool)?
     var selectedMailbox: Mailbox = .inbox { didSet { if isSearchActive && oldValue != selectedMailbox { refreshSearch() } } }
     var selectedAccount: String? { didSet { if isSearchActive && oldValue != selectedAccount { refreshSearch() } } }
     var selectedMessageID: UUID? {
@@ -20,12 +31,18 @@ final class MailStore {
             if !isUpdatingSelection { selectedMessageIDs = selectedMessageID.map { [$0] } ?? [] }
         }
     }
-    var selectedMessageIDs: Set<UUID> = []
+    var selectedMessageIDs: Set<UUID> = [] {
+        didSet {
+            if oldValue.isEmpty != selectedMessageIDs.isEmpty { hasMessageSelection = !selectedMessageIDs.isEmpty }
+        }
+    }
+    private(set) var hasMessageSelection = false
     @ObservationIgnored var isUpdatingSelection = false
     private var searchOrigin: SearchOrigin?
     var isSearchActive: Bool { searchOrigin != nil }
     var isSearchingMessages = false
     var searchResults: [MailMessage] = []
+    var searchConversationCounts: [UUID: Int] = [:]
     @ObservationIgnored var searchTask: Task<Void, Never>?
     @ObservationIgnored var searchGeneration = 0
     var searchResultAccounts = Set<String>()
@@ -45,7 +62,7 @@ final class MailStore {
     var searchField: MailSearchField = .all {
         didSet { if searchField != oldValue { searchFiltersChanged() } }
     }
-    var isComposing = false { didSet { persistState() } }
+    var isComposing = false { didSet { schedulePersistence() } }
     var draftAccount: MailAccount = .unassigned {
         didSet {
             if oldValue != draftAccount {
@@ -82,17 +99,23 @@ final class MailStore {
     var draftConversationID = UUID()
     var initialDraft = DraftSnapshot()
     private var lastMove: MoveSnapshot?
-    var batchMoveUndo: [MailMessage]?
-    var batchMoveSelection: Set<UUID> = []
-    var savedViews: [SavedInboxView] = [] { didSet { persistState(); if isSearchActive { refreshSearch() } } }
-    var inboxSplits: [InboxSplit] = InboxSplit.defaults { didSet { persistState(); searchFiltersChanged() } }
-    var selectedInboxSplitID: UUID? { didSet { persistState(); searchFiltersChanged() } }
-    var inboxSplitOverlapPolicy: InboxSplitOverlapPolicy = .firstMatch { didSet { persistState(); searchFiltersChanged() } }
-    var vipContacts: [VIPContact] = [] { didSet { persistState(); searchFiltersChanged() } }
-    var snippets: [MailSnippet] = [] { didSet { persistState() } }
-    var senderRules: [SenderRule] = [] { didSet { persistState(); onNotificationPolicyChanged?() } }
+    var batchMoveUndo: (messages: [MailMessage], selection: Set<UUID>, lead: UUID?, scope: MailboxViewScope)?
+    @ObservationIgnored var pendingMoveSelection: (lead: UUID, selection: Set<UUID>, scope: MailboxViewScope)?
+    var savedViews: [SavedInboxView] = [] { didSet { mailboxRulesRevision &+= 1; schedulePersistence(); if isSearchActive { refreshSearch() } } }
+    var inboxSplits: [InboxSplit] = InboxSplit.defaults { didSet { mailboxRulesRevision &+= 1; schedulePersistence(); searchFiltersChanged() } }
+    var selectedInboxSplitID: UUID? {
+        didSet {
+            guard oldValue != selectedInboxSplitID else { return }
+            schedulePersistence()
+            searchFiltersChanged()
+        }
+    }
+    var inboxSplitOverlapPolicy: InboxSplitOverlapPolicy = .firstMatch { didSet { mailboxRulesRevision &+= 1; schedulePersistence(); searchFiltersChanged() } }
+    var vipContacts: [VIPContact] = [] { didSet { mailboxRulesRevision &+= 1; schedulePersistence(); searchFiltersChanged() } }
+    var snippets: [MailSnippet] = [] { didSet { schedulePersistence() } }
+    var senderRules: [SenderRule] = [] { didSet { schedulePersistence(); onNotificationPolicyChanged?() } }
     var outgoingQueue: [OutgoingMailItem] = [] { didSet { persistState() } }
-    var senderScreeningEnabled = false { didSet { persistState(); onNotificationPolicyChanged?() } }
+    var senderScreeningEnabled = false { didSet { schedulePersistence(); onNotificationPolicyChanged?() } }
     var selectedSavedViewID: UUID? { didSet { if isSearchActive && oldValue != selectedSavedViewID { refreshSearch() } } }
     var persistenceError: String?
     var backendSyncCursors: [String: String] = [:]
@@ -114,14 +137,19 @@ final class MailStore {
     @ObservationIgnored var onSnoozeDue: (@MainActor (MailMessage, Date) -> Void)?
     @ObservationIgnored var onNotificationPolicyChanged: (() -> Void)?
     @ObservationIgnored var providerOverrides: [UUID: ProviderMessageOverride] = [:]
+    @ObservationIgnored var pendingMergeReaders: [UUID: (ReaderMailChange) -> Void] = [:]
+    @ObservationIgnored var activeProviderPages: [ProviderPageRead] = []
     @ObservationIgnored var suppressRemoteMutations = false
     @ObservationIgnored var remoteMutationTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored var persistence: MailPersistence?
-    @ObservationIgnored let saveQueue = DispatchQueue(label: "postmere.mail.persistence", qos: .utility)
-    @ObservationIgnored var pendingReaderSave: DispatchWorkItem?
+    private static let persistenceQueue = DispatchQueue(label: "postmere.mail.persistence", qos: .utility)
+    var saveQueue: DispatchQueue { Self.persistenceQueue }
+    @ObservationIgnored var pendingSave: DispatchWorkItem?
     @ObservationIgnored var saveRevision = 0
     @ObservationIgnored private var updatingReaderMessage = false
     @ObservationIgnored var searchQueryCache: [String: MailSearchQuery] = [:]
+    var isOpeningMailbox = false
+    @ObservationIgnored var openingTask: Task<Void, Never>?
     @ObservationIgnored var persistenceReady = false
     @ObservationIgnored var persistenceBlocked = false
     @ObservationIgnored var persistenceSuspended = 0
@@ -174,20 +202,25 @@ final class MailStore {
         let attachmentsOnly: Bool
     }
 
-    init(messages: [MailMessage]? = nil, persistenceURL: URL? = nil) {
+    init(messages: [MailMessage]? = nil, persistenceURL: URL? = nil, openInBackground: Bool = false) {
         self.isPreview = messages != nil
         self.messages = messages ?? []
         persistence = persistenceURL.map(MailPersistence.init(fileURL:))
             ?? (messages == nil ? MailPersistence(fileURL: MailPersistence.defaultURL) : nil)
+        if openInBackground, let persistence {
+            beginOpeningMailbox(persistence)
+            return
+        }
         loadPersistentState()
-        selectedMessageID = filteredMessages.first?.id
+        selectFirstMailboxRow(markRead: false)
         persistenceReady = true
         if !persistenceBlocked { persistState() }
     }
 
     var filteredMessages: [MailMessage] {
         if isSearchActive { return activeSearchResults }
-        return searchRequest().run(messages, interactive: false)
+        if let loadedMailboxView, loadedMailboxView.key == mailboxViewKey { return loadedMailboxView.messages }
+        return searchRequest().run(messages, interactive: false, cancellable: false)
     }
 
     var hasSearchCriteria: Bool {
@@ -200,6 +233,10 @@ final class MailStore {
 
     func beginSearch() {
         guard !isSearchActive else { return }
+        mailboxViewTask?.cancel()
+        mailboxViewTask = nil
+        loadingMailboxKey = nil
+        pendingMailboxSelection = nil
         let origin = SearchOrigin(selectedID: selectedMessageID, selection: selectedMessageIDs,
                                     text: searchText, scope: searchScope, field: searchField,
                                     unreadOnly: unreadOnly, attachmentsOnly: attachmentsOnly)
@@ -214,6 +251,7 @@ final class MailStore {
     }
 
     private func searchFiltersChanged() {
+        guard !isSelectingInboxTab else { return }
         if isSearchActive { refreshSearch() } else { reconcileSelection() }
     }
 
@@ -240,8 +278,45 @@ final class MailStore {
         reconcileSelection()
     }
 
+    @ObservationIgnored private var lastSelectedIndex: Int?
+    @ObservationIgnored private var lastReaderThread: (id: UUID, revision: Int, messages: [MailMessage])?
+
+    private var selectedMessageIndex: Int? {
+        guard let selectedMessageID else { return nil }
+        let snapshot = messages
+        if let index = lastSelectedIndex, snapshot.indices.contains(index), snapshot[index].id == selectedMessageID {
+            return index
+        }
+        let index = snapshot.firstIndex { $0.id == selectedMessageID }
+        lastSelectedIndex = index
+        return index
+    }
+
     var selectedMessage: MailMessage? {
-        messages.first { $0.id == selectedMessageID && isAccountVisible($0) }
+        guard let index = selectedMessageIndex else { return nil }
+        let message = messages[index]
+        return isAccountVisible(message) ? message : nil
+    }
+
+    var selectedConversation: [MailMessage] {
+        guard let message = selectedMessage else { return [] }
+        if message.isDraft || message.mailbox == .outbox { return [message] }
+        let revision = mailboxDataRevision
+        if let cached = lastReaderThread, cached.id == message.id, cached.revision == revision {
+            return cached.messages
+        }
+        let thread: [MailMessage]
+        if let view = loadedMailboxView, view.key.messageRevision == revision,
+           view.key.scope.accounts.contains(message.account),
+           view.key.scope.account == nil || view.key.scope.account == message.account,
+           !message.isDeletedOnProvider, view.conversationCounts[message.id] == 1 {
+            // Counts include every mailbox in the thread, including legacy unscoped addresses.
+            thread = [message]
+        } else {
+            thread = conversationMessages(for: message)
+        }
+        lastReaderThread = (message.id, revision, thread)
+        return thread
     }
 
     /// Conversation context is independent of mailbox/search filters; actions still target one message.
@@ -263,35 +338,7 @@ final class MailStore {
     // Build thread counts once for the list. Older cached entries may lack a provider
     // email, in which case sameMailAccount matches any identity on the local account.
     func conversationCounts(for visible: [MailMessage]) -> [UUID: Int] {
-        struct Thread: Hashable {
-            let conversationID: UUID
-            let account: String
-            init(_ message: MailMessage) {
-                conversationID = message.conversationID
-                account = message.account
-            }
-        }
-        struct Counts {
-            var total = 0
-            var withoutIdentity = 0
-            var byEmail: [String: Int] = [:]
-        }
-        var counts: [Thread: Counts] = [:]
-        for message in messages where !message.isDraft && !message.isDeletedOnProvider && message.mailbox != .trash {
-            let thread = Thread(message)
-            counts[thread, default: Counts()].total += 1
-            if let email = message.providerAccountEmail {
-                counts[thread, default: Counts()].byEmail[email.lowercased(), default: 0] += 1
-            } else {
-                counts[thread, default: Counts()].withoutIdentity += 1
-            }
-        }
-        return Dictionary(uniqueKeysWithValues: visible.map { message in
-            if message.isDraft { return (message.id, 1) }
-            let thread = counts[Thread(message)] ?? Counts()
-            let count = message.providerAccountEmail.map { thread.withoutIdentity + thread.byEmail[$0.lowercased(), default: 0] } ?? thread.total
-            return (message.id, count + (message.mailbox == .trash && !message.isDeletedOnProvider ? 1 : 0))
-        })
+        MailboxViewData.conversationCounts(in: messages, for: visible)
     }
 
     var unreadCount: Int {
@@ -343,14 +390,14 @@ final class MailStore {
     }
 
     func select(_ message: MailMessage) {
+        pendingMailboxSelection = nil
         selectedMessageID = message.id
         markSelectedRead()
     }
 
     func markSelectedRead() {
         // Keep the unread results stable until the user leaves this filter.
-        guard !unreadOnly,
-              let index = messages.firstIndex(where: { $0.id == selectedMessageID }), messages[index].isUnread else { return }
+        guard !unreadOnly, let selectedMessageID, let index = selectedMessageIndex, messages[index].isUnread else { return }
         let previous = messages[index]
         if isSearchActive {
             var read = previous
@@ -374,8 +421,9 @@ final class MailStore {
         updatingReaderMessage = true
         messages[index].isUnread = false
         updatingReaderMessage = false
+        for record in pendingMergeReaders.values { record(.read(selectedMessageID)) }
         refreshSearchRow(messages[index])
-        persistReaderChange()
+        schedulePersistence()
         syncProviderChange(from: previous, to: messages[index])
     }
 
@@ -385,13 +433,13 @@ final class MailStore {
         updatingReaderMessage = true
         messages[index].envelopeDetails = details
         updatingReaderMessage = false
+        for record in pendingMergeReaders.values { record(.envelope(messageID, details)) }
         refreshSearchRow(messages[index])
-        persistReaderChange()
+        schedulePersistence()
     }
 
     func selectAdjacent(_ offset: Int) {
-        let visible = filteredMessages
-        guard !visible.isEmpty else { return }
+        guard let visible = navigableMessages, !visible.isEmpty else { return }
         let index = visible.firstIndex { $0.id == selectedMessageID } ?? -1
         select(visible[max(0, min(index + offset, visible.count - 1))])
     }
@@ -401,8 +449,7 @@ final class MailStore {
         selectedMailbox = mailbox
         selectedAccount = nil
         clearFilters()
-        selectedMessageID = filteredMessages.first?.id
-        if let message = selectedMessage { select(message) }
+        selectFirstMailboxRow(markRead: true)
     }
 
     func selectAccount(_ account: String?) {
@@ -410,8 +457,7 @@ final class MailStore {
         selectedMailbox = .inbox
         selectedAccount = account
         clearFilters()
-        selectedMessageID = filteredMessages.first?.id
-        if let message = selectedMessage { select(message) }
+        selectFirstMailboxRow(markRead: true)
     }
 
     func clearFilters() {
@@ -433,12 +479,15 @@ final class MailStore {
     }
 
     func undoLastMove() {
+        pendingMoveSelection = nil
         if undoBatchMove() { lastMove = nil; return }
         guard let lastMove,
               let index = messages.firstIndex(where: { $0.id == lastMove.messageID }) else { return }
-        messages[index].mailbox = lastMove.mailbox
-        messages[index].trashedFrom = lastMove.trashedFrom
-        messages[index].isUnread = lastMove.isUnread
+        var restored = messages[index]
+        restored.mailbox = lastMove.mailbox
+        restored.trashedFrom = lastMove.trashedFrom
+        restored.isUnread = lastMove.isUnread
+        messages[index] = restored
         resetSearchResults()
         searchOrigin = nil
         selectedMailbox = lastMove.selectedMailbox
@@ -629,9 +678,7 @@ final class MailStore {
 
     @discardableResult
     func moveMessage(_ id: UUID, to mailbox: Mailbox) -> Bool {
-        guard let index = messages.firstIndex(where: { $0.id == id }),
-              canMoveMessage(messages[index], to: mailbox) else { return false }
-        return performMove(at: index, to: mailbox)
+        moveMessages([id], to: mailbox)
     }
 
     func restoreDestination(for message: MailMessage) -> Mailbox {
@@ -648,18 +695,21 @@ final class MailStore {
 
     @discardableResult
     func restoreMessage(_ id: UUID) -> Bool {
-        guard let index = messages.firstIndex(where: { $0.id == id }), messages[index].mailbox == .trash else { return false }
-        return performMove(at: index, to: restoreDestination(for: messages[index]))
+        restoreMessages([id])
     }
 
-    private func performMove(at index: Int, to mailbox: Mailbox) -> Bool {
+    func recordMoveUndo(_ originals: [MailMessage]) {
+        guard originals.count == 1, let original = originals.first else {
+            lastMove = nil
+            batchMoveUndo = (originals, selectedMessageIDs, selectedMessageID, mailboxViewKey.scope)
+            return
+        }
         batchMoveUndo = nil
-        let id = messages[index].id
         lastMove = MoveSnapshot(
-            messageID: id,
-            mailbox: messages[index].mailbox,
-            trashedFrom: messages[index].trashedFrom,
-            isUnread: messages[index].isUnread,
+            messageID: original.id,
+            mailbox: original.mailbox,
+            trashedFrom: original.trashedFrom,
+            isUnread: original.isUnread,
             selectedMailbox: selectedMailbox,
             selectedAccount: selectedAccount,
             selectedMessageID: selectedMessageID,
@@ -672,33 +722,37 @@ final class MailStore {
             savedViewID: selectedSavedViewID,
             inboxSplitID: selectedInboxSplitID
         )
-        let oldPosition = isSearchActive ? nil : filteredMessages.firstIndex(where: { $0.id == id })
-        var moved = messages[index]
-        moved.trashedFrom = mailbox == .trash ? moved.mailbox : nil
-        moved.mailbox = mailbox
-        moved.isUnread = false
-        messages[index] = moved
-        if !isSearchActive && selectedMessageID == id {
-            let remaining = filteredMessages
-            if !remaining.contains(where: { $0.id == id }) {
-                selectedMessageID = remaining.isEmpty ? nil : remaining[min(oldPosition ?? 0, remaining.count - 1)].id
-                markSelectedRead()
-            }
-        }
-        reconcileSelection()
-        announceMove("Moved to \(mailbox.title)")
-        return true
     }
 
     func reconcileSelection() {
         guard !isSearchingMessages, selectedMessageID != nil || !selectedMessageIDs.isEmpty else { return }
-        let visible = filteredMessages
+        if !isSearchActive, usesMailboxViewData || needsBackgroundSearch, loadedMailboxView?.key != mailboxViewKey {
+            startMailboxViewLoad()
+            return
+        }
+        reconcileSelection(in: filteredMessages)
+    }
+
+    func reconcileSelection(in visible: [MailMessage]) {
+        let pending = pendingMoveSelection
+        pendingMoveSelection = nil
+        guard selectedMessageID != nil || !selectedMessageIDs.isEmpty else { return }
         let ids = Set(visible.map(\.id))
+        let shouldAdvance = pending.map {
+            !isSearchActive && $0.lead == selectedMessageID && $0.selection == selectedMessageIDs && $0.scope == mailboxViewKey.scope
+        } ?? false
         selectedMessageIDs.formIntersection(ids)
         if selectedMessageID.map(ids.contains) != true {
             isUpdatingSelection = true
             selectedMessageID = visible.first(where: { selectedMessageIDs.contains($0.id) })?.id
             isUpdatingSelection = false
+            if shouldAdvance, selectedMessageID == nil, let lead = pending?.lead,
+               let index = messages.firstIndex(where: { $0.id == lead }) {
+                let next = messages[index...].first { ids.contains($0.id) }
+                    ?? messages[..<index].last { ids.contains($0.id) }
+                selectedMessageID = next?.id
+                markSelectedRead()
+            }
         }
     }
 

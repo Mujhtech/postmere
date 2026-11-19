@@ -88,11 +88,16 @@ extension MailStore {
 
     func selectInboxSplit(_ id: UUID?) {
         guard id == nil || visibleInboxSplits.contains(where: { $0.id == id }) else { return }
+        let current = loadedMailboxView?.key.scope
+        let keepReader = !isSearchActive && current?.mailbox == .inbox && current?.savedViewID == nil
+            && current?.account == selectedAccount && current?.accounts == searchableAccounts && selectedMessageIDs.count == 1
+        isSelectingInboxTab = true
         selectedSavedViewID = nil
         selectedMailbox = .inbox
         selectedInboxSplitID = id
         clearFilters()
-        selectedMessageID = filteredMessages.first?.id
+        isSelectingInboxTab = false
+        selectFirstMailboxRow(markRead: false, keepReader: keepReader)
     }
 
     private var splitCandidates: [MailMessage] {
@@ -120,20 +125,7 @@ extension MailStore {
         return deduplicatedConversations(splitCandidates.filter { keys.contains(conversationKey(for: $0)) })
     }
 
-    var inboxTabCounts: (all: Int, splits: [UUID: Int]) {
-        let threads = Dictionary(grouping: splitCandidates, by: conversationKey(for:))
-        let splits = visibleInboxSplits
-        var all = 0
-        var counts: [UUID: Int] = [:]
-        for thread in threads.values where thread.contains(where: \.isUnread) {
-            all += 1
-            for split in splits where thread.contains(where: { matchesSavedView($0, criteria: split.criteria) }) {
-                counts[split.id, default: 0] += 1
-                if inboxSplitOverlapPolicy == .firstMatch { break }
-            }
-        }
-        return (all, counts)
-    }
+    var inboxTabCounts: InboxTabCounts { tabCountRequest().run(messages) }
 
     func splitMatchReasons(for message: MailMessage, splitID: UUID) -> [String] {
         guard let split = visibleInboxSplits.first(where: { $0.id == splitID }),
@@ -154,5 +146,69 @@ extension MailStore {
         reasons = reasons.filter { seen.insert($0).inserted }
         if inboxSplitOverlapPolicy == .firstMatch { reasons.append("\(split.name) is the first matching visible tab") }
         return reasons
+    }
+}
+
+nonisolated struct InboxTabCountKey: Equatable {
+    let accounts: Set<String>
+    let account: String?
+    let rulesRevision: Int
+    let messageRevision: Int
+    let localDay = Calendar.current.startOfDay(for: .now)
+}
+
+nonisolated struct InboxTabCounts: Sendable {
+    var all = 0
+    var splits: [UUID: Int] = [:]
+}
+
+private nonisolated struct InboxTabCountRequest: Sendable {
+    let scope: MailSearchRequest
+    let splits: [(id: UUID, matcher: MailCriteriaMatcher)]
+    let firstMatch: Bool
+
+    func run(_ messages: [MailMessage]) -> InboxTabCounts {
+        var threads: [String: [MailMessage]] = [:]
+        for message in messages {
+            if Task.isCancelled { return InboxTabCounts() }
+            if scope.visible(message) && message.belongs(to: .inbox) {
+                threads[message.searchConversationKey, default: []].append(message)
+            }
+        }
+        var counts = InboxTabCounts()
+        for thread in threads.values {
+            if Task.isCancelled { return InboxTabCounts() }
+            guard thread.contains(where: \.isUnread) else { continue }
+            counts.all += 1
+            for split in splits where thread.contains(where: { split.matcher.matches($0, context: scope.context) }) {
+                counts.splits[split.id, default: 0] += 1
+                if firstMatch { break }
+            }
+        }
+        return counts
+    }
+}
+
+extension MailStore {
+    var inboxTabCountKey: InboxTabCountKey {
+        InboxTabCountKey(accounts: searchableAccounts, account: selectedAccount, rulesRevision: mailboxRulesRevision,
+                         messageRevision: mailboxDataRevision)
+    }
+
+    private func tabCountRequest() -> InboxTabCountRequest {
+        InboxTabCountRequest(scope: searchRequest(),
+                             splits: visibleInboxSplits.map { ($0.id, matcher($0.criteria)) },
+                             firstMatch: inboxSplitOverlapPolicy == .firstMatch)
+    }
+
+    func loadInboxTabCounts() async -> InboxTabCounts {
+        let request = tabCountRequest()
+        let snapshot = messages
+        let task = Task.detached(priority: .utility) { request.run(snapshot) }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 }

@@ -54,7 +54,7 @@ nonisolated struct BackendHTTPClient: Sendable {
         return url
     }
 
-    func request<Response: Decodable & Sendable>(_ method: String, _ path: String, token: String? = nil,
+    @concurrent func request<Response: Decodable & Sendable>(_ method: String, _ path: String, token: String? = nil,
                                                  query: [URLQueryItem] = [], as: Response.Type = Response.self) async throws -> Response {
         let data = try await raw(method, path, token: token, query: query)
         if data.isEmpty, let empty = BackendEmpty() as? Response { return empty }
@@ -62,7 +62,7 @@ nonisolated struct BackendHTTPClient: Sendable {
         catch { throw BackendError.invalidResponse }
     }
 
-    func request<Body: Encodable & Sendable, Response: Decodable & Sendable>(_ method: String, _ path: String,
+    @concurrent func request<Body: Encodable & Sendable, Response: Decodable & Sendable>(_ method: String, _ path: String,
                          token: String? = nil, body: Body, as: Response.Type = Response.self) async throws -> Response {
         let data = try await raw(method, path, token: token, body: Self.encoder().encode(body))
         if data.isEmpty, let empty = BackendEmpty() as? Response { return empty }
@@ -70,7 +70,7 @@ nonisolated struct BackendHTTPClient: Sendable {
         catch { throw BackendError.invalidResponse }
     }
 
-    func raw(_ method: String, _ path: String, token: String? = nil, query: [URLQueryItem] = [], body: Data? = nil) async throws -> Data {
+    @concurrent func raw(_ method: String, _ path: String, token: String? = nil, query: [URLQueryItem] = [], body: Data? = nil) async throws -> Data {
         guard path.hasPrefix("/v1/"), !path.contains(".."), !path.contains("?"), !path.contains("#"),
               var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else { throw BackendError.invalidURL }
         components.path = path

@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-private extension MailStore {
+extension MailStore {
     var searchableAccounts: Set<String> {
         var ids = Set(RemoteAccountRegistry.accounts.lazy.map(\.localID).filter { $0.hasPrefix("remote:") })
         if isPreview { ids.formUnion([MailAccount.work.rawValue, MailAccount.personal.rawValue]) }
@@ -62,6 +62,7 @@ nonisolated struct MailSearchRequest: Sendable {
     static func representatives(_ candidates: [MailMessage], preferred: UUID?) -> [MailMessage] {
         var representatives: [String: MailMessage] = [:]
         for message in candidates {
+            if Task.isCancelled { return [] }
             let key = message.searchConversationKey
             if let current = representatives[key] {
                 if current.id == preferred { continue }
@@ -69,20 +70,26 @@ nonisolated struct MailSearchRequest: Sendable {
             }
             representatives[key] = message
         }
-        return candidates.filter { representatives[$0.searchConversationKey]?.id == $0.id }
+        var result: [MailMessage] = []
+        result.reserveCapacity(representatives.count)
+        for message in candidates {
+            if Task.isCancelled { return [] }
+            if representatives[message.searchConversationKey]?.id == message.id { result.append(message) }
+        }
+        return result
     }
 
-    private func visible(_ message: MailMessage) -> Bool {
+    func visible(_ message: MailMessage) -> Bool {
         accounts.contains(message.account) && (account == nil || account == message.account)
             && (message.providerDeletedAt == nil || message.isDraft || message.mailbox == .outbox)
     }
 
-    func run(_ messages: [MailMessage], interactive: Bool = true) -> [MailMessage] {
+    func run(_ messages: [MailMessage], interactive: Bool = true, cancellable: Bool = true) -> [MailMessage] {
         var splitKeys = Set<String>()
         if let split {
             var earlierKeys = Set<String>()
             for message in messages {
-                if interactive && Task.isCancelled { return [] }
+                if cancellable && Task.isCancelled { return [] }
                 guard visible(message), message.belongs(to: .inbox) else { continue }
                 if split.matches(message, context: context) { splitKeys.insert(message.searchConversationKey) }
                 if earlierSplits.contains(where: { $0.matches(message, context: context) }) { earlierKeys.insert(message.searchConversationKey) }
@@ -91,7 +98,7 @@ nonisolated struct MailSearchRequest: Sendable {
         }
         var results: [MailMessage] = []
         for message in messages {
-            if interactive && Task.isCancelled { return [] }
+            if cancellable && Task.isCancelled { return [] }
             guard visible(message), !unreadOnly || message.isUnread, !attachmentsOnly || !message.attachments.isEmpty else { continue }
             if let saved {
                 guard saved.matches(message, context: context) else { continue }
@@ -111,21 +118,26 @@ nonisolated struct MailSearchRequest: Sendable {
 }
 
 extension MailStore {
+    func matcher(_ criteria: SavedInboxCriteria) -> MailCriteriaMatcher {
+        MailCriteriaMatcher(criteria: criteria, query: parsedQuery(criteria.query, field: criteria.searchField))
+    }
+
     func searchRequest() -> MailSearchRequest {
-        func matcher(_ criteria: SavedInboxCriteria) -> MailCriteriaMatcher {
-            MailCriteriaMatcher(criteria: criteria, query: parsedQuery(criteria.query, field: criteria.searchField))
-        }
+        searchRequest(splitID: selectedInboxSplitID, preferredID: selectedMessageID)
+    }
+
+    func searchRequest(splitID: UUID?, preferredID: UUID?) -> MailSearchRequest {
         let mailbox: Mailbox? = searchesAllMailboxes ? nil : selectedMailbox
         let saved = searchesAllMailboxes ? nil : selectedSavedView.map { matcher($0.criteria) }
         let splits = visibleInboxSplits
-        let index = mailbox == .inbox && saved == nil ? splits.firstIndex { $0.id == selectedInboxSplitID } : nil
+        let index = mailbox == .inbox && saved == nil ? splits.firstIndex { $0.id == splitID } : nil
         var earlier: [MailCriteriaMatcher] = []
         if let index, inboxSplitOverlapPolicy == .firstMatch { earlier = splits[..<index].map { matcher($0.criteria) } }
         let context = MailSearchContext(vipContacts: vipContacts, referenceDate: .now)
         return MailSearchRequest(accounts: searchableAccounts, account: selectedAccount, mailbox: mailbox,
                                  saved: saved, split: index.map { matcher(splits[$0].criteria) }, earlierSplits: earlier,
                                  query: parsedSearchQuery, context: context, unreadOnly: unreadOnly,
-                                 attachmentsOnly: attachmentsOnly, selectedID: selectedMessageID)
+                                 attachmentsOnly: attachmentsOnly, selectedID: preferredID)
     }
 
     var activeSearchResults: [MailMessage] {
@@ -155,6 +167,7 @@ extension MailStore {
         searchTask?.cancel()
         searchTask = nil
         searchResults = []
+        searchConversationCounts = [:]
         isSearchingMessages = false
     }
 
@@ -168,8 +181,9 @@ extension MailStore {
         let request = searchRequest()
         let snapshot = messages
         searchResultAccounts = request.accounts
-        if !needsBackgroundSearch {
+        if !usesMailboxViewData && !needsBackgroundSearch {
             searchResults = request.run(snapshot)
+            searchConversationCounts = MailboxViewData.conversationCounts(in: snapshot, for: searchResults)
             reconcileSelection()
             return
         }
@@ -178,12 +192,14 @@ extension MailStore {
         searchTask = Task.detached(priority: .userInitiated) { [weak self] in
             let result = request.run(snapshot)
             guard !Task.isCancelled else { return }
-            await self?.finishSearch(result, generation: generation)
+            let counts = MailboxViewData.conversationCounts(in: snapshot, for: result)
+            guard !Task.isCancelled else { return }
+            await self?.finishSearch(result, counts: counts, generation: generation)
         }
     }
 
     /// Small mailboxes complete inline. Either many rows or one long newsletter can make a body scan expensive.
-    private var needsBackgroundSearch: Bool {
+    var needsBackgroundSearch: Bool {
         if messages.count >= 128 { return true }
         var bytes = 0
         for message in messages {
@@ -195,9 +211,10 @@ extension MailStore {
         return false
     }
 
-    private func finishSearch(_ result: [MailMessage], generation: Int) {
+    private func finishSearch(_ result: [MailMessage], counts: [UUID: Int], generation: Int) {
         guard isSearchActive, searchGeneration == generation else { return }
         guard searchResultAccounts == searchableAccounts else { refreshSearch(); return }
+        searchConversationCounts = counts
         searchResults = result
         isSearchingMessages = false
         searchTask = nil

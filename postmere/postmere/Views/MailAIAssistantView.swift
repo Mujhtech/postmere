@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct MailAIAssistantView: View {
+    @Environment(\.postmereAccent) private var palette
     let runtime: MailRuntime
     let mode: MailAIMode
     var messages: [MailMessage] = []
@@ -50,7 +51,7 @@ struct MailAIAssistantView: View {
                         .buttonStyle(.borderedProminent).disabled(onApplyText == nil || busy)
                 }.padding(18)
             }
-        }.frame(width: 640, height: 650).tint(PostmereTheme.accent)
+        }.frame(width: 640, height: 650)
             .task {
                 guard runtime.backend.isConnected else { return }
                 do { settings = try await runtime.backend.request("GET", "/v1/ai/settings") }
@@ -90,7 +91,7 @@ struct MailAIAssistantView: View {
     private func output(_ result: MailAIResult) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             Divider()
-            Text("AI suggestion").font(.caption.weight(.medium)).foregroundStyle(PostmereTheme.accentInk)
+            Text("AI suggestion").font(.caption.weight(.medium)).foregroundStyle(palette.accentInk)
             Text(result.text).font(.system(size: 14)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             ForEach(Array(result.items.enumerated()), id: \.offset) { index, item in
                 VStack(alignment: .leading, spacing: 9) {
@@ -136,10 +137,7 @@ struct MailAIAssistantView: View {
     private func open(_ source: MailAISource) async {
         do {
             guard let identity = RemoteAccountRegistry.accounts.first(where: { $0.accountID == source.accountId && $0.scope == runtime.backend.scope }) else { throw BackendError.notConnected }
-            let remote: BackendMailMessage = try await runtime.backend.request("GET", "/v1/mail/messages/\(source.id.uuidString)")
-            guard remote.accountId == identity.accountID else { throw BackendError.invalidResponse }
-            let message = remote.localMessage(identity: identity)
-            runtime.store.mergeIncoming([message])
+            let message = try await runtime.fetchProviderMessage(source.id, for: identity)
             runtime.store.selectAccount(message.account)
             runtime.store.selectedInboxSplitID = nil
             runtime.store.selectedMailbox = message.mailbox

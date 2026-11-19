@@ -2,7 +2,7 @@ import Foundation
 
 extension MailRuntime {
     func syncBackend(refreshProvider: Bool = true) async {
-        guard backend.canAccessWorkspace, let requestScope = backend.scope, !isSyncingBackend else { return }
+        guard let sessionID = backend.realtimeGeneration, let requestScope = backend.scope, !isSyncingBackend else { return }
         isSyncingBackend = true
         if refreshProvider {
             lastBackendSync = .now
@@ -11,58 +11,64 @@ extension MailRuntime {
         defer { isSyncingBackend = false }
         do {
             try await backend.refreshAccounts()
-            guard backend.scope == requestScope else { return }
+            guard backend.realtimeGeneration == sessionID else { return }
             // Restore remote-delivery ownership before new cache rows can
             // schedule a duplicate local alert after a quit/relaunch.
             await synchronizePush()
-            guard backend.scope == requestScope else { return }
+            guard backend.realtimeGeneration == sessionID else { return }
             let identities = RemoteAccountRegistry.accounts.filter { $0.scope == requestScope }
             var failures: [String] = []
             for identity in identities {
                 guard backend.isAccountConnected(identity.accountID, scope: identity.scope) else { continue }
-                guard store.prepareBackendNotifications(for: identity) else { return }
+                guard await store.prepareBackendNotifications(for: identity) else { return }
                 do {
                     for _ in 0..<5 {
                         try Task.checkCancellation()
-                        guard backend.isAccountConnected(identity.accountID, scope: identity.scope) else { break }
+                        guard backend.realtimeGeneration == sessionID, backend.isAccountConnected(identity.accountID, scope: identity.scope) else { break }
                         let cursor = store.backendSyncCursors[identity.localID]
                         let known = Set(store.messages.filter { $0.account == identity.localID }.map(\.id))
+                        let read = store.beginProviderPage(for: identity.localID)
+                        defer { store.endProviderPage(read) }
                         let page: BackendMailPage
                         do {
                             page = try await backend.request("POST", "/v1/mail/accounts/\(identity.accountID.uuidString)/sync", body: BackendSyncInput(cursor: cursor, refreshProvider: refreshProvider ? nil : false))
                         } catch BackendError.response(400, _) where cursor != nil {
-                            guard backend.isAccountConnected(identity.accountID, scope: identity.scope) else { break }
+                            guard backend.realtimeGeneration == sessionID, backend.isAccountConnected(identity.accountID, scope: identity.scope) else { break }
                             // A retired cursor key or reset server cache requires a
                             // complete replay. Retain all local messages meanwhile.
                             store.backendSyncCursors[identity.localID] = nil
-                            guard store.persistState() else { return }
+                            guard await store.persistStateAsync() else { return }
                             continue
                         }
-                        guard backend.scope == requestScope else { return }
+                        guard backend.realtimeGeneration == sessionID else { return }
                         guard backend.isAccountConnected(identity.accountID, scope: identity.scope) else { break }
-                        guard store.applyBackendPage(page, identity: identity) else { return }
+                        guard await store.applyBackendPage(page, identity: identity, read: read, isCurrent: {
+                            self.backend.realtimeGeneration == sessionID && self.backend.isAccountConnected(identity.accountID, scope: requestScope)
+                        }) else { return }
+                        guard backend.realtimeGeneration == sessionID else { return }
+                        guard backend.isAccountConnected(identity.accountID, scope: identity.scope) else { break }
                         for message in store.backendNotificationCandidates(for: identity, excluding: known) {
                             await notifyBackendMessage(message)
                         }
                         if !page.hasMore { break }
                     }
                 } catch {
-                    guard backend.scope == requestScope else { return }
+                    guard backend.realtimeGeneration == sessionID else { return }
                     if backend.isAccountConnected(identity.accountID, scope: identity.scope) {
                         failures.append("\(identity.email): \(error.localizedDescription)")
                     }
                 }
-                guard backend.scope == requestScope else { return }
+                guard backend.realtimeGeneration == sessionID else { return }
             }
             store.reconcileSelection()
             backend.errorMessage = failures.isEmpty ? nil : failures.joined(separator: "\n")
         } catch {
-            if backend.scope == requestScope { backend.errorMessage = error.localizedDescription }
+            if backend.realtimeGeneration == sessionID { backend.errorMessage = error.localizedDescription }
         }
     }
 
     func searchBackend(account: MailAccount, query: String, loadMore: Bool = false) async {
-        guard let identity = account.remote, backend.isAccountConnected(identity.accountID, scope: identity.scope),
+        guard let sessionID = backend.realtimeGeneration, let identity = account.remote, backend.isAccountConnected(identity.accountID, scope: identity.scope),
               !isSyncingBackend else { return }
         let context = BackendSearchContext(accountID: identity.accountID, scope: identity.scope, query: query)
         if loadMore {
@@ -75,16 +81,41 @@ extension MailRuntime {
         isSyncingBackend = true
         defer { isSyncingBackend = false }
         do {
+            let read = store.beginProviderPage(for: identity.localID)
+            defer { store.endProviderPage(read) }
             let page: BackendMailPage = try await backend.request("POST", "/v1/mail/accounts/\(identity.accountID.uuidString)/search",
                 body: BackendSearchRequest(query: query, limit: 100, cursor: loadMore ? backendSearchCursor : nil))
-            guard backend.isAccountConnected(identity.accountID, scope: identity.scope), backendSearchContext == context else { return }
-            store.mergeIncoming(page.messages.filter { $0.accountId == identity.accountID }.map { $0.localMessage(identity: identity) })
+            let incoming = try await page.localMessages(for: identity)
+            func isCurrent() -> Bool {
+                backend.realtimeGeneration == sessionID && backendSearchContext == context
+                    && backend.isAccountConnected(identity.accountID, scope: identity.scope)
+            }
+            guard await store.mergeReceivedPage(incoming, read: read, isCurrent: isCurrent),
+                  isCurrent() else { return }
             backendSearchCursor = page.nextCursor
             backendHasMore = page.hasMore
             store.lastAction = "Fetched \(page.messages.count) messages from \(identity.email)"
         } catch {
-            if backend.scope == identity.scope { store.operationError = error.localizedDescription }
+            if backend.realtimeGeneration == sessionID { store.operationError = error.localizedDescription }
         }
+    }
+
+    func fetchProviderMessage(_ id: UUID, for identity: RemoteAccountIdentity) async throws -> MailMessage {
+        guard let sessionID = backend.realtimeGeneration,
+              backend.isAccountConnected(identity.accountID, scope: identity.scope) else { throw BackendError.notConnected }
+        let read = store.beginProviderPage(for: identity.localID)
+        defer { store.endProviderPage(read) }
+        let row: BackendMailMessage = try await backend.request("GET", "/v1/mail/messages/\(id.uuidString)")
+        guard row.id == id, row.accountId == identity.accountID else { throw BackendError.invalidResponse }
+        let page = BackendMailPage(messages: [row], nextCursor: nil, hasMore: false)
+        let incoming = try await page.localMessages(for: identity)
+        func isCurrent() -> Bool {
+            backend.realtimeGeneration == sessionID && backend.isAccountConnected(identity.accountID, scope: identity.scope)
+        }
+        guard await store.mergeReceivedPage(incoming, read: read, isCurrent: isCurrent), isCurrent(),
+              let stored = store.messages.first(where: { $0.account == identity.localID && $0.backendMessageID == id })
+        else { throw CancellationError() }
+        return stored
     }
 
     func mutateBackendMessage(before: MailMessage, after: MailMessage) async throws {

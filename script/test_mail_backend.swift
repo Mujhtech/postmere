@@ -41,6 +41,28 @@ enum RegressionFailure: Error { case failed(String) }
         let restored = try saved.load()?.messages.first
         try check(restored?.isStarred == true && restored?.isUnread == false, "newer explicit changes survive a reopen")
 
+        let split = store.inboxSplits[1]
+        store.saveQueue.suspend()
+        store.selectInboxSplit(split.id)
+        store.isComposing = true
+        store.draftSubject = "Typing while a write is pending"
+        let beforeWrite = try? saved.load()
+        store.saveQueue.resume()
+        try check(store.selectedInboxSplitID == split.id && beforeWrite?.selectedInboxSplitID != split.id &&
+                  beforeWrite?.activeDraft == nil, "tab navigation and typing return while mailbox storage is busy")
+        let savedLatest = await store.persistStateAsync()
+        let afterWrite = try saved.load()
+        try check(savedLatest && afterWrite?.selectedInboxSplitID == split.id &&
+                  afterWrite?.activeDraft?.subject == store.draftSubject, "a durable commit includes the latest navigation and draft edits")
+
+        store.saveQueue.suspend()
+        let opening = MailStore(messages: [], persistenceURL: file, openInBackground: true)
+        let showedLoading = opening.isOpeningMailbox && opening.messages.isEmpty
+        store.saveQueue.resume()
+        await opening.openingTask?.value
+        try check(showedLoading && !opening.isOpeningMailbox && opening.messages.first?.id == message.id &&
+                  opening.recoveredDraft?.subject == store.draftSubject, "the window can display loading before a delayed cache read restores the mailbox and draft")
+
         var legacy = message
         legacy.providerAccountEmail = nil
         var first = message
@@ -56,6 +78,78 @@ enum RegressionFailure: Error { case failed(String) }
         let indexed = countsStore.conversationCounts(for: countsStore.messages)
         try check(countsStore.messages.allSatisfy { indexed[$0.id] == countsStore.conversationCount(for: $0) },
                   "list thread counts preserve legacy account matching and trash handling")
+
+        let reader = MailStore(messages: [first, second, trashed])
+        reader.selectedMessageID = first.id
+        await reader.loadMailboxView()
+        try check(reader.selectedConversation.map(\.id) == [first.id],
+                  "opening a single-message thread excludes other provider identities and trashed siblings")
+        first.subject = "Updated after sync"
+        reader.messages = [second, legacy, first, trashed]
+        try check(reader.selectedMessage?.subject == first.subject &&
+                  Set(reader.selectedConversation.map(\.id)) == [first.id, legacy.id],
+                  "the reader resolves its new row and thread after a sync reorders messages and adds a legacy sibling")
+        reader.messages.removeAll { $0.id == first.id }
+        try check(reader.selectedMessage == nil && reader.selectedConversation.isEmpty,
+                  "a removed selection cannot return a cached reader message")
+    }
+
+    @MainActor static func dockUnreadCounts() async throws {
+        let domain = "postmere-dock-test-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: domain)!
+        let previousAccounts = RemoteAccountRegistry.accounts
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            RemoteAccountRegistry.accounts = previousAccounts
+        }
+        let accounts = ["one", "two"].map {
+            RemoteAccountIdentity(localID: "remote:fixture:\($0)", accountID: UUID(), scope: "fixture",
+                                  email: "\($0)@example.com", displayName: $0, provider: "gmail")
+        }
+        RemoteAccountRegistry.accounts = accounts
+        func message(_ account: String) -> MailMessage {
+            MailMessage(sender: "Test", senderEmail: "test@example.com", initials: "T", subject: "Unread",
+                        preview: "", paragraphs: [], timeLabel: "Now", isUnread: true, account: account)
+        }
+        let first = message(accounts[0].localID)
+        let second = message(accounts[1].localID)
+        var archived = message(first.account)
+        archived.mailbox = .archive
+        var snoozed = message(first.account)
+        snoozed.workflow.snoozedUntil = .distantFuture
+        var deleted = message(second.account)
+        deleted.providerDeletedAt = .now
+        let store = MailStore(messages: [first, second, archived, snoozed, deleted, message("remote:other:account")])
+        let connected = { Set(RemoteAccountRegistry.accounts.filter { $0.status == "connected" }.map(\.localID)) }
+        var badge: Int?
+        let counts = MailboxCounts(store: store, defaults: defaults, dockAccounts: connected, writeBadge: { badge = $0 })
+        func waitUntil(_ description: String, _ ready: () -> Bool) async throws {
+            let deadline = ContinuousClock.now + .seconds(3)
+            while !ready(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+            try check(ready(), description)
+        }
+        try await waitUntil("Dock badge defaults on and counts visible unread Inbox messages across accounts") {
+            counts.showsUnreadInDock && badge == 2
+        }
+        store.select(first)
+        try await waitUntil("reading one message updates the Dock without an open sidebar") { badge == 1 }
+        store.moveMessage(second.id, to: .archive)
+        try await waitUntil("archiving the last unread message clears the Dock badge") { badge == nil }
+        counts.showsUnreadInDock = false
+        store.messages.append(message(first.account))
+        try await waitUntil("new unread mail leaves a disabled Dock badge hidden") {
+            counts.snapshot?.mailboxes[.inbox] == 1 && badge == nil
+        }
+        let relaunched = MailboxCounts(store: store, defaults: defaults, dockAccounts: connected, writeBadge: { _ in })
+        try check(!relaunched.showsUnreadInDock, "Dock badge preference survives relaunch")
+        counts.showsUnreadInDock = true
+        try check(badge == 1, "re-enabling the Dock badge immediately shows the current count")
+        RemoteAccountRegistry.accounts[0].status = "revoked"
+        try await waitUntil("disconnecting an account removes its unread mail from the Dock") { badge == nil }
+        RemoteAccountRegistry.accounts = accounts
+        try await waitUntil("reconnecting restores its unread count") { badge == 1 }
+        counts.showsUnreadInDock = false
+        try check(badge == nil, "turning off the preference clears a visible Dock badge immediately")
     }
 
     @MainActor static func main() async throws {
@@ -63,6 +157,7 @@ enum RegressionFailure: Error { case failed(String) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try await readerPersistence(directory: directory)
+        try await dockUnreadCounts()
         try runSearchSplitRegressions(directory: directory)
         try await runBackgroundSearchRegressions()
         try await runRemoteMailRegressions(directory: directory)
@@ -190,7 +285,9 @@ enum RegressionFailure: Error { case failed(String) }
         let batch = MailStore(messages: [initial, other])
         batch.setSelection([initial.id, other.id])
         try check(batch.selectedMessages.count == 2 && batch.selectedMessageID != nil, "native multi-selection retains a reader lead")
+        let beforeArchive = batch.mailboxDataRevision
         batch.moveMessages(batch.selectedMessageIDs, to: .archive)
+        try check(batch.mailboxDataRevision == beforeArchive + 1, "bulk archive publishes one mailbox mutation")
         try check(batch.messages.allSatisfy { $0.mailbox == .archive }, "batch archive moves all selected mail")
         batch.undoLastMove()
         try check(batch.messages.allSatisfy { $0.mailbox == .inbox } && batch.selectedMessageIDs.count == 2, "batch undo restores all moved messages and selection")
@@ -214,10 +311,31 @@ enum RegressionFailure: Error { case failed(String) }
         let mixedRestore = MailStore(messages: [trashedDraft, trashedArchive])
         mixedRestore.selectMailbox(.trash)
         mixedRestore.setSelection([trashedDraft.id, trashedArchive.id])
+        let beforeRestore = mixedRestore.mailboxDataRevision
         mixedRestore.restoreSelected()
+        try check(mixedRestore.mailboxDataRevision == beforeRestore + 1, "bulk restore publishes one mailbox mutation")
         try check(mixedRestore.messages.contains { $0.id == trashedDraft.id && $0.mailbox == .drafts }
                   && mixedRestore.messages.contains { $0.id == trashedArchive.id && $0.mailbox == .archive },
                   "batch restore respects each message’s original destination")
+
+        let rowOrder = (0..<160).map { _ in
+            var row = other
+            row.id = UUID()
+            return row
+        }
+        let progressiveBatch = MailStore(messages: rowOrder)
+        await progressiveBatch.loadMailboxView()
+        let middle = Set(rowOrder[40..<120].map(\.id))
+        progressiveBatch.setSelection(middle)
+        let oldLead = progressiveBatch.selectedMessageID
+        progressiveBatch.moveSelected(to: .archive)
+        await progressiveBatch.loadMailboxView()
+        try check(progressiveBatch.selectedMessageID == rowOrder[120].id && progressiveBatch.messages.map(\.id) == rowOrder.map(\.id),
+                  "a bulk move advances to the next surviving row without reordering mail")
+        progressiveBatch.undoLastMove()
+        await progressiveBatch.loadMailboxView()
+        try check(progressiveBatch.selectedMessageIDs == middle && progressiveBatch.selectedMessageID == oldLead,
+                  "undo restores the whole selection and its lead after the mailbox has refreshed")
 
         let interruptedURL = directory.appendingPathComponent("interrupted.json")
         let interrupted = MailStore(messages: [], persistenceURL: interruptedURL)
@@ -319,7 +437,7 @@ enum RegressionFailure: Error { case failed(String) }
         identities.setPrivateNote("Keep this deleted email’s context", for: newAccount.id)
         identities.setFollowUp(newAccount.id, at: .now.addingTimeInterval(60))
         let deletion = BackendMailPage(messages: [], nextCursor: "deleted", hasMore: false, deletedMessageIds: [newAccount.backendMessageID!])
-        _ = identities.applyBackendPage(deletion, identity: workspaceAccount)
+        _ = await identities.applyBackendPage(deletion, identity: workspaceAccount)
         try check(identities.messages.count == 2 && identities.filteredMessages.isEmpty && identities.notificationSchedules.isEmpty,
                   "workspace deletion hides original mail while retaining local notes")
         try check(identities.messages.first(where: { $0.id == newAccount.id })?.workflow.privateNote == "Keep this deleted email’s context",
@@ -331,7 +449,7 @@ enum RegressionFailure: Error { case failed(String) }
         retainedDraft.id = UUID()
         retainedDraft.mailbox = .drafts
         let draftDeletion = MailStore(messages: [retainedDraft])
-        _ = draftDeletion.applyBackendPage(deletion, identity: workspaceAccount)
+        _ = await draftDeletion.applyBackendPage(deletion, identity: workspaceAccount)
         draftDeletion.selectMailbox(.drafts)
         try check(draftDeletion.filteredMessages.count == 1 && draftDeletion.messages[0].isDeletedOnProvider,
                   "provider deletion never hides or removes local saved drafts")

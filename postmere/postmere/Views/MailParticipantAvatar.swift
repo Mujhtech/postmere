@@ -5,6 +5,7 @@ struct MailParticipantAvatar: View {
     let address: String
     var name = ""
     var size: CGFloat
+    var messageID: UUID?
     @State private var showsProfile = false
 
     var body: some View {
@@ -13,6 +14,7 @@ struct MailParticipantAvatar: View {
         }
         .buttonStyle(.plain)
         .help("View profile for \(displayName)")
+        .onChange(of: messageID) { showsProfile = false }
         .accessibilityLabel("View profile for \(displayName)")
         .popover(isPresented: $showsProfile) {
             VStack(spacing: 10) {

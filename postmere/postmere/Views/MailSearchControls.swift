@@ -23,6 +23,7 @@ struct MailSearchTokenControls: View {
 }
 
 private struct SearchTokenChip: View {
+    @Environment(\.postmereAccent) private var palette
     @Bindable var store: MailStore
     let token: MailSearchToken
     @State private var showsEditor = false
@@ -56,7 +57,7 @@ private struct SearchTokenChip: View {
                 .accessibilityLabel("Remove search condition \(token.rawText)")
         }
         .font(.system(size: 10, weight: .medium))
-        .foregroundStyle(token.isExcluded ? Color.secondary : PostmereTheme.accentInk)
+        .foregroundStyle(token.isExcluded ? Color.secondary : palette.accentInk)
         .padding(.leading, 7).padding(.trailing, 3).padding(.vertical, 3)
         .background(PostmereTheme.subtleFill, in: .rect(cornerRadius: 5))
         .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(PostmereTheme.rule.opacity(0.7)) }
@@ -69,6 +70,7 @@ private struct SearchTokenChip: View {
 }
 
 struct MailSearchHelp: View {
+    @Environment(\.postmereAccent) private var palette
     let onUse: (String) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -93,7 +95,7 @@ struct MailSearchHelp: View {
                     dismiss()
                 } label: {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(query).font(.system(size: 12, weight: .medium, design: .monospaced)).foregroundStyle(PostmereTheme.accentInk)
+                        Text(query).font(.system(size: 12, weight: .medium, design: .monospaced)).foregroundStyle(palette.accentInk)
                         Text(explanation).font(.system(size: 11)).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                 }.buttonStyle(.plain)

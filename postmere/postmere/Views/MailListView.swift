@@ -3,6 +3,7 @@ import SwiftUI
 struct MailListView: View {
     @Bindable var store: MailStore
     @Environment(MailRuntime.self) private var runtime
+    @Environment(\.postmereAccent) private var accent
     var listFocusRequest = 0
     @FocusState private var isListFocused: Bool
     @State private var showsViewEditor = false
@@ -11,9 +12,11 @@ struct MailListView: View {
     @State private var noteTarget: MailMessage?
     @State private var showsInboxManager = false
     @State private var showsProviderSearch = false
+    @State private var loadedPage: (scope: MailboxViewScope, limit: Int)?
+    private let pageSize = 128
 
-    private var selection: Binding<Set<UUID>> {
-        Binding(get: { store.selectedMessageIDs }, set: store.setSelection)
+    private func selection(in scope: MailboxViewScope) -> Binding<Set<UUID>> {
+        Binding(get: { store.selectedMessageIDs }, set: { store.setSelection($0, in: scope) })
     }
 
     @State private var showsAction = false
@@ -37,8 +40,17 @@ struct MailListView: View {
     }
 
     var body: some View {
-        let visible = store.filteredMessages
-        let counts = visible.isEmpty ? [:] : store.conversationCounts(for: visible)
+        let current = store.mailboxViewData
+        let loadingMailbox = !store.isSearchActive && current == nil
+        let mailbox = current ?? store.previousInboxTabForLayout
+        let visible = store.isSearchActive ? store.activeSearchResults : mailbox?.messages ?? []
+        let counts = store.isSearchActive ? store.searchConversationCounts : mailbox?.conversationCounts ?? [:]
+        let scope = store.mailboxViewKey.scope
+        let pageLimit = loadedPage.flatMap { $0.scope == scope ? $0.limit : nil } ?? pageSize
+        let selectedPosition = store.selectedMessageID.flatMap { id in
+            store.isSearchActive ? visible.firstIndex { $0.id == id } : mailbox?.rowPositions[id]
+        }
+        let limit = max(pageLimit, (selectedPosition ?? -1) + 1)
         VStack(spacing: 0) {
             if store.isSearchActive {
                 MailSearchRefinements(store: store, canSearchOnline: runtime.backend.isConnected,
@@ -63,34 +75,69 @@ struct MailListView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 14)
                 Spacer()
-            } else if store.isSearchingMessages && visible.isEmpty {
-                ProgressView("Searching mail…")
+            } else if (loadingMailbox || store.isSearchingMessages) && visible.isEmpty {
+                ProgressView(loadingMailbox ? "Loading messages…" : "Searching mail…")
                     .controlSize(.small)
                     .font(.callout)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if visible.isEmpty {
                 emptyState
             } else {
-                List(selection: selection) {
+                List(selection: selection(in: mailbox?.key.scope ?? scope)) {
                     if store.isSearchActive {
-                        messageRows(visible, counts: counts)
-                    } else {
-                        let grouped = Dictionary(grouping: visible, by: \.dateLabel)
-                        var seen = Set<String>()
-                        let dates = visible.compactMap { seen.insert($0.dateLabel).inserted ? $0.dateLabel : nil }
-                        ForEach(dates, id: \.self) { date in
-                            Section(date) { messageRows(grouped[date] ?? [], counts: counts) }
+                        messageRows(visible.prefix(limit), counts: counts)
+                    } else if let mailbox {
+                        ForEach(mailbox.sections.prefix { $0.offset < limit }) { section in
+                            Section(section.id) { messageRows(section.messages.prefix(limit - section.offset), counts: counts) }
                         }
+                    }
+                    if limit < visible.count {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(maxWidth: .infinity)
+                            .accessibilityLabel("Loading more messages")
+                            .onAppear {
+                                if !loadingMailbox { loadedPage = (scope, min(limit + pageSize, visible.count)) }
+                            }
+                            .id(limit)
                     }
                 }
                 .listStyle(.inset)
                 .alternatingRowBackgrounds(.disabled)
+                .contextMenu(forSelectionType: UUID.self) { ids in
+                    if ids.count > 1 {
+                        bulkActions(for: ids)
+                    } else if let id = ids.first, let message = visible.first(where: { $0.id == id }) {
+                        messageActions(message)
+                    }
+                }
                 .focused($isListFocused)
                 .accessibilityLabel("Messages in \(searchLocation)")
                 .onDeleteCommand {
+                    guard !loadingMailbox else { return }
                     store.moveMessages(store.selectedMessageIDs, to: .trash)
                 }
+                .onCommand(#selector(NSResponder.selectAll(_:))) {
+                    guard !loadingMailbox else { return }
+                    selectAll(visible, in: scope)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSMenu.didSendActionNotification)) { note in
+                    // The native outline view can handle Edit > Select All before SwiftUI's command.
+                    guard !loadingMailbox, limit < visible.count, isListFocused,
+                          let item = note.userInfo?["MenuItem"] as? NSMenuItem,
+                          item.action == #selector(NSResponder.selectAll(_:)) else { return }
+                    selectAll(visible, in: scope)
+                }
                 .onKeyPress(phases: [.down, .repeat], action: handleListKey)
+                .allowsHitTesting(!loadingMailbox)
+                .accessibilityHidden(loadingMailbox)
+                .overlay {
+                    if loadingMailbox {
+                        ProgressView("Loading messages…").controlSize(.small).font(.callout)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(.background)
+                    }
+                }
             }
         }
         .overlay(alignment: .bottom) {
@@ -108,6 +155,7 @@ struct MailListView: View {
                 .padding(8)
             }
         }
+        .task(id: store.isSearchActive ? nil : store.mailboxViewKey) { await store.loadMailboxView() }
         .task(id: store.actionRevision) {
             showsAction = store.lastAction != nil
             try? await Task.sleep(for: .seconds(4))
@@ -115,7 +163,7 @@ struct MailListView: View {
         }
         .defaultFocus($isListFocused, true)
         .navigationTitle(store.isSearchActive ? "Search" : mailboxTitle)
-        .navigationSubtitle(subtitle(count: visible.count))
+        .navigationSubtitle(loadingMailbox ? "" : subtitle(count: visible.count))
         .toolbar {
             if !store.isSearchActive {
                 ToolbarItem(placement: .automatic) {
@@ -136,22 +184,28 @@ struct MailListView: View {
         .sheet(item: $noteTarget) { message in PrivateNoteSheet(store: store, message: message) }
     }
 
-    private func messageRows(_ messages: [MailMessage], counts: [UUID: Int]) -> some View {
-        ForEach(messages) { message in
+    private func messageRows(_ messages: ArraySlice<MailMessage>, counts: [UUID: Int]) -> some View {
+        // Reuse the native row at each position when changing tabs. Selection and actions still use the message ID.
+        ForEach(0..<messages.count, id: \.self) { offset in
+            let index = messages.startIndex + offset
+            let message = messages[index]
+            let selected = store.selectedMessageIDs.contains(message.id)
             MailRow(message: message, conversationCount: counts[message.id] ?? 1,
                     location: resultLocation(for: message), showsSearchDate: store.isSearchActive,
                     outgoingItem: store.outgoingQueue.first { $0.id == message.id },
-                    isSelected: store.selectedMessageIDs.contains(message.id))
+                    isSelected: selected)
+                .mailSelection(selected,
+                               joinsAbove: selected && index > messages.startIndex && store.selectedMessageIDs.contains(messages[index - 1].id),
+                               joinsBelow: selected && index + 1 < messages.endIndex && store.selectedMessageIDs.contains(messages[index + 1].id))
                 .tag(message.id)
                 .listRowInsets(EdgeInsets(top: 11, leading: 10, bottom: 11, trailing: 10))
-                .contextMenu {
-                    if store.selectedMessageIDs.contains(message.id) && store.selectedMessageIDs.count > 1 {
-                        bulkActions
-                    } else {
-                        messageActions(message)
-                    }
-                }
         }
+    }
+
+    private func selectAll(_ messages: [MailMessage], in scope: MailboxViewScope) {
+        guard scope == store.mailboxViewKey.scope else { return }
+        loadedPage = (scope, messages.count)
+        store.setSelection(Set(messages.map(\.id)), in: scope)
     }
 
     private func resultLocation(for message: MailMessage) -> String? {
@@ -183,10 +237,10 @@ struct MailListView: View {
         } label: {
             PostmereLabel("Filter messages", symbol: hasMessageFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle", size: 16)
                 .labelStyle(.iconOnly)
-                .foregroundStyle(hasMessageFilters ? PostmereTheme.accentInk : PostmereTheme.icon)
+                .foregroundStyle(hasMessageFilters ? accent.accentInk : PostmereTheme.icon)
         }
         .menuIndicator(.hidden)
-        .tint(hasMessageFilters ? PostmereTheme.accentInk : PostmereTheme.icon)
+        .tint(hasMessageFilters ? accent.accentInk : PostmereTheme.icon)
         .help(hasMessageFilters ? "Filtering: \(activeFilterNames)" : "Filter messages")
         .accessibilityLabel("Filter messages")
         .accessibilityValue(hasMessageFilters ? activeFilterNames : "No filters")
@@ -340,7 +394,7 @@ struct MailListView: View {
             Button { store.moveMessages(store.selectedMessageIDs, to: .trash) } label: { PostmereIcon("trash", size: 14) }
                 .help("Move selected messages to Trash")
                 .accessibilityLabel("Move selected messages to Trash")
-            Menu { bulkActions } label: { PostmereIcon("ellipsis.circle", size: 14) }
+            Menu { bulkActions(for: store.selectedMessageIDs) } label: { PostmereIcon("ellipsis.circle", size: 14) }
                 .menuStyle(.borderlessButton).fixedSize()
                 .accessibilityLabel("More actions for selected messages")
         }
@@ -350,21 +404,22 @@ struct MailListView: View {
         .padding(.vertical, 10)
     }
 
-    @ViewBuilder private var bulkActions: some View {
-        Button("Archive Selected") { store.moveMessages(store.selectedMessageIDs, to: .archive) }
-        Button("Move Selected to Trash", role: .destructive) { store.moveMessages(store.selectedMessageIDs, to: .trash) }
+    @ViewBuilder private func bulkActions(for ids: Set<UUID>) -> some View {
+        Button("Archive Selected") { store.moveMessages(ids, to: .archive) }
+        Button("Move Selected to Trash", role: .destructive) { store.moveMessages(ids, to: .trash) }
         Divider()
-        Button("Mark as Read") { store.setRead(true, for: store.selectedMessageIDs) }
-        Button("Mark as Unread") { store.setRead(false, for: store.selectedMessageIDs) }
-        Button("Star Selected") { store.setStarred(true, for: store.selectedMessageIDs) }
-        Button("Remove Stars") { store.setStarred(false, for: store.selectedMessageIDs) }
+        Button("Mark as Read") { store.setRead(true, for: ids) }
+        Button("Mark as Unread") { store.setRead(false, for: ids) }
+        Button("Star Selected") { store.setStarred(true, for: ids) }
+        Button("Remove Stars") { store.setStarred(false, for: ids) }
         Divider()
-        Button("Needs Reply") { store.setNeedsReply(true, for: store.selectedMessageIDs) }
-        Button("Mark Done") { store.setNeedsReply(false, for: store.selectedMessageIDs) }
+        Button("Needs Reply") { store.setNeedsReply(true, for: ids) }
+        Button("Mark Done") { store.setNeedsReply(false, for: ids) }
     }
 
     private func handleListKey(_ press: KeyPress) -> KeyPress.Result {
         guard isListFocused,
+              store.isSearchActive || store.mailboxViewData != nil,
               press.modifiers.isEmpty || (press.characters == "#" && press.modifiers == .shift) else { return .ignored }
         if press.key == .escape, store.isSearchActive {
             store.endSearch()
@@ -396,6 +451,7 @@ private struct MailRow: View {
     var showsSearchDate = false
     var outgoingItem: OutgoingMailItem?
     var isSelected = false
+    @Environment(\.postmereAccent) private var accent
     @AppStorage("showMessagePreviews") private var showMessagePreviews = true
 
     private var senderTitle: String {
@@ -404,19 +460,21 @@ private struct MailRow: View {
         return recipients.isEmpty ? "No recipient" : "To: \(recipients)"
     }
 
-    private var secondaryForeground: HierarchicalShapeStyle { isSelected ? .primary : .secondary }
+    private var secondaryForeground: AnyShapeStyle {
+        isSelected ? AnyShapeStyle(accent.selectionSecondaryInk) : AnyShapeStyle(.secondary)
+    }
     private var indicatorForeground: AnyShapeStyle {
-        isSelected ? AnyShapeStyle(HierarchicalShapeStyle.primary) : AnyShapeStyle(PostmereTheme.icon)
+        isSelected ? AnyShapeStyle(accent.selectionInk) : AnyShapeStyle(PostmereTheme.icon)
     }
     private var unreadFill: AnyShapeStyle {
         guard message.isUnread else { return AnyShapeStyle(Color.clear) }
-        return isSelected ? AnyShapeStyle(HierarchicalShapeStyle.primary) : AnyShapeStyle(PostmereTheme.accentInk)
+        return AnyShapeStyle(isSelected ? accent.selectionInk : accent.accentInk)
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
             MailParticipantAvatar(address: message.isOutgoing ? message.toRecipients.first ?? message.senderEmail : message.senderEmail,
-                                  name: message.isOutgoing ? "" : message.sender, size: 28)
+                                  name: message.isOutgoing ? "" : message.sender, size: 28, messageID: message.id)
                 .overlay(alignment: .bottomTrailing) {
                     if message.isUnread {
                         Circle().fill(unreadFill).frame(width: 7, height: 7)
@@ -495,7 +553,7 @@ private struct MailRow: View {
                 switch item.status {
                 case .failed:
                     PostmereLabel("Delivery failed", symbol: "exclamationmark.circle", size: 11)
-                        .foregroundStyle(isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(Color.red))
+                        .foregroundStyle(isSelected ? accent.selectionInk : .red)
                         .help(item.lastError ?? "Open Outbox to retry or edit this message")
                 case .delivering: PostmereLabel("Sending…", symbol: "paperplane", size: 11)
                 case .pending:

@@ -53,6 +53,7 @@ struct CalendarAgendaView: View {
 }
 
 struct CalendarIntegrationSettingsView: View {
+    @Environment(\.postmereAccent) private var palette
     private let service: MailCalendarService
     @State private var isConnecting = false
     init(service: MailCalendarService? = nil) { self.service = service ?? .shared }
@@ -64,7 +65,7 @@ struct CalendarIntegrationSettingsView: View {
                 .font(.system(size: 12)).foregroundStyle(.secondary)
             if service.isEnabled && service.access.canRead {
                 HStack {
-                    Text("Calendar connected").font(.system(size: 12)).foregroundStyle(PostmereTheme.accentInk)
+                    Text("Calendar connected").font(.system(size: 12)).foregroundStyle(palette.accentInk)
                     Spacer()
                     Button("Disconnect") { service.disconnectAgenda() }
                 }
@@ -289,35 +290,5 @@ struct AvailabilityPickerView: View {
         }
         onInsert(MailAvailability.text(for: proposed))
         dismiss()
-    }
-}
-
-struct MailDateSuggestionsView: View {
-    let title: String
-    let paragraphs: [String]
-    let onReview: (MailCalendarEventDraft) -> Void
-    @State private var suggestions: [MailDateSuggestion] = []
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if !suggestions.isEmpty {
-                Menu {
-                    ForEach(suggestions) { suggestion in
-                        Button(suggestion.matchedText) { onReview(suggestion.eventDraft(title: title)) }
-                    }
-                } label: { PostmereLabel("Dates in this message", symbol: "calendar", size: 13) }
-                .menuStyle(.borderlessButton)
-                .tint(PostmereTheme.accentInk)
-                .fixedSize()
-            }
-        }.task(id: paragraphs) {
-            suggestions = []
-            let source = paragraphs
-            let result = await Task.detached(priority: .utility) {
-                MailDateDetector.suggestions(in: source.joined(separator: "\n\n"))
-            }.value
-            guard !Task.isCancelled else { return }
-            suggestions = result
-        }
     }
 }

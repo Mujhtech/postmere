@@ -18,6 +18,7 @@ struct MessageDetailsDisclosure: View {
         .buttonStyle(.plain)
         .help("Show message details")
         .accessibilityLabel("Show message details for \(message.sender)")
+        .onChange(of: message.id) { showsDetails = false }
         .popover(isPresented: $showsDetails, arrowEdge: .bottom) {
             MessageEnvelopeDetailsView(message: message).id(message.id)
         }
@@ -48,6 +49,7 @@ struct MessageEnvelopeDetailsView: View {
                 if !message.ccRecipients.isEmpty { row("Cc", addresses(message.ccRecipients)) }
                 if message.isOutgoing && !message.bccRecipients.isEmpty { row("Bcc", addresses(message.bccRecipients)) }
                 row("Date", message.sentAt.formatted(date: .long, time: .shortened))
+                if message.mailAccount != .unassigned { row("Account", message.accountLabel) }
                 row("Subject", message.displaySubject)
                 if !message.isDraft && message.mailbox != .outbox {
                     Divider().gridCellColumns(2).padding(.vertical, 3)

@@ -271,7 +271,7 @@ struct MailMessage: Codable, Identifiable {
     var trackOpens: Bool?
     var trackLinks: Bool?
 
-    var isDeletedOnProvider: Bool {
+    nonisolated var isDeletedOnProvider: Bool {
         get { providerDeletedAt != nil }
         set { providerDeletedAt = newValue ? providerDeletedAt ?? .now : nil }
     }
@@ -286,7 +286,7 @@ struct MailMessage: Codable, Identifiable {
 
     nonisolated var isDraft: Bool { mailbox == .drafts || (mailbox == .trash && trashedFrom == .drafts) }
 
-    var receivedHTML: String? {
+    nonisolated var receivedHTML: String? {
         guard !isDraft, mailbox != .outbox, let bodyHTML,
               bodyHTML.contains(where: { !$0.isWhitespace }) else { return nil }
         return bodyHTML

@@ -27,7 +27,6 @@ final class PostmereScrollbars: NSObject {
     func start() {
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(windowOpened), name: NSWindow.didBecomeKeyNotification, object: nil)
-        center.addObserver(self, selector: #selector(windowOpened), name: NSWindow.didUpdateNotification, object: nil)
         center.addObserver(self, selector: #selector(frameChanged), name: NSView.frameDidChangeNotification, object: nil)
         center.addObserver(self, selector: #selector(scrollViewChanged), name: NSScrollView.willStartLiveScrollNotification, object: nil)
         for window in NSApp.windows { configure(window) }
@@ -44,7 +43,9 @@ final class PostmereScrollbars: NSObject {
     }
 
     @objc private func frameChanged(_ notification: Notification) {
-        guard let scroll = notification.object as? NSScrollView, !pending.contains(scroll) else { return }
+        let view = notification.object as? NSView
+        guard let scroll = view as? NSScrollView ?? (view as? NSClipView)?.enclosingScrollView,
+              !pending.contains(scroll) else { return }
         // SwiftUI installs the platform scrollers after assigning the new frame.
         pending.add(scroll)
         DispatchQueue.main.async { [weak self, weak scroll] in
@@ -58,8 +59,7 @@ final class PostmereScrollbars: NSObject {
         guard !(window is NSSavePanel), let root = window.contentView else { return }
         func visit(_ view: NSView) {
             if let scroll = view as? NSScrollView { configure(scroll) }
-            // A table's reusable rows don't own scrollers. Skip their view trees
-            // when AppKit reports that the window has finished a layout update.
+            // A table's reusable rows don't own scrollers.
             if view is NSTableView { return }
             for child in view.subviews { visit(child) }
         }

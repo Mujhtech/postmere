@@ -295,5 +295,53 @@ func runBackgroundSearchRegressions() async throws {
     try PostmereBackendRegression.check(accountStore.filteredMessages.isEmpty,
                                          "revoking the active account hides cached hits immediately")
     accountStore.endSearch()
-
+    let alpha = InboxSplit(name: "Alpha", criteria: SavedInboxCriteria(query: "subject:Alpha"))
+    let beta = InboxSplit(name: "Beta", criteria: SavedInboxCriteria(query: "subject:Beta"))
+    store.inboxSplits = [alpha, beta]
+    store.selectInboxSplit(alpha.id)
+    let earlier = store.mailboxViewTask
+    store.selectInboxSplit(beta.id)
+    try PostmereBackendRegression.check(store.selectedInboxSplitID == beta.id && store.mailboxViewData == nil,
+                                        "navigating large inbox tabs updates scope before calculating rows")
+    await earlier?.value
+    await store.loadMailboxView()
+    let current = store.mailboxViewData
+    try PostmereBackendRegression.check(current?.messages.count == 90 && current?.messages.allSatisfy { $0.subject == "Beta" } == true
+                                        && current?.sections.first?.messages.count == 90 && store.selectedMessageID == current?.messages.first?.id,
+                                        "only the latest tab publishes rows, grouping and its initial selection")
+    let badges = await store.loadInboxTabCounts()
+    try PostmereBackendRegression.check(badges.all == 179 && badges.splits[alpha.id] == 90 && badges.splits[beta.id] == 89,
+                                        "independent tab badges use current read state and matching rules")
+    let previousScope = store.mailboxViewKey.scope
+    let previousLead = store.selectedMessageID
+    store.selectInboxSplit(alpha.id)
+    let selecting = store.mailboxViewTask
+    store.setSelection([], in: previousScope)
+    store.selectAdjacent(1)
+    try PostmereBackendRegression.check(store.navigableMessages == nil && store.selectedMessageID == previousLead,
+                                        "old list callbacks and keyboard navigation preserve the reader while the next tab has no rows")
+    store.select(messages[2])
+    await selecting?.value
+    await store.loadMailboxView()
+    try PostmereBackendRegression.check(store.selectedMessageID == messages[2].id, "a pending tab load preserves a subsequent explicit selection")
+    store.setSelection([messages[4].id], in: store.mailboxViewKey.scope)
+    store.setSelection([], in: previousScope)
+    try PostmereBackendRegression.check(store.selectedMessageID == messages[4].id,
+                                        "an old tab cannot clear a newer selection after the replacement rows appear")
+    await store.prepareInboxTabs()
+    store.selectInboxSplit(beta.id)
+    try PostmereBackendRegression.check(store.mailboxViewData?.messages.count == 90
+                                        && store.selectedMessageID == messages[1].id
+                                        && store.startMailboxViewLoad() == nil,
+                                        "a prepared tab switches its rows and reader together without a second grouping pass")
+    store.messages[0].subject = "Beta"
+    store.selectInboxSplit(beta.id)
+    await store.loadMailboxView()
+    try PostmereBackendRegression.check(store.selectedMessageID == messages[0].id && store.mailboxViewData?.messages.count == 91,
+                                        "a message update invalidates prepared tabs before the next switch")
+    store.selectAccount("Personal")
+    try PostmereBackendRegression.check(store.mailboxViewData == nil, "switching accounts hides the previous mailbox snapshot immediately")
+    await store.loadMailboxView()
+    try PostmereBackendRegression.check(store.mailboxViewData?.messages.isEmpty == true && store.selectedMessageID == nil,
+                                        "an empty new account cannot receive another account’s mailbox results")
 }

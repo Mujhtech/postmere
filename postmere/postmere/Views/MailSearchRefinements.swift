@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct MailSearchRefinements: View {
+    @Environment(\.postmereAccent) private var palette
     @Bindable var store: MailStore
     let canSearchOnline: Bool
     let onSaveView: () -> Void
@@ -88,11 +89,11 @@ struct MailSearchRefinements: View {
         .frame(maxWidth: 150)
         .fixedSize(horizontal: true, vertical: false)
         .font(.system(size: 11, weight: .medium))
-        .foregroundStyle(selected ? PostmereTheme.accentInk : Color.secondary)
+        .foregroundStyle(selected ? palette.accentInk : Color.secondary)
         .padding(.horizontal, 7)
         .frame(height: 23)
-        .background(selected ? PostmereTheme.accentInk.opacity(0.10) : Color.clear, in: .rect(cornerRadius: 5))
-        .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(selected ? PostmereTheme.accentInk.opacity(0.35) : PostmereTheme.rule) }
+        .background(selected ? palette.accentInk.opacity(0.10) : Color.clear, in: .rect(cornerRadius: 5))
+        .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(selected ? palette.accentInk.opacity(0.35) : PostmereTheme.rule) }
         .contentShape(Rectangle())
     }
 

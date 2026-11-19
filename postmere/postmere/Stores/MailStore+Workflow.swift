@@ -19,7 +19,7 @@ extension MailStore {
         return isPreview && message.mailAccount != .gmail && message.mailAccount != .unassigned
     }
 
-    func sameMailAccount(_ first: MailMessage, _ second: MailMessage) -> Bool {
+    nonisolated func sameMailAccount(_ first: MailMessage, _ second: MailMessage) -> Bool {
         guard first.account == second.account else { return false }
         guard let firstEmail = first.providerAccountEmail, let secondEmail = second.providerAccountEmail else { return true }
         return firstEmail.caseInsensitiveCompare(secondEmail) == .orderedSame
@@ -41,7 +41,7 @@ extension MailStore {
         selectedAccount = nil
         clearFilters()
         selectedSavedViewID = view.id
-        selectedMessageID = filteredMessages.first?.id
+        selectFirstMailboxRow(markRead: false)
     }
 
     func selectSavedView(_ id: UUID) {
@@ -154,7 +154,7 @@ extension MailStore {
         lastAction = "Sender blocked"
     }
 
-    func matchesRule(_ rule: SenderRule, message: MailMessage) -> Bool {
+    nonisolated func matchesRule(_ rule: SenderRule, message: MailMessage) -> Bool {
         rule.email.caseInsensitiveCompare(message.senderEmail) == .orderedSame && (rule.account == nil || rule.account == message.account)
             && (rule.providerAccountEmail == nil || rule.providerAccountEmail?.lowercased() == message.providerAccountEmail?.lowercased())
     }
@@ -167,7 +167,7 @@ extension MailStore {
         return !senderScreeningEnabled
     }
 
-    func applyRule(_ rule: SenderRule, to message: inout MailMessage) {
+    nonisolated func applyRule(_ rule: SenderRule, to message: inout MailMessage) {
         message.workflow.screeningState = rule.route == .blocked ? .blocked : .accepted
         // Routing never revives mail that was explicitly trashed, except an accepted screened sender.
         guard message.mailbox != .trash || message.workflow.screeningState == .blocked else { return }
@@ -197,13 +197,33 @@ extension MailStore {
     }
 }
 
-/// Uses the same visibility and conversation rules as the inbox and workflow queues.
-struct InboxOverview {
-    struct Section: Identifiable {
+extension MailStore {
+    /// The unfiltered inbox uses the daily overview. Other views display their own title.
+    var overviewTitle: String? {
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Search results" }
+        if let view = selectedSavedView { return view.name }
+        if selectedMailbox == .inbox {
+            if let split = visibleInboxSplits.first(where: { $0.id == selectedInboxSplitID }) { return split.name }
+            if !unreadOnly && !attachmentsOnly { return nil }
+        }
+        return selectedMailbox.title
+    }
+}
+
+nonisolated struct InboxOverview: Sendable {
+    struct Section: Identifiable, Sendable {
         let title: String
+        let count: Int
         let messages: [MailMessage]
         let mailbox: Mailbox?
         var id: String { title }
+
+        init(title: String, messages: [MailMessage], mailbox: Mailbox?) {
+            self.title = title
+            self.count = messages.count
+            self.messages = Array(messages.prefix(3))
+            self.mailbox = mailbox
+        }
     }
 
     let isInbox: Bool
@@ -211,28 +231,30 @@ struct InboxOverview {
     let summary: String
     let sections: [Section]
 
-    init(store: MailStore) {
-        let visible = store.filteredMessages
-        let conversations = store.deduplicatedConversations(visible).sorted { $0.sentAt > $1.sentAt }
-        let isSearching = !store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        isInbox = store.selectedMailbox == .inbox && store.selectedSavedViewID == nil && store.selectedInboxSplitID == nil
-            && !isSearching && !store.unreadOnly && !store.attachmentsOnly
-        guard isInbox else {
-            let split = store.selectedMailbox == .inbox ? store.visibleInboxSplits.first { $0.id == store.selectedInboxSplitID } : nil
-            title = isSearching ? "Search results" : store.selectedSavedView?.name ?? split?.name ?? store.selectedMailbox.title
+    @MainActor init(store: MailStore) {
+        self.init(messages: store.messages, visible: store.filteredMessages, request: store.searchRequest(), title: store.overviewTitle)
+    }
+
+    init(messages: [MailMessage], visible: [MailMessage], request: MailSearchRequest, title: String?) {
+        func conversations(in candidates: [MailMessage]) -> [MailMessage] {
+            MailSearchRequest.representatives(candidates, preferred: request.selectedID)
+        }
+        isInbox = title == nil
+        self.title = title ?? ""
+        if title != nil {
+            let conversations = conversations(in: visible).sorted { $0.sentAt > $1.sentAt }
             summary = conversations.isEmpty ? "No conversations in this view." : Self.count(conversations.count, singular: "conversation", plural: "conversations")
             sections = conversations.isEmpty ? [] : [Section(title: "Recent conversations", messages: conversations, mailbox: nil)]
             return
         }
 
-        title = ""
-        let scoped = store.messages.filter { store.selectedAccount == nil || $0.account == store.selectedAccount }
+        let scoped = messages.filter(request.visible)
         func queue(_ mailbox: Mailbox) -> [MailMessage] {
-            store.deduplicatedConversations(scoped.filter { store.matchesMailbox($0, mailbox: mailbox) })
+            conversations(in: scoped.filter { $0.belongs(to: mailbox) })
         }
         let waiting = queue(.needsReply).sorted { $0.sentAt > $1.sentAt }
         let reminders = queue(.followUps).sorted { ($0.workflow.followUpAt ?? .distantFuture) < ($1.workflow.followUpAt ?? .distantFuture) }
-        let unread = store.deduplicatedConversations(visible.filter(\.isUnread)).sorted { $0.sentAt > $1.sentAt }
+        let unread = conversations(in: visible.filter(\.isUnread)).sorted { $0.sentAt > $1.sentAt }
         var counts: [String] = []
         if !waiting.isEmpty { counts.append(Self.count(waiting.count, singular: "conversation needs a reply", plural: "conversations need a reply")) }
         if !unread.isEmpty { counts.append(Self.count(unread.count, singular: "unread conversation", plural: "unread conversations")) }
@@ -242,11 +264,12 @@ struct InboxOverview {
         var groups: [Section] = []
         if !waiting.isEmpty { groups.append(Section(title: "Needs reply", messages: waiting, mailbox: .needsReply)) }
         if !reminders.isEmpty { groups.append(Section(title: "Follow-ups", messages: reminders, mailbox: .followUps)) }
-        let alreadyListed = Set((waiting + reminders).map { store.conversationKey(for: $0) })
-        let otherUnread = unread.filter { !alreadyListed.contains(store.conversationKey(for: $0)) }
+        let alreadyListed = Set((waiting + reminders).map(\.searchConversationKey))
+        let otherUnread = unread.filter { !alreadyListed.contains($0.searchConversationKey) }
         if !otherUnread.isEmpty {
             groups.append(Section(title: "Unread", messages: otherUnread, mailbox: .inbox))
-        } else if groups.isEmpty && !conversations.isEmpty {
+        } else if groups.isEmpty && !visible.isEmpty {
+            let conversations = conversations(in: visible).sorted { $0.sentAt > $1.sentAt }
             groups.append(Section(title: "Recent conversations", messages: conversations, mailbox: nil))
         }
         sections = groups
