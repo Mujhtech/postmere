@@ -34,7 +34,6 @@ struct ReaderView: View {
     private enum ReaderSheet: Identifiable {
         case attachment(MailAttachment)
         case unsubscribe(MailMessage)
-        case activity(MailMessage)
         case calendar(MailCalendarEventDraft)
         case invitation(MailCalendarInvitation, MailAccount)
         case sender(MailMessage)
@@ -45,7 +44,6 @@ struct ReaderView: View {
             switch self {
             case .attachment(let attachment): "attachment-\(attachment.id)"
             case .unsubscribe(let message): "unsubscribe-\(message.id)"
-            case .activity(let message): "activity-\(message.id)"
             case .calendar(let draft): "calendar-\(draft.id)"
             case .invitation(let invitation, _): "invitation-\(invitation.id)"
             case .sender(let message): "sender-\(message.id)"
@@ -123,7 +121,6 @@ struct ReaderView: View {
         .sheet(item: $presentedSheet) { sheet in
             switch sheet {
             case .attachment(let attachment): AttachmentPreviewSheet(attachment: attachment)
-            case .activity(let message): MessageActivityView(message: message, session: runtime.backend)
             case .share(let message): ShareThreadView(runtime: runtime, message: message)
             case .calendar(let draft): CalendarEventDraftView(draft: draft)
             case .invitation(let invitation, let account):
@@ -414,10 +411,9 @@ struct ReaderView: View {
                         .help("Review unsubscribe options for this mailing list")
                 }
                 if showsActivity {
-                    Button { presentedSheet = .activity(message) } label: {
-                        PostmereLabel("Message activity", symbol: "eye", size: 12)
-                    }
-                    .foregroundStyle(palette.accentInk)
+                    MessageActivityButton(message: message, session: runtime.backend)
+                        .foregroundStyle(palette.accentInk)
+                        .id(store.selectedMessageID)
                     if message.trackOpens != true && message.trackLinks != true {
                         Text("Tracking off").foregroundStyle(.secondary)
                     }

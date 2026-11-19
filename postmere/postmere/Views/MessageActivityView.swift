@@ -23,81 +23,123 @@ nonisolated struct BackendActivityEvent: Decodable, Identifiable, Sendable {
     let isProxyOrBot: Bool
 }
 
-struct MessageActivityView: View {
+struct MessageActivityButton: View {
+    let message: MailMessage
+    let session: BackendSession
+    @State private var isPresented = false
+
+    var body: some View {
+        Button { isPresented.toggle() } label: {
+            PostmereLabel("Message activity", symbol: "eye", size: 12)
+        }
+        .onChange(of: message.id) { isPresented = false }
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            MessageActivityView(message: message, session: session)
+                .id(message.id)
+        }
+    }
+}
+
+private struct MessageActivityView: View {
     @Environment(\.postmereAccent) private var palette
     let message: MailMessage
     let session: BackendSession
     @State private var response: BackendActivityResponse?
-    @State private var isLoading = false
+    @State private var isLoading = true
     @State private var error: String?
+    @State private var refreshRevision = 0
+    @State private var contentHeight: CGFloat = 96
 
-    private var activity: BackendActivity? { response?.items.first { $0.outboxId == message.backendOutboxID } }
+    private var isTracked: Bool {
+        message.backendOutboxID != nil && (message.trackOpens == true || message.trackLinks == true)
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            PostmereSheetHeader("Message activity", subtitle: message.displaySubject)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    if message.backendOutboxID == nil || (message.trackOpens != true && message.trackLinks != true) {
-                        ContentUnavailableView {
-                            PostmereLabel.emptyState("Tracking was off", symbol: "eye", size: 32)
-                        } description: {
-                            Text("Enable tracking from the Send menu before sending a message from a workspace account.")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Message activity").font(.headline).accessibilityAddTraits(.isHeader)
+                    Spacer()
+                    if isTracked {
+                        if isLoading {
+                            ProgressView().controlSize(.small).accessibilityLabel("Loading activity")
+                        } else if error == nil {
+                            Button { refreshRevision += 1 } label: { PostmereIcon("arrow.clockwise", size: 14) }
+                                .buttonStyle(.borderless)
+                                .help("Refresh activity")
+                                .accessibilityLabel("Refresh activity")
                         }
-                    } else if let activity {
-                        HStack(spacing: 28) {
-                            metric("Opens", value: activity.opens, enabled: message.trackOpens == true)
-                            metric("Link clicks", value: activity.clicks, enabled: message.trackLinks == true)
-                            Spacer()
-                            Button { Task { await refresh() } } label: { PostmereIcon("arrow.clockwise", size: 15) }
-                                .disabled(isLoading).help("Refresh activity").accessibilityLabel("Refresh activity")
-                        }
-                        if let first = activity.firstOpenAt {
-                            LabeledContent("First open", value: first.formatted(date: .abbreviated, time: .shortened))
-                        }
-                        if let latest = activity.lastOpenAt {
-                            LabeledContent("Latest open", value: latest.formatted(date: .abbreviated, time: .shortened))
-                        }
-                        Divider()
-                        if activity.events.isEmpty {
-                            Text("No activity recorded yet.").foregroundStyle(.secondary)
-                        }
-                        ForEach(activity.events.sorted { $0.occurredAt > $1.occurredAt }) { event in
-                            HStack(alignment: .top, spacing: 12) {
-                                PostmereIcon(deviceIcon(event), size: 18).foregroundStyle(PostmereTheme.icon).frame(width: 22)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(event.recipient ?? "Recipient not identified").font(.system(size: 13, weight: .medium))
-                                    Text("\(event.kind == "click" ? "Link requested" : "Image requested") · \(event.device)")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                    if event.isProxyOrBot {
-                                        Text("May be a privacy proxy or automated request").font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
-                                Spacer()
-                                Text(event.occurredAt, format: .dateTime.month(.abbreviated).day().hour().minute())
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        Text(response?.attributionNotice ?? "Image and link requests are signals, not proof that a person read your message.")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    } else if isLoading { ProgressView("Loading activity…").frame(maxWidth: .infinity) }
-                    else if error == nil { Text("No activity recorded yet.").foregroundStyle(.secondary) }
-                    if let error {
-                        Text(error).font(.caption).foregroundStyle(.red)
-                        Button("Try Again") { Task { await refresh() } }
                     }
-                }.padding(24)
+                }
+                if !isTracked {
+                    Text("Tracking was off for this message. You can enable it in the Send menu before sending.")
+                        .foregroundStyle(.secondary)
+                } else if let activity = response?.items.first(where: { $0.outboxId == message.backendOutboxID }) {
+                    HStack(spacing: 32) {
+                        metric("Opens", value: activity.opens, enabled: message.trackOpens == true)
+                        metric("Link clicks", value: activity.clicks, enabled: message.trackLinks == true)
+                    }
+                    if let first = activity.firstOpenAt {
+                        LabeledContent("First open", value: first.formatted(date: .abbreviated, time: .shortened))
+                    }
+                    if let latest = activity.lastOpenAt {
+                        LabeledContent("Latest open", value: latest.formatted(date: .abbreviated, time: .shortened))
+                    }
+                    Divider()
+                    if activity.events.isEmpty {
+                        Text("No activity recorded yet.").foregroundStyle(.secondary)
+                    }
+                    ForEach(activity.events.sorted { $0.occurredAt > $1.occurredAt }) { event in
+                        eventRow(event)
+                    }
+                    if let notice = response?.attributionNotice, !notice.isEmpty {
+                        Text(notice).font(.caption).foregroundStyle(.secondary)
+                    }
+                } else if error == nil {
+                    Text(isLoading ? "Loading activity…" : "No activity recorded yet.")
+                        .foregroundStyle(.secondary)
+                }
+                if let error {
+                    Text(error).foregroundStyle(.secondary)
+                    Button("Try Again") { refreshRevision += 1 }
+                }
             }
-        }.frame(width: 570, height: 540)
-            .task { await refresh() }
+            .font(.callout)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { contentHeight = $0 }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(width: 360, height: min(contentHeight, 396))
+        .task(id: refreshRevision) { await refresh() }
     }
 
     private func metric(_ title: String, value: Int, enabled: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(enabled ? value.formatted() : "Off").font(.system(size: 30, weight: .medium, design: .serif)).foregroundStyle(palette.accentInk)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(enabled ? value.formatted() : "Off")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(palette.accentInk)
             Text(title).font(.caption).foregroundStyle(.secondary)
         }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func eventRow(_ event: BackendActivityEvent) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            PostmereIcon(deviceIcon(event), size: 14).foregroundStyle(PostmereTheme.icon)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(event.recipient ?? "Recipient not identified").fontWeight(.medium)
+                Text("\(event.kind == "click" ? "Link requested" : "Image requested") · \(event.device)")
+                    .font(.caption).foregroundStyle(.secondary)
+                if event.isProxyOrBot {
+                    Text("May be a privacy proxy or automated request").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 6)
+            Text(event.occurredAt, format: .dateTime.month(.abbreviated).day().hour().minute())
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private func deviceIcon(_ event: BackendActivityEvent) -> String {
@@ -106,12 +148,19 @@ struct MessageActivityView: View {
     }
 
     private func refresh() async {
-        guard let id = message.backendOutboxID, message.trackOpens == true || message.trackLinks == true else { return }
-        guard message.mailAccount.remote?.scope == session.scope else { error = BackendError.notConnected.localizedDescription; return }
+        guard isTracked, let id = message.backendOutboxID else { return }
         isLoading = true
         error = nil
         defer { isLoading = false }
-        do { response = try await session.request("GET", "/v1/mail/activity", query: [URLQueryItem(name: "message_id", value: id.uuidString)]) }
-        catch { self.error = error.localizedDescription }
+        let scope = message.mailAccount.remote?.scope
+        guard let scope, scope == session.scope else { error = BackendError.notConnected.localizedDescription; return }
+        do {
+            let result: BackendActivityResponse = try await session.request("GET", "/v1/mail/activity", query: [URLQueryItem(name: "message_id", value: id.uuidString)])
+            try Task.checkCancellation()
+            guard scope == session.scope else { throw BackendError.notConnected }
+            response = result
+        } catch {
+            if !Task.isCancelled { self.error = error.localizedDescription }
+        }
     }
 }
