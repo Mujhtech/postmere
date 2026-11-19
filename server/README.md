@@ -344,7 +344,7 @@ and [Microsoft RSVP](https://learn.microsoft.com/en-us/graph/api/event-accept?vi
 ## Optional AI assistance
 
 Set `OPENAI_API_KEY` on the server and choose a supported Responses API model
-with `POSTMERE_AI_MODEL` (the compatibility default is `gpt-4.1-mini`). Each
+with `POSTMERE_AI_MODEL` (the compatibility default is `gpt-6-luna`). Each
 user separately enables assistance through `GET/PUT /v1/ai/settings`. The
 settings response includes availability, provider/model, a data notice, and an
 editable style guide. No API key is stored in the desktop application.

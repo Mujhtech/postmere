@@ -105,7 +105,7 @@ impl Config {
             microsoft_client_secret,
             microsoft_tenant,
             ai_api_key: optional("OPENAI_API_KEY"),
-            ai_model: env::var("POSTMERE_AI_MODEL").unwrap_or_else(|_| "gpt-4.1-mini".into()),
+            ai_model: env::var("POSTMERE_AI_MODEL").unwrap_or_else(|_| "gpt-6-luna".into()),
         })
     }
 }
