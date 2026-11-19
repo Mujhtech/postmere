@@ -31,7 +31,7 @@ struct InboxSplit: Codable, Equatable, Identifiable {
     }
 }
 
-struct VIPContact: Codable, Equatable, Identifiable {
+nonisolated struct VIPContact: Codable, Equatable, Identifiable {
     enum Kind: String, Codable { case person, domain }
     var id = UUID()
     var value: String

@@ -1,6 +1,6 @@
 import Foundation
 
-struct MailSearchToken: Identifiable, Equatable {
+nonisolated struct MailSearchToken: Identifiable, Equatable, Sendable {
     enum Kind: String { case term, or, and, negation, groupStart, groupEnd }
     var id: String { "\(sourceRange.lowerBound):\(sourceRange.upperBound)" }
     let rawText: String
@@ -12,14 +12,15 @@ struct MailSearchToken: Identifiable, Equatable {
     let sourceRange: Range<Int>
 }
 
-struct MailSearchIssue: Identifiable, Equatable {
+nonisolated struct MailSearchIssue: Identifiable, Equatable {
     var id: String { "\(sourceRange.lowerBound):\(sourceRange.upperBound):\(message)" }
     let message: String
     let sourceRange: Range<Int>
 }
 
-struct MailSearchContext {
+nonisolated struct MailSearchContext {
     var vipContacts: [VIPContact] = []
+    var referenceDate: Date?
 
     func matchingVIPs(for message: MailMessage) -> [VIPContact] {
         vipContacts.filter { $0.matches(message) }
@@ -29,7 +30,7 @@ struct MailSearchContext {
 /// A local, deterministic query language shared by search, saved views and inbox splits.
 /// Spaces mean AND; OR has lower precedence. before excludes the given local day;
 /// after includes its start. No query is sent to a provider by this type.
-struct MailSearchQuery {
+nonisolated struct MailSearchQuery: Sendable {
     let source: String
     let defaultField: MailSearchField
     let tokens: [MailSearchToken]
@@ -37,6 +38,10 @@ struct MailSearchQuery {
     private let expression: MailSearchExpression?
 
     var isValid: Bool { issues.isEmpty }
+    var dependsOnReadState: Bool {
+        tokens.contains { $0.field == "is" && ["read", "unread"].contains($0.value.lowercased()) }
+    }
+    var requiredFilterTokens: [MailSearchToken] { isValid ? expression?.requiredFilterTokens ?? [] : [] }
 
     init(source: String, defaultField: MailSearchField = .all, calendar: Calendar = .current) {
         self.source = source
@@ -66,6 +71,36 @@ struct MailSearchQuery {
         return String(characters)
     }
 
+    /// A quick filter applies to the entire query, including every branch of an OR.
+    func addingRequiredFilter(_ condition: String) -> String {
+        guard isValid else { return source }
+        let base = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.isEmpty { return condition }
+        var depth = 0
+        for token in tokens {
+            switch token.kind {
+            case .groupStart: depth += 1
+            case .groupEnd: depth -= 1
+            case .or where depth == 0: return "(\(base)) \(condition)"
+            default: break
+            }
+        }
+        return "\(base) \(condition)"
+    }
+
+    func removingRequiredFilter(_ token: MailSearchToken) -> String {
+        guard requiredFilterTokens.contains(token) else { return source }
+        // Preserve spelling and whitespace in the user's other conditions when a
+        // simple removal is valid. Explicit conjunctions/groups can need repair.
+        let remainder = replacingToken(id: token.id, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return MailSearchQuery(source: remainder).isValid ? remainder : removingToken(id: token.id)
+    }
+
+    static func senderCondition(_ value: String) -> String {
+        let escaped = value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        return "from:\"\(escaped)\""
+    }
+
     func removingToken(id: String) -> String {
         if isValid, let expression, tokens.contains(where: { $0.id == id && $0.kind == .term }) {
             return expression.removingToken(id)?.queryText ?? ""
@@ -73,15 +108,15 @@ struct MailSearchQuery {
         return replacingToken(id: id, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static let syntaxHelp = "Combine terms with spaces (AND), OR, parentheses, or a leading minus to exclude. Use from:, to:, subject:, before:YYYY-MM-DD, after:YYYY-MM-DD, has:attachment, is:unread, is:starred, filetype:pdf, or quoted phrases. Dates use your Mac’s time zone; after includes that day and before excludes it. Search covers downloaded mail only."
+    static let syntaxHelp = "Combine terms with spaces (AND), OR, parentheses, or a leading minus to exclude. Use from:, to:, subject:, date:this-week, before:YYYY-MM-DD, after:YYYY-MM-DD, has:attachment, is:unread, is:starred, filetype:pdf, or quoted phrases. Dates use your Mac’s time zone; after includes that day and before excludes it. Search covers downloaded mail only."
 }
 
-private struct MailSearchLexeme {
+private nonisolated struct MailSearchLexeme {
     let token: MailSearchToken
     let malformed: Bool
 }
 
-private struct MailSearchLexer {
+private nonisolated struct MailSearchLexer {
     let source: String
     var issues: [MailSearchIssue] = []
 
@@ -163,7 +198,7 @@ private struct MailSearchLexer {
     }
 }
 
-private struct MailSearchParser {
+private nonisolated struct MailSearchParser {
     let lexemes: [MailSearchLexeme]
     let calendar: Calendar
     var issues: [MailSearchIssue] = []
@@ -254,13 +289,17 @@ private struct MailSearchParser {
             issue(token.field.map { "Add a value after \($0):." } ?? "Add text inside this search term.", at: token)
             return nil
         }
-        let supported = ["from", "to", "cc", "bcc", "subject", "body", "before", "after", "has", "is", "filetype", "filename", "domain", "account", "category"]
+        let supported = ["from", "to", "cc", "bcc", "subject", "body", "before", "after", "date", "has", "is", "filetype", "filename", "domain", "account", "category"]
         if let field = token.field, !supported.contains(field) {
             issue("Unknown operator “\(field):”. Use from:, to:, subject:, before:, after:, has:, is:, filetype:, filename:, domain:, account:, or category:. Quote literal text containing a colon.", at: token)
             return nil
         }
         var date: Date?
         let value = token.value.lowercased()
+        if token.field == "date" && value != "this-week" {
+            issue("Use date:this-week, or use after: and before: for a specific date range.", at: token)
+            return nil
+        }
         if token.field == "before" || token.field == "after" {
             date = parseDate(token.value)
             if date == nil {
@@ -280,7 +319,7 @@ private struct MailSearchParser {
             issue("Use a file extension such as filetype:pdf or a MIME type such as filetype:image/*.", at: token)
             return nil
         }
-        let term = MailSearchTerm(token: token, date: date)
+        let term = MailSearchTerm(token: token, date: date, calendar: calendar)
         return token.isExcluded ? .not(.term(term)) : .term(term)
     }
 
@@ -306,8 +345,16 @@ private struct MailSearchParser {
     }
 }
 
-private indirect enum MailSearchExpression {
+private nonisolated indirect enum MailSearchExpression: Sendable {
     case term(MailSearchTerm), and([MailSearchExpression]), or([MailSearchExpression]), not(MailSearchExpression)
+
+    var requiredFilterTokens: [MailSearchToken] {
+        switch self {
+        case .term(let term): [term.token]
+        case .and(let children): children.flatMap(\.requiredFilterTokens)
+        case .or, .not: []
+        }
+    }
 
     func removingToken(_ id: String) -> MailSearchExpression? {
         switch self {
@@ -353,9 +400,10 @@ private indirect enum MailSearchExpression {
     }
 }
 
-private struct MailSearchTerm {
+private nonisolated struct MailSearchTerm: Sendable {
     let token: MailSearchToken
     let date: Date?
+    let calendar: Calendar
 
     func matches(_ message: MailMessage, defaultField: MailSearchField, context: MailSearchContext) -> Bool {
         let value = token.value
@@ -373,6 +421,9 @@ private struct MailSearchTerm {
         case "account": return contains(value, in: [message.account, message.providerAccountEmail ?? ""])
         case "before": return date.map { message.sentAt < $0 } ?? false
         case "after": return date.map { message.sentAt >= $0 } ?? false
+        case "date":
+            let week = calendar.dateInterval(of: .weekOfYear, for: context.referenceDate ?? .now)
+            return week.map { message.sentAt >= $0.start && message.sentAt < $0.end } ?? false
         case "has": return lower == "unsubscribe" ? message.unsubscribeHeaders?.listUnsubscribe.isEmpty == false : !message.attachments.isEmpty
         case "is":
             switch lower {

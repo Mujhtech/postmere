@@ -3,14 +3,13 @@ import SwiftUI
 struct MailListView: View {
     @Bindable var store: MailStore
     @Environment(MailRuntime.self) private var runtime
-    @FocusState private var isSearchFocused: Bool
+    var listFocusRequest = 0
     @FocusState private var isListFocused: Bool
     @State private var showsViewEditor = false
     @State private var scheduleTarget: MailMessage?
     @State private var schedulePurpose: MailSchedulePurpose = .snooze
     @State private var noteTarget: MailMessage?
     @State private var showsInboxManager = false
-    @State private var showsSearchHelp = false
     @State private var showsProviderSearch = false
 
     private var selection: Binding<Set<UUID>> {
@@ -21,7 +20,7 @@ struct MailListView: View {
 
     private var query: String { store.searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var hasMessageFilters: Bool { store.unreadOnly || store.attachmentsOnly }
-    private var searchesAllMailboxes: Bool { !query.isEmpty && store.searchScope == .allMailboxes }
+    private var searchesAllMailboxes: Bool { store.searchesAllMailboxes }
     private var mailboxTitle: String {
         if let view = store.selectedSavedView { return view.name }
         if store.selectedMailbox == .inbox,
@@ -39,40 +38,48 @@ struct MailListView: View {
 
     var body: some View {
         let visible = store.filteredMessages
-        let counts = store.conversationCounts(for: visible)
-        let grouped = Dictionary(grouping: visible, by: \.dateLabel)
-        var seen = Set<String>()
-        let dates = visible.compactMap { seen.insert($0.dateLabel).inserted ? $0.dateLabel : nil }
+        let counts = visible.isEmpty ? [:] : store.conversationCounts(for: visible)
         VStack(spacing: 0) {
-            searchControls
-            if store.selectedMailbox == .inbox && store.selectedSavedView == nil && !searchesAllMailboxes {
+            if store.isSearchActive {
+                MailSearchRefinements(store: store, canSearchOnline: runtime.backend.isConnected,
+                                      onSaveView: { showsViewEditor = true },
+                                      onSearchOnline: { showsProviderSearch = true })
+                Divider()
+            } else if store.selectedMailbox == .inbox && store.selectedSavedView == nil {
                 InboxTabsView(store: store) { showsInboxManager = true }
+                    .padding(.top, 12)
+                Divider()
             }
-            filterControls(count: visible.count)
-            Divider()
             if store.selectedMessageIDs.count > 1 {
                 bulkControls
                 Divider()
             }
 
-            if visible.isEmpty {
+            if store.isSearchActive && !store.hasSearchCriteria {
+                Text("Enter a search or choose a filter.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
+                Spacer()
+            } else if store.isSearchingMessages && visible.isEmpty {
+                ProgressView("Searching mail…")
+                    .controlSize(.small)
+                    .font(.callout)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if visible.isEmpty {
                 emptyState
             } else {
                 List(selection: selection) {
-                    ForEach(dates, id: \.self) { group in
-                        Section(group) {
-                            ForEach(grouped[group] ?? []) { message in
-                                MailRow(message: message, conversationCount: counts[message.id] ?? 1, showsLocation: searchesAllMailboxes, outgoingItem: store.outgoingQueue.first { $0.id == message.id }, isSelected: store.selectedMessageIDs.contains(message.id))
-                                    .tag(message.id)
-                                    .listRowInsets(EdgeInsets(top: 11, leading: 10, bottom: 11, trailing: 10))
-                                    .contextMenu {
-                                        if store.selectedMessageIDs.contains(message.id) && store.selectedMessageIDs.count > 1 {
-                                            bulkActions
-                                        } else {
-                                            messageActions(message)
-                                        }
-                                    }
-                            }
+                    if store.isSearchActive {
+                        messageRows(visible, counts: counts)
+                    } else {
+                        let grouped = Dictionary(grouping: visible, by: \.dateLabel)
+                        var seen = Set<String>()
+                        let dates = visible.compactMap { seen.insert($0.dateLabel).inserted ? $0.dateLabel : nil }
+                        ForEach(dates, id: \.self) { date in
+                            Section(date) { messageRows(grouped[date] ?? [], counts: counts) }
                         }
                     }
                 }
@@ -107,8 +114,17 @@ struct MailListView: View {
             if !Task.isCancelled { showsAction = false }
         }
         .defaultFocus($isListFocused, true)
-        .navigationTitle(searchesAllMailboxes ? store.selectedAccount.map { "\(MailAccount.scopeLabel(for: $0)) Search" } ?? "Search Results" : mailboxTitle)
-        .sheet(isPresented: $showsViewEditor) { SavedInboxViewEditor(store: store, editing: store.selectedSavedView) }
+        .navigationTitle(store.isSearchActive ? "Search" : mailboxTitle)
+        .navigationSubtitle(subtitle(count: visible.count))
+        .toolbar {
+            if !store.isSearchActive {
+                ToolbarItem(placement: .automatic) {
+                    filterMenu
+                }
+            }
+        }
+        .onChange(of: listFocusRequest) { isListFocused = true }
+        .sheet(isPresented: $showsViewEditor) { SavedInboxViewEditor(store: store, editing: store.isSearchActive ? nil : store.selectedSavedView) }
         .sheet(isPresented: $showsInboxManager) { InboxManagementView(store: store) }
         .sheet(isPresented: $showsProviderSearch) { ProviderSearchView(runtime: runtime) }
         .sheet(item: $scheduleTarget) { message in
@@ -118,127 +134,62 @@ struct MailListView: View {
             }
         }
         .sheet(item: $noteTarget) { message in PrivateNoteSheet(store: store, message: message) }
-        .background {
-            Button("") { isSearchFocused = true }
-                .keyboardShortcut("f")
-                .hidden()
+    }
+
+    private func messageRows(_ messages: [MailMessage], counts: [UUID: Int]) -> some View {
+        ForEach(messages) { message in
+            MailRow(message: message, conversationCount: counts[message.id] ?? 1,
+                    location: resultLocation(for: message), showsSearchDate: store.isSearchActive,
+                    outgoingItem: store.outgoingQueue.first { $0.id == message.id },
+                    isSelected: store.selectedMessageIDs.contains(message.id))
+                .tag(message.id)
+                .listRowInsets(EdgeInsets(top: 11, leading: 10, bottom: 11, trailing: 10))
+                .contextMenu {
+                    if store.selectedMessageIDs.contains(message.id) && store.selectedMessageIDs.count > 1 {
+                        bulkActions
+                    } else {
+                        messageActions(message)
+                    }
+                }
         }
     }
 
-    private var searchControls: some View {
-        VStack(spacing: 9) {
-            HStack(spacing: 8) {
-                PostmereIcon("magnifyingglass", size: 12)
-                    .foregroundStyle(PostmereTheme.icon)
-                    .accessibilityHidden(true)
-                TextField("Search messages", text: $store.searchText)
-                    .textFieldStyle(.plain)
-                    .focused($isSearchFocused)
-                    .accessibilityLabel("Search messages")
-                    .help("Search \(searchLocation) · ⌘F")
-                    .onExitCommand {
-                        if store.searchText.isEmpty {
-                            isSearchFocused = false
-                            isListFocused = !store.filteredMessages.isEmpty
-                        } else { store.searchText = "" }
-                    }
-                if !store.searchText.isEmpty {
-                    Button { store.searchText = "" } label: {
-                        PostmereIcon("xmark.circle.fill", size: 12).foregroundStyle(PostmereTheme.icon)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Clear search")
-                    .accessibilityLabel("Clear search")
-                }
-            }
-            .font(.system(size: 12))
-            .padding(.horizontal, 9)
-            .frame(height: 29)
-            .background(PostmereTheme.subtleFill, in: RoundedRectangle(cornerRadius: 6))
-
-            if isSearchFocused || !query.isEmpty {
-                HStack(spacing: 8) {
-                    Picker("Search scope", selection: $store.searchScope) {
-                        Text("This Mailbox").tag(MailSearchScope.currentMailbox)
-                        Text("All Mailboxes").tag(MailSearchScope.allMailboxes)
-                    }
-                    .help(store.selectedAccount.map { "Search within your \(MailAccount.scopeLabel(for: $0)) account" } ?? "Search across all accounts")
-                    Spacer(minLength: 0)
-                    Picker("Search field", selection: $store.searchField) {
-                        ForEach(MailSearchField.allCases) { field in
-                            Text(field.title).tag(field)
-                        }
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .controlSize(.small)
-                .font(.system(size: 11))
-                HStack {
-                    Text("Searching local mail").font(.system(size: 10)).foregroundStyle(.secondary)
-                    Spacer()
-                    if runtime.backend.isConnected {
-                        Button("Search online…") { showsProviderSearch = true }.buttonStyle(.plain)
-                            .font(.system(size: 10)).foregroundStyle(PostmereTheme.accentInk)
-                    }
-                    Button("Search tips") { showsSearchHelp = true }.buttonStyle(.plain)
-                        .font(.system(size: 10)).foregroundStyle(PostmereTheme.accentInk)
-                        .popover(isPresented: $showsSearchHelp) {
-                            MailSearchHelp { store.searchText = $0 }
-                        }
-                }
-                if !query.isEmpty { MailSearchTokenControls(store: store) }
-            }
+    private func resultLocation(for message: MailMessage) -> String? {
+        guard searchesAllMailboxes else { return nil }
+        if store.selectedAccount == nil && MailAccount.allCases.count > 1 {
+            return "\(message.accountLabel) · \(message.mailbox.title)"
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 12)
+        return message.mailbox == store.selectedMailbox ? nil : message.mailbox.title
     }
 
-    private func filterControls(count: Int) -> some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                Text(count == 1 ? "1 message" : "\(count) messages")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 4)
-                Menu {
-                    Toggle("Unread only", isOn: $store.unreadOnly)
-                    Toggle("With attachments", isOn: $store.attachmentsOnly)
-                    if hasMessageFilters {
-                        Divider()
-                        Button("Clear Filters", action: clearMessageFilters)
-                    }
-                    Divider()
-                    Button(store.selectedSavedView == nil ? "Save Inbox View…" : "Edit Saved View…") { showsViewEditor = true }
-                    Button("Manage Inbox Tabs and VIPs…") { showsInboxManager = true }
-                } label: {
-                    PostmereLabel("Filter", symbol: hasMessageFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle", size: 12)
-                        .foregroundStyle(hasMessageFilters ? AnyShapeStyle(PostmereTheme.accentInk) : AnyShapeStyle(PostmereTheme.icon))
-                }
-                .menuStyle(.borderlessButton)
-                .tint(hasMessageFilters ? PostmereTheme.accentInk : PostmereTheme.icon)
-                .fixedSize()
-                .font(.system(size: 11))
-                .help(hasMessageFilters ? "Filtering: \(activeFilterNames)" : "Filter messages")
-                .accessibilityLabel("Filter messages")
-                .accessibilityValue(hasMessageFilters ? activeFilterNames : "No filters")
-            }
+    private func subtitle(count: Int) -> String {
+        if store.isSearchActive {
+            return store.hasSearchCriteria && !store.isSearchingMessages ? "\(count.formatted()) found" : ""
+        }
+        return count == 1 ? "1 message" : "\(count.formatted()) messages"
+    }
+
+    private var filterMenu: some View {
+        Menu {
+            Toggle("Unread only", isOn: $store.unreadOnly)
+            Toggle("With attachments", isOn: $store.attachmentsOnly)
             if hasMessageFilters {
-                HStack(spacing: 8) {
-                    Text(activeFilterNames)
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 4)
-                    Button("Clear", action: clearMessageFilters)
-                        .buttonStyle(.plain)
-                        .foregroundStyle(PostmereTheme.accentInk)
-                        .accessibilityLabel("Clear message filters")
-                }
-                .font(.system(size: 11))
+                Divider()
+                Button("Clear Filters", action: clearMessageFilters)
             }
+            Divider()
+            Button(store.selectedSavedView == nil ? "Save Inbox View…" : "Edit Saved View…") { showsViewEditor = true }
+            Button("Manage Inbox Tabs and VIPs…") { showsInboxManager = true }
+        } label: {
+            PostmereLabel("Filter messages", symbol: hasMessageFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle", size: 16)
+                .labelStyle(.iconOnly)
+                .foregroundStyle(hasMessageFilters ? PostmereTheme.accentInk : PostmereTheme.icon)
         }
-        .padding(.horizontal, 17)
-        .padding(.bottom, 12)
+        .menuIndicator(.hidden)
+        .tint(hasMessageFilters ? PostmereTheme.accentInk : PostmereTheme.icon)
+        .help(hasMessageFilters ? "Filtering: \(activeFilterNames)" : "Filter messages")
+        .accessibilityLabel("Filter messages")
+        .accessibilityValue(hasMessageFilters ? activeFilterNames : "No filters")
     }
 
     private var emptyState: some View {
@@ -252,7 +203,7 @@ struct MailListView: View {
                     if store.searchScope == .currentMailbox {
                         Button("Search All Mailboxes") { store.searchScope = .allMailboxes }
                     }
-                    Button(hasMessageFilters ? "Clear Search and Filters" : "Clear Search") { store.clearFilters() }
+                    Button("Clear Search") { store.updateSearchText("") }
                 } else if hasMessageFilters {
                     Button("Show All Messages", action: clearMessageFilters)
                 } else if !MailAccount.allCases.isEmpty && MailAccount.sendingAccounts.isEmpty {
@@ -413,8 +364,12 @@ struct MailListView: View {
     }
 
     private func handleListKey(_ press: KeyPress) -> KeyPress.Result {
-        guard isListFocused && !isSearchFocused,
+        guard isListFocused,
               press.modifiers.isEmpty || (press.characters == "#" && press.modifiers == .shift) else { return .ignored }
+        if press.key == .escape, store.isSearchActive {
+            store.endSearch()
+            return .handled
+        }
         switch press.characters.lowercased() {
         case "j": store.selectAdjacent(1)
         case "k": store.selectAdjacent(-1)
@@ -437,7 +392,8 @@ struct MailListView: View {
 private struct MailRow: View {
     let message: MailMessage
     let conversationCount: Int
-    var showsLocation = false
+    var location: String?
+    var showsSearchDate = false
     var outgoingItem: OutgoingMailItem?
     var isSelected = false
     @AppStorage("showMessagePreviews") private var showMessagePreviews = true
@@ -486,7 +442,8 @@ private struct MailRow: View {
                             .accessibilityLabel("\(conversationCount) messages in conversation")
                     }
                     Spacer(minLength: 8)
-                    Text(message.timeLabel)
+                    Text(showsSearchDate && !Calendar.current.isDateInToday(message.sentAt)
+                         ? message.sentAt.formatted(.dateTime.month(.abbreviated).day().year(.twoDigits)) : message.timeLabel)
                         .font(.system(size: 11))
                         .foregroundStyle(secondaryForeground)
                         .fixedSize()
@@ -506,8 +463,8 @@ private struct MailRow: View {
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if showsLocation {
-                    Text("\(message.accountLabel) · \(message.mailbox.title)")
+                if let location {
+                    Text(location)
                         .font(.system(size: 11))
                         .foregroundStyle(secondaryForeground)
                         .lineLimit(1)

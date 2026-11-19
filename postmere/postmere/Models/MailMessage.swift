@@ -93,7 +93,7 @@ enum MailSearchField: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-enum Mailbox: String, Codable, CaseIterable, Identifiable {
+nonisolated enum Mailbox: String, Codable, CaseIterable, Identifiable {
     case inbox, starred, sent, drafts, archive, trash
     case needsReply, snoozed, followUps, newSenders, outbox
 
@@ -284,7 +284,7 @@ struct MailMessage: Codable, Identifiable {
         subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(No subject)" : subject
     }
 
-    var isDraft: Bool { mailbox == .drafts || (mailbox == .trash && trashedFrom == .drafts) }
+    nonisolated var isDraft: Bool { mailbox == .drafts || (mailbox == .trash && trashedFrom == .drafts) }
 
     var receivedHTML: String? {
         guard !isDraft, mailbox != .outbox, let bodyHTML,

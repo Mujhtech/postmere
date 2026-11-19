@@ -66,7 +66,11 @@ struct ProviderSearchView: View {
                     .disabled(busy || query.trimmingCharacters(in: .whitespacesAndNewlines) != searchedQuery).padding(14)
             }
         }.frame(width: 620, height: 610).tint(PostmereTheme.accent)
-            .onAppear { accountID = runtime.store.selectedAccount.flatMap { MailAccount(rawValue: $0) }?.remote?.accountID ?? runtime.backend.accounts.first?.id }
+            .onAppear {
+                query = runtime.store.searchText
+                accountID = runtime.store.selectedAccount.flatMap { MailAccount(rawValue: $0) }?.remote?.accountID
+                    ?? runtime.backend.accounts.first?.id
+            }
             .onChange(of: accountID) { messages = []; cursor = nil; hasMore = false; searchedQuery = ""; didSearch = false }
     }
 

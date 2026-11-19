@@ -12,6 +12,10 @@ enum PostmereTheme {
     static let secondary = Color.secondary
     static let icon = Color.secondary
     static let subtleFill = adaptive(light: 0xF1F0EB, dark: 0x282C29)
+    // Native selection can brighten label text. Keep each monogram on its own
+    // opaque surface so it stays readable in a selected row and the reader.
+    static let avatarFill = adaptive(light: 0x53605A, dark: 0x47574F)
+    static let avatarInk = adaptive(light: 0xFFFFFF, dark: 0xF3F6F4)
     static let rule = adaptive(light: 0xDEDFD8, dark: 0x3B403C)
     static let sheetTitle = Font.system(size: 17, weight: .semibold)
     static let utilitySymbol = Font.system(size: 13, weight: .regular)

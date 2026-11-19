@@ -4,6 +4,8 @@ extension MailStore {
     var selectedMessages: [MailMessage] { filteredMessages.filter { selectedMessageIDs.contains($0.id) } }
 
     func setSelection(_ ids: Set<UUID>) {
+        guard !isSearchingMessages else { return }
+        guard !ids.isEmpty else { selectedMessageID = nil; return }
         let visible = filteredMessages
         let added = ids.subtracting(selectedMessageIDs)
         selectedMessageIDs = ids.intersection(Set(visible.map(\.id)))

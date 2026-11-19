@@ -7,20 +7,11 @@ extension MailStore {
     }
 
     func conversationKey(for message: MailMessage) -> String {
-        "\(message.account)|\(message.providerAccountEmail?.lowercased() ?? "")|\(message.conversationID.uuidString)"
+        message.searchConversationKey
     }
 
     func deduplicatedConversations(_ candidates: [MailMessage]) -> [MailMessage] {
-        var representatives: [String: MailMessage] = [:]
-        for message in candidates {
-            let key = conversationKey(for: message)
-            if let current = representatives[key] {
-                if current.id == selectedMessageID { continue }
-                if message.id != selectedMessageID && message.sentAt <= current.sentAt { continue }
-            }
-            representatives[key] = message
-        }
-        return candidates.filter { representatives[conversationKey(for: $0)]?.id == $0.id }
+        MailSearchRequest.representatives(candidates, preferred: selectedMessageID)
     }
 
     func matchesActiveProviderAccount(_ message: MailMessage) -> Bool {
@@ -36,31 +27,13 @@ extension MailStore {
 
     func matchesMailbox(_ message: MailMessage, mailbox: Mailbox, now: Date = .now) -> Bool {
         guard isAccountVisible(message) else { return false }
-        let available = !message.isDraft && message.mailbox != .trash && message.mailbox != .outbox
-        switch mailbox {
-        case .starred: return message.isStarred && message.mailbox != .trash
-        case .needsReply: return available && message.workflow.needsReply && message.workflow.screeningState == .accepted && message.workflow.snoozedUntil == nil
-        case .snoozed: return available && message.workflow.snoozedUntil != nil
-        case .followUps: return available && message.workflow.followUpAt != nil
-        case .newSenders: return available && message.workflow.screeningState == .pending
-        case .inbox:
-            return message.mailbox == .inbox && message.workflow.screeningState == .accepted && message.workflow.snoozedUntil == nil
-        default: return message.mailbox == mailbox
-        }
+        return message.belongs(to: mailbox)
     }
 
     func matchesSavedView(_ message: MailMessage, criteria: SavedInboxCriteria) -> Bool {
         guard isAccountVisible(message) else { return false }
-        if let mailbox = criteria.mailbox, !matchesMailbox(message, mailbox: mailbox) { return false }
-        if let account = criteria.account, message.account != account { return false }
-        if criteria.unreadOnly && !message.isUnread { return false }
-        if criteria.attachmentsOnly && message.attachments.isEmpty { return false }
-        if criteria.starredOnly && !message.isStarred { return false }
-        if !criteria.sender.isEmpty && !message.senderEmail.localizedStandardContains(criteria.sender)
-            && !message.sender.localizedStandardContains(criteria.sender) { return false }
-        let domain = criteria.domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "@"))
-        if !domain.isEmpty && message.senderEmail.lowercased().split(separator: "@").last.map(String.init) != domain { return false }
-        return parsedQuery(criteria.query, field: criteria.searchField).matches(message, context: searchContext)
+        return MailCriteriaMatcher(criteria: criteria, query: parsedQuery(criteria.query, field: criteria.searchField))
+            .matches(message, context: searchContext)
     }
 
     func selectSavedView(_ view: SavedInboxView) {

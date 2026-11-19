@@ -5,6 +5,7 @@ func runSearchSplitRegressions(directory: URL) throws {
     func check(_ condition: @autoclosure () -> Bool, _ description: String) throws {
         try PostmereBackendRegression.check(condition(), description)
     }
+    try runSearchSessionRegressions()
 
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(identifier: "America/New_York")!
@@ -60,6 +61,34 @@ func runSearchSplitRegressions(directory: URL) throws {
     }
     let lastToken = MailSearchQuery(source: "-from:nobody")
     try check(lastToken.removingToken(id: lastToken.tokens[0].id).isEmpty, "removing the final chip clears search")
+    let either = MailSearchQuery(source: "from:clara OR (subject:review AND is:unread)")
+    try check(either.requiredFilterTokens.isEmpty, "an OR branch never activates a whole-search chip")
+    let refined = MailSearchQuery(source: either.addingRequiredFilter("is:unread"))
+    var read = message
+    read.isUnread = false
+    try check(either.matches(read) && !refined.matches(read) && refined.matches(message),
+              "a quick filter applies to both branches of a typed OR search")
+    let required = refined.requiredFilterTokens
+    try check(required.count == 1 && required[0].rawText == "is:unread", "only the added global unread chip is selected")
+    let restored = MailSearchQuery(source: refined.removingRequiredFilter(required[0]))
+    try check(restored.matches(read) && restored.tokens.contains { $0.rawText == "is:unread" },
+              "removing a quick filter preserves the user's unread condition inside an OR")
+    let negative = MailSearchQuery(source: "NOT (is:unread has:attachment)")
+    try check(negative.requiredFilterTokens.isEmpty, "excluded groups leave positive chips inactive")
+    let named = #"The "OR" (Studio)\Partners"#
+    let quoted = MailSearchQuery(source: MailSearchQuery.senderCondition(named))
+    try check(quoted.isValid && quoted.requiredFilterTokens.count == 1 && quoted.tokens[0].value == named,
+              "sender filters safely preserve quotes, groups and backslashes as literal names")
+    let week = MailSearchQuery(source: "date:this-week", calendar: calendar)
+    let interval = calendar.dateInterval(of: .weekOfYear, for: day)!
+    var dated = message
+    dated.sentAt = interval.start
+    try check(week.matches(dated, context: MailSearchContext(referenceDate: day)), "This week includes the local start of the week")
+    dated.sentAt = interval.end
+    try check(!week.matches(dated, context: MailSearchContext(referenceDate: day))
+              && week.matches(dated, context: MailSearchContext(referenceDate: interval.end)),
+              "This week uses an exclusive end across DST and advances when reused in a saved search")
+    try check(!MailSearchQuery(source: "date:last-century").isValid, "unsupported relative dates are reported")
 
     let exactVIP = VIPContact(value: "CLARA@EXAMPLE.COM", kind: .person, account: "Work")
     try check(exactVIP.matches(message), "VIP people match exact case-insensitive sender addresses and account")
@@ -158,4 +187,113 @@ func runSearchSplitRegressions(directory: URL) throws {
     future.conversationID = UUID()
     futureOnly.mergeIncoming([future])
     try check(futureOnly.messages.first { $0.id == future.id }?.mailbox == .trash, "future-only sender rules apply when later mail arrives")
+}
+
+@MainActor
+private func runSearchSessionRegressions() throws {
+    func check(_ condition: @autoclosure () -> Bool, _ description: String) throws {
+        try PostmereBackendRegression.check(condition(), description)
+    }
+    let older = MailMessage(sender: "One", senderEmail: "one@example.org", initials: "O",
+                            subject: "Budget memo", preview: "", paragraphs: [], timeLabel: "", isUnread: true,
+                            account: "Work", sentAt: Date(timeIntervalSince1970: 100))
+    var latest = older
+    latest.id = UUID()
+    latest.subject = "Budget approvals"
+    latest.mailbox = .archive
+    latest.sentAt = Date(timeIntervalSince1970: 200)
+    var personal = older
+    personal.id = UUID()
+    personal.account = "Personal"
+    let store = MailStore(messages: [older, personal, latest])
+    store.selectedAccount = "Work"
+    store.unreadOnly = true
+    store.selectedMessageID = older.id
+    store.beginSearch()
+    try check(store.isSearchActive && store.searchScope == .allMailboxes && store.filteredMessages.isEmpty
+              && store.selectedMessageID == nil && !store.unreadOnly, "toolbar search starts without selecting a result or inheriting mailbox filters")
+    store.updateSearchText("budget")
+    try check(store.filteredMessages.map(\.id) == [latest.id, older.id] && store.selectedMessageID == nil,
+              "live search spans the active account's mailboxes and orders hits newest first")
+    store.selectAdjacent(1)
+    try check(store.selectedMessageID == latest.id, "keyboard selection follows displayed search order")
+    store.updateSearchText("approvals")
+    try check(store.selectedMessageID == latest.id, "refining a query preserves a result that still matches")
+    store.searchScope = .currentMailbox
+    try check(store.filteredMessages.isEmpty && store.selectedMessageID == nil, "narrowing the scope clears a stale reader")
+    store.updateSearchText("is:unread OR from:nobody")
+    store.setSelection([older.id])
+    try check(store.selectedMessageID == older.id && store.messages.first?.isUnread == true,
+              "opening an unread-dependent search result preserves its membership")
+    store.updateSearchText("")
+    try check(store.isSearchActive && store.selectedMessageID == nil && store.filteredMessages.isEmpty,
+              "clearing the query keeps the search field available and clears its results")
+    store.endSearch()
+    try check(!store.isSearchActive && store.unreadOnly && store.searchScope == .currentMailbox
+              && store.selectedMessageID == older.id && store.selectedAccount == "Work", "cancel restores the browsing scope, filter and selection")
+
+    store.updateSearchText("memo")
+    store.selectMailbox(.archive)
+    store.endSearch()
+    try check(!store.isSearchActive && store.searchText.isEmpty && store.selectedMailbox == .archive && store.selectedMessageID == latest.id,
+              "explicit mailbox navigation leaves search and cannot resurrect its old selection")
+    store.selectedAccount = nil
+    store.beginSearch()
+    store.updateSearchText("budget")
+    store.setSelection([older.id])
+    var revised = store.messages.first { $0.id == older.id }!
+    revised.subject = "Minutes"
+    revised.conversationID = UUID()
+    store.mergeIncoming([revised])
+    try check(store.selectedMessageID == nil && !store.filteredMessages.contains { $0.id == older.id },
+              "a sync that changes the selected result clears its preview")
+    store.endSearch()
+    try check(store.selectedMessageID == latest.id, "leaving search after a sync restores a still-visible message")
+}
+
+@MainActor
+func runBackgroundSearchRegressions() async throws {
+    let messages = (0..<180).map { index in
+        MailMessage(sender: "Sender", senderEmail: "hi@example.org", initials: "S",
+                    subject: index.isMultiple(of: 2) ? "Alpha" : "Beta", preview: "Search fixture",
+                    paragraphs: ["Budget review"], timeLabel: "", isUnread: true,
+                    sentAt: Date(timeIntervalSince1970: Double(index)))
+    }
+    let store = MailStore(messages: messages)
+    store.updateSearchText("Alpha")
+    let obsolete = store.searchTask
+    store.updateSearchText("Beta")
+    try PostmereBackendRegression.check(store.isSearchingMessages && store.filteredMessages.isEmpty,
+                                         "large searches return control before publishing matches")
+    await obsolete?.value
+    await store.searchTask?.value
+    let hits = store.filteredMessages
+    try PostmereBackendRegression.check(!store.isSearchingMessages && hits.count == 90 && hits.allSatisfy { $0.subject == "Beta" }
+                                         && hits.first?.id == messages.last?.id,
+                                         "rapid typing publishes only the latest query in newest-first order")
+    store.setSelection([messages.last!.id])
+    try PostmereBackendRegression.check(store.selectedMessageID == messages.last!.id && store.filteredMessages.first?.isUnread == false
+                                         && !store.isSearchingMessages, "opening a large-search result updates its row without rerunning the query")
+    store.updateSearchText("Alpha")
+    let closing = store.searchTask
+    store.endSearch()
+    await closing?.value
+    try PostmereBackendRegression.check(!store.isSearchActive && !store.isSearchingMessages && store.filteredMessages.count == 180,
+                                         "closing a pending query cannot publish stale results over the mailbox")
+
+    let accounts = RemoteAccountRegistry.accounts
+    defer { RemoteAccountRegistry.accounts = accounts }
+    let identity = RemoteAccountIdentity(localID: "remote:search-fixture", accountID: UUID(), scope: "search-fixture",
+                                         email: "search@example.org", displayName: "Search", provider: "gmail")
+    RemoteAccountRegistry.accounts = [identity]
+    var remote = messages[0]
+    remote.account = identity.localID
+    let accountStore = MailStore(messages: [remote])
+    accountStore.updateSearchText("Alpha")
+    try PostmereBackendRegression.check(accountStore.filteredMessages.count == 1, "the connected account can search its cached row")
+    RemoteAccountRegistry.accounts = []
+    try PostmereBackendRegression.check(accountStore.filteredMessages.isEmpty,
+                                         "revoking the active account hides cached hits immediately")
+    accountStore.endSearch()
+
 }

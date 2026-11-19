@@ -39,6 +39,18 @@ struct MailCommands: Commands {
     private var canActOnConversation: Bool { canActOnMessage && (store?.selectedMessageIDs.count ?? 0) <= 1 && store?.selectedMessage?.mailbox != .outbox }
 
     var body: some Commands {
+        CommandGroup(after: .textEditing) {
+            Button("Search Mail") {
+                if let search = NSApp.keyWindow?.toolbar?.visibleItems?.compactMap({ $0 as? NSSearchToolbarItem }).first {
+                    search.beginSearchInteraction()
+                } else {
+                    if focusedStore == nil { openWindow(id: "mail") }
+                    runtime.shouldFocusMailSearch = true
+                }
+            }
+            .keyboardShortcut("f")
+            .disabled(!canAccessWorkspace || isComposerWindow == true)
+        }
         CommandGroup(replacing: .newItem) {
             Button("New Message") {
                 guard canAccessWorkspace else { return }

@@ -11,7 +11,7 @@ Messages, unfinished drafts, rich text, attachments, snippets, saved views, send
 - **Batch actions:** Command-click or Shift-click messages, then archive, trash, mark read, star, or add them to Needs Reply. Mailbox moves support Undo.
 - **Workflow queues:** Needs Reply, Snoozed, Follow-ups, and New Senders show one task per conversation. Message actions include private notes, custom snooze dates, and follow-up reminders that cancel when a newer reply arrives.
 - **Split Inbox and VIPs:** Reorder or hide focused inbox tabs, customize their filters, and mark people or domains as VIPs. Choose first-match or overlapping tab membership; unread counts and selections persist.
-- **Search and saved views:** Use `from:`, `to:`, `subject:`, `before:`, `after:`, `has:attachment`, `is:unread`, `is:starred`, quoted phrases, and exclusions. Save the same criteria as a view or inbox tab. Provider-wide search supports pagination beyond the local cache.
+- **Search and saved views.** Press ⌘F to search mail in the toolbar. Narrow results by sender, attachments, unread status, or the current week. Return opens the first result. Escape returns to the previous mailbox selection. Use `from:`, `to:`, `subject:`, `before:`, `after:`, `has:attachment`, `is:unread`, `is:starred`, quoted phrases, and exclusions. Save the same criteria as a view or inbox tab. Provider-wide search supports pagination beyond the local cache.
 - **Sender rules:** Settings → Rules enables screening of unfamiliar incoming senders and routes accepted senders to Inbox, Archive, Needs Reply, or Trash.
 - **Attachment library:** ⌥⌘A searches files by name, sender, or subject and supports Quick Look, Save As, and opening the source message. Attachments download through the workspace on demand.
 

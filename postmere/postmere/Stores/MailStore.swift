@@ -10,10 +10,11 @@ final class MailStore {
             guard !updatingReaderMessage else { return }
             persistState()
             syncProviderChanges(from: oldValue)
+            if isSearchActive { refreshSearch() }
         }
     }
-    var selectedMailbox: Mailbox = .inbox
-    var selectedAccount: String?
+    var selectedMailbox: Mailbox = .inbox { didSet { if isSearchActive && oldValue != selectedMailbox { refreshSearch() } } }
+    var selectedAccount: String? { didSet { if isSearchActive && oldValue != selectedAccount { refreshSearch() } } }
     var selectedMessageID: UUID? {
         didSet {
             if !isUpdatingSelection { selectedMessageIDs = selectedMessageID.map { [$0] } ?? [] }
@@ -21,20 +22,28 @@ final class MailStore {
     }
     var selectedMessageIDs: Set<UUID> = []
     @ObservationIgnored var isUpdatingSelection = false
+    private var searchOrigin: SearchOrigin?
+    var isSearchActive: Bool { searchOrigin != nil }
+    var isSearchingMessages = false
+    var searchResults: [MailMessage] = []
+    @ObservationIgnored var searchTask: Task<Void, Never>?
+    @ObservationIgnored var searchGeneration = 0
+    var searchResultAccounts = Set<String>()
+    @ObservationIgnored var watchingSearchAccounts = false
     var searchText = "" {
-        didSet { reconcileSelection() }
+        didSet { if searchText != oldValue { searchFiltersChanged() } }
     }
     var unreadOnly = false {
-        didSet { reconcileSelection() }
+        didSet { if unreadOnly != oldValue { searchFiltersChanged() } }
     }
     var attachmentsOnly = false {
-        didSet { reconcileSelection() }
+        didSet { if attachmentsOnly != oldValue { searchFiltersChanged() } }
     }
     var searchScope: MailSearchScope = .currentMailbox {
-        didSet { reconcileSelection() }
+        didSet { if searchScope != oldValue { searchFiltersChanged() } }
     }
     var searchField: MailSearchField = .all {
-        didSet { reconcileSelection() }
+        didSet { if searchField != oldValue { searchFiltersChanged() } }
     }
     var isComposing = false { didSet { persistState() } }
     var draftAccount: MailAccount = .unassigned {
@@ -75,16 +84,16 @@ final class MailStore {
     private var lastMove: MoveSnapshot?
     var batchMoveUndo: [MailMessage]?
     var batchMoveSelection: Set<UUID> = []
-    var savedViews: [SavedInboxView] = [] { didSet { persistState() } }
-    var inboxSplits: [InboxSplit] = InboxSplit.defaults { didSet { persistState(); reconcileSelection() } }
-    var selectedInboxSplitID: UUID? { didSet { persistState(); reconcileSelection() } }
-    var inboxSplitOverlapPolicy: InboxSplitOverlapPolicy = .firstMatch { didSet { persistState(); reconcileSelection() } }
-    var vipContacts: [VIPContact] = [] { didSet { persistState(); reconcileSelection() } }
+    var savedViews: [SavedInboxView] = [] { didSet { persistState(); if isSearchActive { refreshSearch() } } }
+    var inboxSplits: [InboxSplit] = InboxSplit.defaults { didSet { persistState(); searchFiltersChanged() } }
+    var selectedInboxSplitID: UUID? { didSet { persistState(); searchFiltersChanged() } }
+    var inboxSplitOverlapPolicy: InboxSplitOverlapPolicy = .firstMatch { didSet { persistState(); searchFiltersChanged() } }
+    var vipContacts: [VIPContact] = [] { didSet { persistState(); searchFiltersChanged() } }
     var snippets: [MailSnippet] = [] { didSet { persistState() } }
     var senderRules: [SenderRule] = [] { didSet { persistState(); onNotificationPolicyChanged?() } }
     var outgoingQueue: [OutgoingMailItem] = [] { didSet { persistState() } }
     var senderScreeningEnabled = false { didSet { persistState(); onNotificationPolicyChanged?() } }
-    var selectedSavedViewID: UUID?
+    var selectedSavedViewID: UUID? { didSet { if isSearchActive && oldValue != selectedSavedViewID { refreshSearch() } } }
     var persistenceError: String?
     var backendSyncCursors: [String: String] = [:]
     var backendNotificationCutoffs: [String: Date] = [:]
@@ -149,6 +158,20 @@ final class MailStore {
         let attachmentsOnly: Bool
         let searchScope: MailSearchScope
         let searchField: MailSearchField
+        let searchOrigin: SearchOrigin?
+        let savedViewID: UUID?
+        let inboxSplitID: UUID?
+    }
+
+    /// Browsing filters and the primary row are restored when toolbar search closes.
+    private struct SearchOrigin {
+        let selectedID: UUID?
+        let selection: Set<UUID>
+        let text: String
+        let scope: MailSearchScope
+        let field: MailSearchField
+        let unreadOnly: Bool
+        let attachmentsOnly: Bool
     }
 
     init(messages: [MailMessage]? = nil, persistenceURL: URL? = nil) {
@@ -163,25 +186,58 @@ final class MailStore {
     }
 
     var filteredMessages: [MailMessage] {
-        let query = parsedSearchQuery
-        let searchesAll = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && searchScope == .allMailboxes
-        let splitConversationKeys: Set<String>?
-        if !searchesAll, selectedSavedView == nil, selectedMailbox == .inbox,
-           let splitID = selectedInboxSplitID, visibleInboxSplits.contains(where: { $0.id == splitID }) {
-            splitConversationKeys = matchingSplitConversationKeys(splitID)
-        } else { splitConversationKeys = nil }
-        let matches = messages.filter { message in
-            let isInCurrentMailbox = selectedSavedView.map { matchesSavedView(message, criteria: $0.criteria) }
-                ?? matchesMailbox(message, mailbox: selectedMailbox)
-            let isInMailbox = searchesAll || isInCurrentMailbox
-            let matchesSplit = splitConversationKeys.map { $0.contains(conversationKey(for: message)) } ?? true
-            let matchesAccount = (selectedAccount == nil || message.account == selectedAccount) && isAccountVisible(message)
-            return isInMailbox && matchesSplit && matchesAccount && query.matches(message, context: searchContext)
-                && (!unreadOnly || message.isUnread) && (!attachmentsOnly || !message.attachments.isEmpty)
+        if isSearchActive { return activeSearchResults }
+        return searchRequest().run(messages, interactive: false)
+    }
+
+    var hasSearchCriteria: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || unreadOnly || attachmentsOnly
+    }
+
+    var searchesAllMailboxes: Bool {
+        searchScope == .allMailboxes && (isSearchActive || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    func beginSearch() {
+        guard !isSearchActive else { return }
+        let origin = SearchOrigin(selectedID: selectedMessageID, selection: selectedMessageIDs,
+                                    text: searchText, scope: searchScope, field: searchField,
+                                    unreadOnly: unreadOnly, attachmentsOnly: attachmentsOnly)
+        selectedMessageID = nil
+        searchText = ""
+        searchScope = .allMailboxes
+        searchField = .all
+        unreadOnly = false
+        attachmentsOnly = false
+        searchOrigin = origin
+        watchSearchAccounts()
+    }
+
+    private func searchFiltersChanged() {
+        if isSearchActive { refreshSearch() } else { reconcileSelection() }
+    }
+
+    func updateSearchText(_ text: String) {
+        if !isSearchActive {
+            guard !text.isEmpty else { return }
+            beginSearch()
         }
-        let mailbox = selectedSavedView?.criteria.mailbox ?? selectedMailbox
-        return (splitConversationKeys != nil || mailbox.isConversationQueue) && !searchesAll
-            ? deduplicatedConversations(matches) : matches
+        if searchText != text { searchText = text }
+    }
+
+    func endSearch() {
+        guard let origin = searchOrigin else { return }
+        resetSearchResults()
+        selectedMessageID = nil
+        searchOrigin = nil
+        searchText = origin.text
+        searchScope = origin.scope
+        searchField = origin.field
+        unreadOnly = origin.unreadOnly
+        attachmentsOnly = origin.attachmentsOnly
+        selectedMessageID = origin.selectedID
+        selectedMessageIDs = origin.selection
+        reconcileSelection()
     }
 
     var selectedMessage: MailMessage? {
@@ -296,9 +352,29 @@ final class MailStore {
         guard !unreadOnly,
               let index = messages.firstIndex(where: { $0.id == selectedMessageID }), messages[index].isUnread else { return }
         let previous = messages[index]
+        if isSearchActive {
+            var read = previous
+            read.isUnread = false
+            let query = parsedSearchQuery
+            if query.dependsOnReadState && !query.matches(read, context: searchContext) { return }
+            if !searchesAllMailboxes {
+                if let saved = selectedSavedView {
+                    if saved.criteria.unreadOnly { return }
+                    let query = parsedQuery(saved.criteria.query, field: saved.criteria.searchField)
+                    if query.dependsOnReadState && !query.matches(read, context: searchContext) { return }
+                } else if selectedMailbox == .inbox, let id = selectedInboxSplitID,
+                          let index = visibleInboxSplits.firstIndex(where: { $0.id == id }) {
+                    let relevant = inboxSplitOverlapPolicy == .firstMatch ? 0...index : index...index
+                    if visibleInboxSplits[relevant].contains(where: { split in
+                        split.criteria.unreadOnly || parsedQuery(split.criteria.query, field: split.criteria.searchField).dependsOnReadState
+                    }) { return }
+                }
+            }
+        }
         updatingReaderMessage = true
         messages[index].isUnread = false
         updatingReaderMessage = false
+        refreshSearchRow(messages[index])
         persistReaderChange()
         syncProviderChange(from: previous, to: messages[index])
     }
@@ -309,6 +385,7 @@ final class MailStore {
         updatingReaderMessage = true
         messages[index].envelopeDetails = details
         updatingReaderMessage = false
+        refreshSearchRow(messages[index])
         persistReaderChange()
     }
 
@@ -338,6 +415,8 @@ final class MailStore {
     }
 
     func clearFilters() {
+        if isSearchActive { resetSearchResults() }
+        searchOrigin = nil
         searchText = ""
         unreadOnly = false
         attachmentsOnly = false
@@ -360,15 +439,22 @@ final class MailStore {
         messages[index].mailbox = lastMove.mailbox
         messages[index].trashedFrom = lastMove.trashedFrom
         messages[index].isUnread = lastMove.isUnread
+        resetSearchResults()
+        searchOrigin = nil
         selectedMailbox = lastMove.selectedMailbox
         selectedAccount = lastMove.selectedAccount
+        selectedSavedViewID = savedViews.first { $0.id == lastMove.savedViewID }?.id
+        let splitID = visibleInboxSplits.first { $0.id == lastMove.inboxSplitID }?.id
+        if selectedInboxSplitID != splitID { selectedInboxSplitID = splitID }
         searchText = lastMove.searchText
         unreadOnly = lastMove.unreadOnly
         attachmentsOnly = lastMove.attachmentsOnly
         searchScope = lastMove.searchScope
         searchField = lastMove.searchField
         selectedMessageID = lastMove.selectedMessageID
-        reconcileSelection()
+        searchOrigin = lastMove.searchOrigin
+        if isSearchActive { watchSearchAccounts() }
+        searchFiltersChanged()
         self.lastMove = nil
         lastAction = "Move undone"
     }
@@ -581,16 +667,23 @@ final class MailStore {
             unreadOnly: unreadOnly,
             attachmentsOnly: attachmentsOnly,
             searchScope: searchScope,
-            searchField: searchField
+            searchField: searchField,
+            searchOrigin: searchOrigin,
+            savedViewID: selectedSavedViewID,
+            inboxSplitID: selectedInboxSplitID
         )
-        let oldPosition = filteredMessages.firstIndex(where: { $0.id == id }) ?? 0
-        messages[index].trashedFrom = mailbox == .trash ? messages[index].mailbox : nil
-        messages[index].mailbox = mailbox
-        messages[index].isUnread = false
-        let remaining = filteredMessages
-        if selectedMessageID == id && !remaining.contains(where: { $0.id == id }) {
-            selectedMessageID = remaining.isEmpty ? nil : remaining[min(oldPosition, remaining.count - 1)].id
-            markSelectedRead()
+        let oldPosition = isSearchActive ? nil : filteredMessages.firstIndex(where: { $0.id == id })
+        var moved = messages[index]
+        moved.trashedFrom = mailbox == .trash ? moved.mailbox : nil
+        moved.mailbox = mailbox
+        moved.isUnread = false
+        messages[index] = moved
+        if !isSearchActive && selectedMessageID == id {
+            let remaining = filteredMessages
+            if !remaining.contains(where: { $0.id == id }) {
+                selectedMessageID = remaining.isEmpty ? nil : remaining[min(oldPosition ?? 0, remaining.count - 1)].id
+                markSelectedRead()
+            }
         }
         reconcileSelection()
         announceMove("Moved to \(mailbox.title)")
@@ -598,10 +691,13 @@ final class MailStore {
     }
 
     func reconcileSelection() {
-        selectedMessageIDs.formIntersection(Set(filteredMessages.map(\.id)))
-        if !filteredMessages.contains(where: { $0.id == selectedMessageID }) {
+        guard !isSearchingMessages, selectedMessageID != nil || !selectedMessageIDs.isEmpty else { return }
+        let visible = filteredMessages
+        let ids = Set(visible.map(\.id))
+        selectedMessageIDs.formIntersection(ids)
+        if selectedMessageID.map(ids.contains) != true {
             isUpdatingSelection = true
-            selectedMessageID = filteredMessages.first(where: { selectedMessageIDs.contains($0.id) })?.id
+            selectedMessageID = visible.first(where: { selectedMessageIDs.contains($0.id) })?.id
             isUpdatingSelection = false
         }
     }

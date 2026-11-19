@@ -73,10 +73,10 @@ struct ParticipantPhoto: View {
                             .aspectRatio(contentMode: enlarged ? .fit : .fill)
                     }
                 } else {
-                    Text(initials).font(.system(size: size * 0.36, weight: .medium))
-                        .foregroundStyle(.secondary)
+                    Text(initials).font(.system(size: size * 0.36, weight: .semibold))
+                        .foregroundStyle(PostmereTheme.avatarInk)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(PostmereTheme.subtleFill)
+                        .background(PostmereTheme.avatarFill)
                 }
             }
             .frame(width: size, height: size)

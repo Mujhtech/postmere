@@ -8,30 +8,118 @@ struct ContentView: View {
     @State private var wideColumnVisibility: NavigationSplitViewVisibility = .all
     @State private var isCompact = false
     @State private var showsMailboxes = false
+    @State private var preSearchVisibility: NavigationSplitViewVisibility?
+    @State private var searchPresented = false
+    @FocusState private var searchFocused: Bool
+    @State private var listFocusRequest = 0
+    @State private var editingCompactSearch = false
 
-    var body: some View {
+    private var showsSearchButton: Bool {
+        isCompact && !store.selectedMessageIDs.isEmpty && !editingCompactSearch
+    }
+
+    private var showsSidebar: Bool {
+        !isCompact && !store.isSearchActive && columnVisibility == .all
+    }
+
+    private var minimumMailListWidth: CGFloat {
+        if store.isSearchActive { return isCompact ? 260 : 380 }
+        // Without the sidebar, this column also houses the window controls and mailbox switcher.
+        return showsSidebar ? 260 : 338
+    }
+
+    private var mailColumns: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(store: store)
+                .frame(minWidth: 190)
                 .navigationSplitViewColumnWidth(min: 190, ideal: 215, max: 250)
                 .toolbar(removing: .sidebarToggle)
+                .toolbar {
+                    if showsSidebar {
+                        ToolbarItemGroup(placement: .automatic) {
+                            sidebarToggle
+                            composeButton
+                        }
+                    }
+                }
         } content: {
-            MailListView(store: store)
-                .navigationSplitViewColumnWidth(min: 260, ideal: 340, max: 430)
+            MailListView(store: store, listFocusRequest: listFocusRequest)
+                .frame(minWidth: !showsSidebar && !store.isSearchActive ? minimumMailListWidth : nil)
+                .navigationSplitViewColumnWidth(min: minimumMailListWidth,
+                                                ideal: store.isSearchActive ? 385 : 340, max: 430)
         } detail: {
             Group {
-                if MailAccount.allCases.isEmpty && store.selectedMessage == nil {
+                if MailAccount.allCases.isEmpty && store.selectedMessage == nil && !store.isSearchActive {
                     WorkspaceConnectionEmptyView()
                 } else {
                     ReaderView(store: store, compactToolbar: isCompact)
                 }
-            }.frame(minWidth: 300)
+            }
+            .frame(minWidth: 300)
+            .toolbar {
+                if store.selectedMessageIDs.isEmpty && !store.isSearchActive {
+                    // Keep the toolbar divider aligned with the list when the reader has no actions.
+                    ToolbarSpacer(.flexible, placement: .automatic)
+                }
+            }
         }
         .navigationSplitViewStyle(.balanced)
+    }
+
+    private var searchableMailbox: some View {
+        mailColumns
+            .background {
+                if !showsSearchButton {
+                    Color.clear
+                        .frame(width: 0, height: 0)
+                        .searchable(text: Binding(get: { store.searchText }, set: store.updateSearchText),
+                                    isPresented: $searchPresented, placement: .toolbar, prompt: "Search mail")
+                        .searchFocused($searchFocused)
+                        .onSubmit(of: .search, openSearchResult)
+                }
+            }
+        .onChange(of: searchPresented) {
+            if searchPresented { store.beginSearch() }
+            else if store.isSearchActive && !showsSearchButton { store.endSearch() }
+        }
+        .onChange(of: store.selectedMessageIDs) {
+            if !store.selectedMessageIDs.isEmpty { editingCompactSearch = false }
+        }
+        .onChange(of: searchFocused) {
+            if !searchFocused { editingCompactSearch = false }
+        }
+        .onChange(of: store.isSearchActive) {
+            if store.isSearchActive {
+                preSearchVisibility = isCompact ? wideColumnVisibility : columnVisibility
+                columnVisibility = .doubleColumn
+            } else {
+                searchPresented = false
+                searchFocused = false
+                editingCompactSearch = false
+                if let previous = preSearchVisibility {
+                    wideColumnVisibility = previous
+                    columnVisibility = isCompact ? .doubleColumn : previous
+                }
+                preSearchVisibility = nil
+            }
+        }
+        .onChange(of: runtime.shouldFocusMailSearch, initial: true) {
+            guard runtime.shouldFocusMailSearch else { return }
+            runtime.shouldFocusMailSearch = false
+            focusSearch()
+        }
+    }
+
+    var body: some View {
+        searchableMailbox
         .onGeometryChange(for: Bool.self) { geometry in
             geometry.size.width < 960
         } action: { compact in
             isCompact = compact
-            if compact {
+            if store.isSearchActive {
+                showsMailboxes = false
+                columnVisibility = .doubleColumn
+            } else if compact {
                 wideColumnVisibility = columnVisibility
                 columnVisibility = .doubleColumn
             } else {
@@ -81,35 +169,79 @@ struct ContentView: View {
             if store.isComposing { openWindow(id: "compose") }
         }
         .toolbar {
-            ToolbarItemGroup(placement: .navigation) {
-                Button {
-                    if isCompact {
-                        showsMailboxes.toggle()
-                    } else {
-                        columnVisibility = columnVisibility == .all ? .doubleColumn : .all
+            if showsSearchButton {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: focusSearch) {
+                        PostmereLabel("Search", symbol: "magnifyingglass", size: 16).labelStyle(.iconOnly)
                     }
-                } label: {
-                    PostmereLabel("Mailboxes", symbol: "sidebar.left", size: 16)
-                        .foregroundStyle(PostmereTheme.icon)
+                    .help("Search mail · ⌘F")
+                    .accessibilityLabel("Search mail")
                 }
-                .help(isCompact ? "Show mailboxes" : "Show or hide sidebar")
-                .accessibilityLabel("Mailboxes")
-                .keyboardShortcut("s", modifiers: [.command, .control])
-                .popover(isPresented: $showsMailboxes, arrowEdge: .bottom) {
-                    SidebarView(store: store, onSelect: { showsMailboxes = false })
-                        .frame(width: 240, height: 480)
+                .visibilityPriority(.high)
+            }
+            if !showsSidebar {
+                ToolbarItem(placement: .navigation) {
+                    sidebarToggle
+                        .popover(isPresented: $showsMailboxes, arrowEdge: .bottom) {
+                            SidebarView(store: store, onSelect: { showsMailboxes = false })
+                                .safeAreaInset(edge: .top, alignment: .trailing, spacing: 0) {
+                                    composeButton
+                                        .labelStyle(.iconOnly)
+                                        .padding(8)
+                                }
+                                .frame(width: 240, height: 480)
+                        }
                 }
+            }
+        }
+    }
 
-                Button {
-                    store.beginCompose()
-                    openWindow(id: "compose")
-                } label: {
-                    PostmereLabel("New Message", symbol: "square.and.pencil", size: 16)
-                        .foregroundStyle(PostmereTheme.icon)
-                }
-                .help("New Message · ⌘N")
-                .accessibilityLabel("New Message")
-                .disabled(MailAccount.sendingAccounts.isEmpty)
+    private var sidebarToggle: some View {
+        Button {
+            if isCompact || store.isSearchActive {
+                showsMailboxes.toggle()
+            } else {
+                columnVisibility = showsSidebar ? .doubleColumn : .all
+            }
+        } label: {
+            PostmereLabel("Mailboxes", symbol: "sidebar.left", size: 16)
+                .foregroundStyle(PostmereTheme.icon)
+        }
+        .help(showsSidebar ? "Hide sidebar" : "Show mailboxes")
+        .accessibilityLabel("Mailboxes")
+        .keyboardShortcut("s", modifiers: [.command, .control])
+    }
+
+    private var composeButton: some View {
+        Button {
+            showsMailboxes = false
+            store.beginCompose()
+            openWindow(id: "compose")
+        } label: {
+            PostmereLabel("New Message", symbol: "square.and.pencil", size: 16)
+                .foregroundStyle(PostmereTheme.icon)
+        }
+        .help("New Message · ⌘N")
+        .accessibilityLabel("New Message")
+        .disabled(MailAccount.sendingAccounts.isEmpty)
+    }
+
+    private func openSearchResult() {
+        guard store.isSearchActive, !store.isSearchingMessages,
+              let result = store.selectedMessage ?? store.filteredMessages.first else { return }
+        store.select(result)
+        editingCompactSearch = false
+        listFocusRequest += 1
+    }
+
+    private func focusSearch() {
+        editingCompactSearch = isCompact
+        store.beginSearch()
+        searchPresented = true
+        searchFocused = true
+        DispatchQueue.main.async {
+            if let item = NSApp.keyWindow?.toolbar?.items.first(where: { $0 is NSSearchToolbarItem }) as? NSSearchToolbarItem {
+                item.beginSearchInteraction()
             }
         }
     }

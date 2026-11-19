@@ -64,6 +64,7 @@ enum RegressionFailure: Error { case failed(String) }
         defer { try? FileManager.default.removeItem(at: directory) }
         try await readerPersistence(directory: directory)
         try runSearchSplitRegressions(directory: directory)
+        try await runBackgroundSearchRegressions()
         try await runRemoteMailRegressions(directory: directory)
         let workspaceAccount = RemoteAccountIdentity(localID: "remote:fixture:workspace:user:primary", accountID: UUID(),
             scope: "fixture:workspace:user", email: "me@example.com", displayName: "Me", provider: "gmail")

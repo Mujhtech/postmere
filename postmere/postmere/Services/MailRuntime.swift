@@ -10,6 +10,7 @@ final class MailRuntime {
     let backend = BackendSession()
     let notifications = MailNotificationService()
     let push = MailPushService()
+    var shouldFocusMailSearch = false
     var showsCommandPalette = false
     var showsAttachmentLibrary = false
     var showsSavedViewEditor = false

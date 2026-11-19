@@ -106,6 +106,8 @@ struct ReaderView: View {
                     .padding(.vertical, 22)
                 }
                 .id(message.id)
+            } else if store.isSearchActive {
+                searchPlaceholder
             } else {
                 InboxOverviewView(store: store)
             }
@@ -168,6 +170,29 @@ struct ReaderView: View {
         )) {
             Button("OK") { attachmentError = nil }
         } message: { Text(attachmentError ?? "Please try again.") }
+    }
+
+    private var searchPlaceholder: some View {
+        let unread = store.messages.lazy.filter { message in
+            message.isUnread && store.matchesMailbox(message, mailbox: .inbox)
+                && (store.selectedAccount == nil || store.selectedAccount == message.account)
+        }.count
+        return VStack(spacing: 8) {
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: 64, height: 64)
+                .padding(.bottom, 7)
+                .accessibilityHidden(true)
+            Text("No conversation selected")
+                .font(.headline)
+            Text("\(unread.formatted()) unread in Inbox")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var toolbarMessage: MailMessage? {
