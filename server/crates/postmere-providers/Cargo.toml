@@ -19,6 +19,8 @@ uuid.workspace = true
 zeroize.workspace = true
 
 mailparse.workspace = true
+mail-parser.workspace = true
+html-escape.workspace = true
 
 [lints]
 workspace = true

@@ -844,12 +844,41 @@ pub async fn cached_message(
     tx.commit().await?;
     Ok(message)
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MessageView {
+    Envelope,
+}
+
+#[derive(Deserialize)]
+struct MessageQuery {
+    view: Option<MessageView>,
+}
+
 async fn get_message(
     State(state): State<AppState>,
     auth: AuthContext,
     Path(id): Path<Uuid>,
-) -> Result<Json<Message>, AppError> {
-    Ok(Json(cached_message(&state, &auth, id).await?))
+    Query(query): Query<MessageQuery>,
+) -> Result<axum::response::Response, AppError> {
+    if let Some(MessageView::Envelope) = query.view {
+        let mut tx = auth.begin(&state.pool).await?;
+        let envelope = sqlx::query_scalar::<_, Value>(
+            "SELECT jsonb_build_object(
+                'id', id, 'account_id', account_id,
+                'to', normalized->'to', 'cc', normalized->'cc', 'bcc', normalized->'bcc',
+                'dkim_signatures', normalized->'dkim_signatures',
+                'delivery_headers', normalized->'delivery_headers')
+             FROM mail_messages WHERE id=$1 AND deleted_at IS NULL",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(AppError::not_found)?;
+        tx.commit().await?;
+        return Ok(Json(envelope).into_response());
+    }
+    Ok(Json(cached_message(&state, &auth, id).await?).into_response())
 }
 async fn mutate_message(
     State(state): State<AppState>,

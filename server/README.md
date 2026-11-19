@@ -449,7 +449,7 @@ treat missing pages as deletions.
 | Route | Behavior |
 | --- | --- |
 | `GET /v1/mail/messages?account_id=&query=&cursor=&limit=` | Search/browse the scoped server cache. This route uses plain text; native advanced query parsing remains local. |
-| `GET /v1/mail/messages/{id}` | Fetch one normalized cached message, including RFC threading metadata. |
+| `GET /v1/mail/messages/{id}` | Fetch one normalized cached message, including RFC threading metadata. Add `?view=envelope` to fetch recipient and delivery details without the body or attachments. |
 | `POST /v1/mail/accounts/{id}/search` | `{query,cursor?,limit?}` searches deeper at the provider and caches the results. Query syntax is Gmail search or Microsoft Graph search, respectively. |
 | `PATCH /v1/mail/messages/{id}` | `{is_read?,is_starred?,mailbox?}`; destinations are `inbox`, `archive`, or `trash`. Returns `{}` after provider confirmation and cache update. |
 | `GET /v1/mail/messages/{id}/attachments/{attachment_id}` | Return an attachment owned by that scoped message, with a 25 MiB download limit. |

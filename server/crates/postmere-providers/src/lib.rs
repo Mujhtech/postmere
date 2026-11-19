@@ -179,6 +179,12 @@ pub struct Attachment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline_data_base64: Option<String>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeliveryHeaders {
+    pub return_path: Option<String>,
+    pub received_with: Option<String>,
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Message {
     pub id: Uuid,
@@ -198,6 +204,10 @@ pub struct Message {
     pub is_starred: bool,
     pub mailbox: String,
     pub provider_labels: Vec<String>,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_headers: Option<DeliveryHeaders>,
     pub attachments: Vec<Attachment>,
     pub list_unsubscribe: Vec<String>,
     pub list_unsubscribe_post: Vec<String>,
@@ -568,7 +578,7 @@ pub async fn fetch_message(
     if provider == Provider::Gmail {
         url.query_pairs_mut().append_pair("format", "full");
     } else {
-        url.query_pairs_mut().append_pair("$select","id,conversationId,internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,body,bodyPreview,receivedDateTime,sentDateTime,isRead,flag,isDraft,parentFolderId,internetMessageHeaders").append_pair("$expand","attachments($select=id,name,contentType,size,isInline)");
+        url.query_pairs_mut().append_pair("$select","id,conversationId,internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,body,bodyPreview,receivedDateTime,sentDateTime,isRead,flag,isDraft,parentFolderId,categories,internetMessageHeaders").append_pair("$expand","attachments($select=id,name,contentType,size,isInline)");
     }
     let request = state.http.get(url).bearer_auth(token);
     let value = request_json(if provider == Provider::Microsoft {
@@ -909,6 +919,41 @@ fn header_values(value: &Value, name: &str) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+/// These are header claims, including when the mail was forwarded. Only
+/// report the first trace hop and let the MIME parser recognize its protocol.
+fn delivery_headers(headers: &Value) -> Option<DeliveryHeaders> {
+    let return_path = header_values(headers, "Return-Path")
+        .into_iter()
+        .next()
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty() && v.len() <= 1024 && !v.chars().any(char::is_control));
+    let received_with = header_values(headers, "Received")
+        .into_iter()
+        .next()
+        .filter(|v| v.len() <= 16_384)
+        .and_then(|v| {
+            let parsed = mail_parser::parsers::MessageStream::new(v.as_bytes()).parse_received();
+            let protocol = parsed.as_received()?.with()?.as_str();
+            // Accept a literal WITH + protocol token. Unknown clauses and
+            // guesses from incidental TLS/protocol text will be omitted.
+            let mut words = v.split_ascii_whitespace();
+            while let Some(word) = words.next() {
+                if word.eq_ignore_ascii_case("with")
+                    && words.next().is_some_and(|next| {
+                        next.trim_end_matches(';').eq_ignore_ascii_case(protocol)
+                    })
+                {
+                    return Some(protocol.to_owned());
+                }
+            }
+            None
+        });
+    (return_path.is_some() || received_with.is_some()).then_some(DeliveryHeaders {
+        return_path,
+        received_with,
+    })
+}
+
 fn decoded_header(value: &str) -> String {
     let raw = format!("X: {value}");
     mailparse::parse_header(raw.as_bytes())
@@ -940,6 +985,66 @@ fn decode_urlsafe(value: &str) -> Result<Vec<u8>, ProviderError> {
     URL_SAFE_NO_PAD
         .decode(value.trim_end_matches('='))
         .map_err(|_| ProviderError::InvalidResponse)
+}
+
+/// Use the sender's plain alternative whenever available. HTML-only messages also
+/// need a complete body for search, reply quoting and native plain-text fallback.
+fn received_text(plain: &str, html: &str, provider_preview: &str) -> (String, String) {
+    let mut body = if plain.trim().is_empty() {
+        plain_text_from_html(html)
+    } else {
+        plain.to_owned()
+    };
+    let mut preview = provider_preview.trim().to_owned();
+    if preview.contains('&') && !body.contains(&preview) {
+        preview = html_escape::decode_html_entities(&preview).into_owned();
+    }
+    if !html.is_empty()
+        && preview.contains('>')
+        && !body.contains(&preview)
+        && preview
+            .as_bytes()
+            .windows(2)
+            .any(|pair| pair[0] == b'<' && (pair[1].is_ascii_alphabetic() || pair[1] == b'/'))
+    {
+        preview = plain_text_from_html(&preview);
+    }
+    if body.is_empty() {
+        body.clone_from(&preview);
+    }
+    if preview.is_empty() {
+        preview = body
+            .split_whitespace()
+            .flat_map(|word| word.chars().chain(std::iter::once(' ')))
+            .take(200)
+            .collect::<String>()
+            .trim_end()
+            .to_owned();
+    }
+    (body, preview)
+}
+
+fn plain_text_from_html(html: &str) -> String {
+    // mail-parser recognizes p and br. Preserve layout boundaries in table-
+    // and div-based mail as well, so adjacent words remain searchable.
+    let mut spaced = String::with_capacity(html.len());
+    for fragment in html.split_inclusive('>') {
+        spaced.push_str(fragment);
+        if let Some((_, tag)) = fragment.rsplit_once("</")
+            && let Some(name) = tag.strip_suffix('>')
+        {
+            match name.trim().to_ascii_lowercase().as_str() {
+                "div" | "li" | "tr" | "blockquote" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                    spaced.push_str("<br>")
+                }
+                "td" | "th" => spaced.push(' '),
+                _ => {}
+            }
+        }
+    }
+    mail_parser::decoders::html::html_to_text(&spaced)
+        .trim()
+        .to_owned()
 }
 
 pub fn normalize_gmail(account: Uuid, value: &Value) -> Result<Message, ProviderError> {
@@ -994,6 +1099,11 @@ pub fn normalize_gmail(account: Uuid, value: &Value) -> Result<Message, Provider
         &mut attachments,
         0,
     )?;
+    let (text_body, preview) = received_text(
+        &text,
+        &html,
+        value.get("snippet").and_then(Value::as_str).unwrap_or(""),
+    );
     Ok(Message {
         id: stable_id(account, "message", id),
         account_id: account,
@@ -1014,22 +1124,20 @@ pub fn normalize_gmail(account: Uuid, value: &Value) -> Result<Message, Provider
         to: parse_addresses(&header("To")),
         cc: parse_addresses(&header("Cc")),
         bcc: parse_addresses(&header("Bcc")),
-        text_body: text,
+        text_body,
         html_body: (!html.is_empty()).then_some(html),
-        preview: value
-            .get("snippet")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .into(),
+        preview,
         sent_at: timestamp,
         is_read: !has("UNREAD"),
         is_starred: has("STARRED"),
         mailbox: mailbox.into(),
         provider_labels: labels,
+        categories: Vec::new(),
         attachments,
         list_unsubscribe: header_values(payload, "List-Unsubscribe"),
         list_unsubscribe_post: header_values(payload, "List-Unsubscribe-Post"),
         authentication_results: header_values(payload, "Authentication-Results"),
+        delivery_headers: delivery_headers(payload),
         dkim_signatures: header_values(payload, "DKIM-Signature"),
         rfc_message_id: message_ids(&header("Message-ID")).into_iter().next(),
         in_reply_to: message_ids(&header("In-Reply-To")).into_iter().next(),
@@ -1055,7 +1163,15 @@ fn gmail_parts(
         .unwrap_or("application/octet-stream");
     let filename = part.get("filename").and_then(Value::as_str).unwrap_or("");
     let body = part.get("body").unwrap_or(&Value::Null);
-    if !filename.is_empty() {
+    let attached = header_values(part, "Content-Disposition")
+        .first()
+        .is_some_and(|header| {
+            header
+                .split(';')
+                .next()
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("attachment"))
+        });
+    if !filename.is_empty() || attached {
         let provider_id = body
             .get("attachmentId")
             .and_then(Value::as_str)
@@ -1066,25 +1182,52 @@ fn gmail_parts(
             .unwrap_or(filename);
         attachments.push(Attachment {
             id: stable_id(account, "attachment", &format!("{message}:{part_id}")),
-            filename: decoded_header(filename),
+            filename: if filename.is_empty() {
+                "Attachment".into()
+            } else {
+                decoded_header(filename)
+            },
             mime_type: mime.into(),
             size_bytes: body.get("size").and_then(Value::as_i64).unwrap_or(0),
             provider_attachment_id: provider_id,
             inline_data_base64: body.get("data").and_then(Value::as_str).map(str::to_owned),
         });
-    } else if let Some(encoded) = body.get("data").and_then(Value::as_str) {
-        let bytes = decode_urlsafe(encoded)?;
-        let content = String::from_utf8_lossy(&bytes);
-        if mime.eq_ignore_ascii_case("text/plain") {
-            if !text.is_empty() {
-                text.push('\n')
-            }
-            text.push_str(&content)
-        } else if mime.eq_ignore_ascii_case("text/html") {
-            html.push_str(&content)
-        }
+        return Ok(());
     }
-    if let Some(parts) = part.get("parts").and_then(Value::as_array) {
+    if (mime.eq_ignore_ascii_case("text/plain") || mime.eq_ignore_ascii_case("text/html"))
+        && let Some(encoded) = body.get("data").and_then(Value::as_str)
+    {
+        let bytes = decode_urlsafe(encoded)?;
+        let charset = header_values(part, "Content-Type")
+            .first()
+            .and_then(|header| {
+                mailparse::parse_content_type(header)
+                    .params
+                    .remove("charset")
+            });
+        let content = charset
+            .as_deref()
+            .and_then(|charset| {
+                mail_parser::decoders::charsets::map::charset_decoder(charset.as_bytes())
+            })
+            .map_or_else(
+                || String::from_utf8_lossy(&bytes).into_owned(),
+                |decode| decode(&bytes),
+            );
+        let output = if mime.eq_ignore_ascii_case("text/html") {
+            html
+        } else {
+            text
+        };
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(&content);
+        return Ok(());
+    }
+    if mime.to_ascii_lowercase().starts_with("multipart/")
+        && let Some(parts) = part.get("parts").and_then(Value::as_array)
+    {
         for child in parts {
             gmail_parts(account, message, child, text, html, attachments, depth + 1)?
         }
@@ -1128,11 +1271,15 @@ pub fn normalize_graph(account: Uuid, value: &Value) -> Result<Message, Provider
         .get("contentType")
         .and_then(Value::as_str)
         .is_some_and(|s| s.eq_ignore_ascii_case("html"));
-    let preview = value
+    let provider_preview = value
         .get("bodyPreview")
         .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_owned();
+        .unwrap_or("");
+    let (text_body, preview) = if is_html {
+        received_text("", content, provider_preview)
+    } else {
+        received_text(content, "", provider_preview)
+    };
     let attachments = value
         .get("attachments")
         .and_then(Value::as_array)
@@ -1192,12 +1339,8 @@ pub fn normalize_graph(account: Uuid, value: &Value) -> Result<Message, Provider
         to: graph_addresses(value.get("toRecipients")),
         cc: graph_addresses(value.get("ccRecipients")),
         bcc: graph_addresses(value.get("bccRecipients")),
-        text_body: if is_html {
-            preview.clone()
-        } else {
-            content.into()
-        },
-        html_body: is_html.then(|| content.into()),
+        text_body,
+        html_body: (is_html && !content.trim().is_empty()).then(|| content.into()),
         preview,
         sent_at: sent,
         is_read: value
@@ -1210,6 +1353,11 @@ pub fn normalize_graph(account: Uuid, value: &Value) -> Result<Message, Provider
             .and_then(Value::as_str)
             == Some("flagged"),
         mailbox: mailbox.into(),
+        categories: match value.get("categories") {
+            Some(categories) => serde_json::from_value(categories.clone())
+                .map_err(|_| ProviderError::InvalidResponse)?,
+            None => Vec::new(),
+        },
         provider_labels: value
             .get("parentFolderId")
             .and_then(Value::as_str)
@@ -1219,6 +1367,7 @@ pub fn normalize_graph(account: Uuid, value: &Value) -> Result<Message, Provider
         list_unsubscribe: header_values(&headers, "List-Unsubscribe"),
         list_unsubscribe_post: header_values(&headers, "List-Unsubscribe-Post"),
         authentication_results: header_values(&headers, "Authentication-Results"),
+        delivery_headers: delivery_headers(&headers),
         dkim_signatures: header_values(&headers, "DKIM-Signature"),
         rfc_message_id: value
             .get("internetMessageId")
@@ -1748,15 +1897,85 @@ mod tests {
         );
     }
     #[test]
+    fn first_delivery_trace_reports_supplied_values_without_inferring_transport() {
+        let mut fixture = json!({"headers":[
+            {"name":"return-path","value":" <bounce@example.org> "},{"name":"Return-Path","value":"<other@example.org>"},
+            {"name":"Received","value":"from mail.example.org by mx.example.org with ESMTPS id B; Fri, 17 Nov 2023 12:00:00 +0000"},
+            {"name":"Received","value":"from older.example.org by mail.example.org with SMTP id A"}
+        ]});
+        let facts = delivery_headers(&fixture).unwrap();
+        assert_eq!(facts.return_path.as_deref(), Some("<bounce@example.org>"));
+        assert_eq!(facts.received_with.as_deref(), Some("ESMTPS"));
+        fixture["headers"][2]["value"] = json!("by mx.example.org (with ESMTPS) id B");
+        assert_eq!(delivery_headers(&fixture).unwrap().received_with, None);
+        fixture["headers"][2]["value"] = json!("by mx.example.org with UNKNOWN ESMTPS id B");
+        assert_eq!(delivery_headers(&fixture).unwrap().received_with, None);
+        fixture["headers"][0]["value"] = json!("<>");
+        assert_eq!(
+            delivery_headers(&fixture).unwrap().return_path.as_deref(),
+            Some("<>")
+        );
+        assert_eq!(delivery_headers(&json!({"headers":[]})), None);
+    }
+
+    #[test]
     fn microsoft_fixture_preserves_recipients_flags_and_list_headers() {
-        let value = json!({"id":"ms-1","conversationId":"conversation","receivedDateTime":"2026-11-17T10:00:00Z","subject":"Review","from":{"emailAddress":{"name":"Pat","address":"pat@example.com"}},"toRecipients":[{"emailAddress":{"address":"one@example.com"}}],"ccRecipients":[{"emailAddress":{"address":"two@example.com"}}],"body":{"contentType":"HTML","content":"<p>Full body</p>"},"bodyPreview":"Full body","isRead":true,"flag":{"flagStatus":"flagged"},"parentFolderId":"folder-1","attachments":[{"id":"attachment-1","name":"document.pdf","contentType":"application/pdf","size":123}],"internetMessageHeaders":[{"name":"List-Unsubscribe-Post","value":"List-Unsubscribe=One-Click"}]});
+        let value = json!({"id":"ms-1","conversationId":"conversation","receivedDateTime":"2026-11-17T10:00:00Z","subject":"Review","from":{"emailAddress":{"name":"Pat","address":"pat@example.com"}},"toRecipients":[{"emailAddress":{"address":"one@example.com"}}],"ccRecipients":[{"emailAddress":{"address":"two@example.com"}}],"body":{"contentType":"HTML","content":"<p>Full body</p>"},"bodyPreview":"Full body","isRead":true,"flag":{"flagStatus":"flagged"},"parentFolderId":"folder-1","categories":["Design review","Green"],"attachments":[{"id":"attachment-1","name":"document.pdf","contentType":"application/pdf","size":123}],"internetMessageHeaders":[{"name":"List-Unsubscribe-Post","value":"List-Unsubscribe=One-Click"}]});
         let m = normalize_graph(Uuid::new_v4(), &value).unwrap();
         assert!(m.is_read && m.is_starred);
+        assert_eq!(m.provider_labels, ["folder-1"]);
+        assert_eq!(m.categories, ["Design review", "Green"]);
         assert_eq!(m.to.len(), 1);
         assert_eq!(m.cc.len(), 1);
         assert_eq!(m.html_body.as_deref(), Some("<p>Full body</p>"));
         assert_eq!(m.attachments[0].size_bytes, 123);
         assert_eq!(m.list_unsubscribe_post.len(), 1);
+    }
+    #[test]
+    fn gmail_html_only_and_multipart_keep_the_html_and_complete_plain_body() {
+        let html = "<html><head><style>p {color:blue}</style></head><body><p>Café &amp; tea</p><p>Final paragraph</p></body></html>";
+        let html_part =
+            json!({"mimeType":"text/html","body":{"data":URL_SAFE_NO_PAD.encode(html)}});
+        let mut message = json!({"id":"gmail-html","internalDate":"1730610000000","snippet":"Caf&#233; &amp; tea","payload":html_part});
+        let account = Uuid::new_v4();
+        let normalized = normalize_gmail(account, &message).unwrap();
+        assert_eq!(normalized.html_body.as_deref(), Some(html));
+        assert_eq!(normalized.text_body, "Café & tea\nFinal paragraph");
+        assert_eq!(normalized.preview, "Café & tea");
+
+        message["payload"] = json!({"mimeType":"multipart/alternative","parts":[
+            {"mimeType":"text/plain","headers":[{"name":"Content-Type","value":"text/plain; charset=iso-8859-1"}],
+             "body":{"data":URL_SAFE_NO_PAD.encode(b"Sender's plain caf\xe9")}},
+            html_part,
+            {"mimeType":"text/html","headers":[{"name":"Content-Disposition","value":"attachment"}],
+             "body":{"data":URL_SAFE_NO_PAD.encode("<p>HTML attachment</p>")}}
+        ]});
+        let mixed = normalize_gmail(account, &message).unwrap();
+        assert_eq!(mixed.text_body, "Sender's plain café");
+        assert_eq!(mixed.html_body.as_deref(), Some(html));
+        assert_eq!(mixed.attachments.len(), 1);
+    }
+    #[test]
+    fn graph_indexes_beyond_its_preview_and_keeps_plain_code_literal() {
+        let html = "<div>Opening line</div><table><tr><td>Last searchable</td><td>sentence</td></tr></table>";
+        let mut message = json!({"id":"ms-html","receivedDateTime":"2026-11-17T10:00:00Z",
+            "body":{"contentType":"html","content":html},"bodyPreview":"<p>Opening line</p>"});
+        let account = Uuid::new_v4();
+        let normalized = normalize_graph(account, &message).unwrap();
+        assert_eq!(normalized.html_body.as_deref(), Some(html));
+        assert_eq!(
+            normalized.text_body,
+            "Opening line\nLast searchable sentence"
+        );
+        assert_eq!(normalized.preview, "Opening line");
+
+        let code = "Sample: <p>&amp;</p>";
+        message["body"] = json!({"contentType":"text","content":code});
+        message["bodyPreview"] = json!(code);
+        let plain = normalize_graph(account, &message).unwrap();
+        assert_eq!(plain.html_body, None);
+        assert_eq!(plain.text_body, code);
+        assert_eq!(plain.preview, code);
     }
     #[test]
     fn graph_cursors_cannot_redirect_credentials_to_another_origin() {

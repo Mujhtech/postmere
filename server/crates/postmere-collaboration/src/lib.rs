@@ -322,6 +322,8 @@ async fn snapshot(
         message.list_unsubscribe_post.clear();
         message.authentication_results.clear();
         message.dkim_signatures.clear();
+        message.delivery_headers = None;
+        message.categories.clear();
         for attachment in &mut message.attachments {
             attachment.inline_data_base64 = None;
             attachment.provider_attachment_id = None;

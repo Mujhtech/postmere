@@ -99,6 +99,8 @@ async fn message(state: &AppState, auth: &AuthContext, account: Uuid) -> Uuid {
         is_starred: false,
         mailbox: "inbox".into(),
         provider_labels: vec![],
+        categories: vec![],
+        delivery_headers: None,
         attachments: vec![],
         list_unsubscribe: vec![],
         list_unsubscribe_post: vec![],

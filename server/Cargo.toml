@@ -19,6 +19,7 @@ chrono-tz = "0.10.4"
 getrandom = "0.4.3"
 futures-util = "0.3.34"
 mailparse = "0.16"
+mail-parser = { version = "0.11.9", features = ["full_encoding"] }
 # Newer mail-auth releases require Rust 1.98 through mail-parser 1.x.
 mail-auth = { version = "=0.13.3", default-features = false, features = ["ring"] }
 html-escape = "0.2"

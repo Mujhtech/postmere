@@ -281,7 +281,27 @@ async fn mail_scope_oauth_idempotency_worker_and_tracking_without_live_network()
         .0,
         StatusCode::OK
     );
+    let envelope_path = format!("{message_path}?view=envelope");
+    let (envelope_status, envelope) = request(
+        &app,
+        "GET",
+        &envelope_path,
+        Some(&session.token),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(envelope_status, StatusCode::OK);
+    assert_eq!(envelope["account_id"], account.to_string());
+    assert_eq!(envelope["id"], message.id.to_string());
+    assert!(envelope["to"].is_array());
+    assert!(envelope.get("html_body").is_none() && envelope.get("text_body").is_none());
     for other in [&peer_session.token, &outside_session.token] {
+        assert_eq!(
+            request(&app, "GET", &envelope_path, Some(other), Value::Null)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
         assert_eq!(
             request(&app, "GET", &message_path, Some(other), Value::Null)
                 .await
