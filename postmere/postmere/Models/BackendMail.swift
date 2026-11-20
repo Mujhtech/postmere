@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-nonisolated struct BackendAccount: Codable, Identifiable, Sendable {
+nonisolated struct BackendAccount: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let provider: String
     let email: String
@@ -9,6 +9,7 @@ nonisolated struct BackendAccount: Codable, Identifiable, Sendable {
     let status: String
     let lastSyncedAt: Date?
     var capabilities: [String]? = nil
+    var syncStatus: BackendMailSyncStatus? = nil
 }
 
 nonisolated struct BackendAddress: Codable, Sendable {
@@ -29,6 +30,7 @@ nonisolated struct BackendMailPage: Decodable, Sendable {
     let nextCursor: String?
     let hasMore: Bool
     var deletedMessageIds: [UUID]? = nil
+    var syncStatus: BackendMailSyncStatus? = nil
 
     @concurrent func localMessages(for identity: RemoteAccountIdentity) async throws -> [MailMessage] {
         var converted: [MailMessage] = []
@@ -42,6 +44,11 @@ nonisolated struct BackendMailPage: Decodable, Sendable {
         }
         return converted
     }
+}
+
+nonisolated struct BackendMailSyncStatus: Codable, Equatable, Sendable {
+    let phase: String
+    let retryAt: Date?
 }
 
 nonisolated struct BackendMailMessage: Decodable, Sendable {

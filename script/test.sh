@@ -54,7 +54,7 @@ run_suite() {
             ;;
         backend_client)
             flags=(-swift-version 6 -parse-as-library -O)
-            sources=(Services/BackendHTTPClient.swift)
+            sources=(Services/BackendHTTPClient.swift Services/BackendEvents.swift "${summary_sources[@]}")
             ;;
         backend_session)
             flags=(-swift-version 6 -parse-as-library -O)
@@ -66,7 +66,7 @@ run_suite() {
             ;;
         backend_push)
             flags=(-swift-version 6 -parse-as-library -O)
-            sources=("${backend_models[@]}" Models/NotificationProfile.swift Models/MailPushModels.swift Services/BackendHTTPClient.swift Services/BackendEvents.swift
+            sources=("${backend_models[@]}" "${summary_sources[@]}" Models/NotificationProfile.swift Models/MailPushModels.swift Services/BackendHTTPClient.swift Services/BackendEvents.swift
                      Services/BackendKeychain.swift Services/BackendSession.swift Services/MailPushService.swift "$script_dir/test_realtime_support.swift")
             ;;
         calendar)

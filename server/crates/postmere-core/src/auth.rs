@@ -341,10 +341,18 @@ impl AuthService {
         mac.update(&[0]);
         mac.update(identity.as_bytes());
         let bucket = mac.finalize().into_bytes().to_vec();
-        let row = sqlx::query("INSERT INTO login_rate_limits (bucket,window_started_at,attempts,expires_at) VALUES ($1,now(),1,now()+interval '15 minutes') ON CONFLICT (bucket) DO UPDATE SET attempts=CASE WHEN login_rate_limits.expires_at<=now() THEN 1 ELSE login_rate_limits.attempts+1 END,window_started_at=CASE WHEN login_rate_limits.expires_at<=now() THEN now() ELSE login_rate_limits.window_started_at END,expires_at=CASE WHEN login_rate_limits.expires_at<=now() THEN now()+interval '15 minutes' ELSE login_rate_limits.expires_at END RETURNING attempts")
+        let row = sqlx::query("INSERT INTO login_rate_limits (bucket,window_started_at,attempts,expires_at) VALUES ($1,now(),1,now()+interval '15 minutes') ON CONFLICT (bucket) DO UPDATE SET attempts=CASE WHEN login_rate_limits.expires_at<=now() THEN 1 ELSE login_rate_limits.attempts+1 END,window_started_at=CASE WHEN login_rate_limits.expires_at<=now() THEN now() ELSE login_rate_limits.window_started_at END,expires_at=CASE WHEN login_rate_limits.expires_at<=now() THEN now()+interval '15 minutes' ELSE login_rate_limits.expires_at END RETURNING attempts,GREATEST(1,ceil(extract(epoch from (expires_at-now()))))::int AS retry_seconds")
             .bind(bucket).fetch_one(&self.pool).await?;
         if row.get::<i32, _>("attempts") > limit {
-            return Err(AppError::rate_limited());
+            let mut error = AppError::rate_limited();
+            error.retry_after_seconds = Some(row.get::<i32, _>("retry_seconds") as u32);
+            tracing::warn!(
+                event = "request_rate_limit",
+                limit,
+                retry_after_seconds = error.retry_after_seconds,
+                "request quota reached"
+            );
+            return Err(error);
         }
         Ok(())
     }

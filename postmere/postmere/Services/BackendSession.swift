@@ -5,7 +5,13 @@ import CryptoKit
 @MainActor
 @Observable
 final class BackendSession {
+    enum AccountCatalogState: Equatable {
+        case pending, loading, loaded
+        case failed(String)
+    }
+
     private(set) var accounts: [BackendAccount] = []
+    private(set) var accountCatalogState: AccountCatalogState = .pending
     private(set) var disconnectingAccountIDs: Set<UUID> = []
     private(set) var credential: BackendCredential?
     private(set) var isBusy = false
@@ -281,6 +287,7 @@ final class BackendSession {
         savedSessionFailures = 0
         accountsGeneration = UUID()
         accounts = []
+        accountCatalogState = .pending
         disconnectingAccountIDs = []
         RemoteAccountRegistry.accounts = []
         preferences.removeObject(forKey: "postmereFocusAccountCatalog.v1")
@@ -420,23 +427,32 @@ final class BackendSession {
         let requestGeneration = generation
         accountsGeneration = UUID()
         let refreshGeneration = accountsGeneration
-        let result: [BackendAccount] = try await request("GET", "/v1/mail/accounts")
-        guard requestGeneration == generation, refreshGeneration == accountsGeneration, let scope else { return }
-        // Account IDs, not provider names or email addresses, identify accounts.
-        // Keep the full list and reject ambiguous duplicate IDs without losing
-        // the previously installed registry.
-        guard Set(result.map(\.id)).count == result.count else { throw BackendError.invalidResponse }
-        accounts = result
-        installAccountRegistry(scope: scope)
+        if accountCatalogState != .loaded { accountCatalogState = .loading }
+        do {
+            let result: [BackendAccount] = try await request("GET", "/v1/mail/accounts")
+            guard requestGeneration == generation, refreshGeneration == accountsGeneration, let scope else { return }
+            // Reject ambiguous IDs while retaining the previously installed registry.
+            guard Set(result.map(\.id)).count == result.count else { throw BackendError.invalidResponse }
+            if accounts != result { accounts = result }
+            if accountCatalogState != .loaded { accountCatalogState = .loaded }
+            installAccountRegistry(scope: scope)
+        } catch {
+            if requestGeneration == generation, refreshGeneration == accountsGeneration, accountCatalogState != .loaded {
+                accountCatalogState = .failed(error.localizedDescription)
+            }
+            throw error
+        }
     }
 
     private func installAccountRegistry(scope: String) {
-        RemoteAccountRegistry.accounts = accounts.map {
+        let registry = accounts.map {
             RemoteAccountIdentity(localID: "remote:\(scope):\($0.id.uuidString.lowercased())", accountID: $0.id,
                                   scope: scope, email: $0.email, displayName: $0.displayName ?? $0.email,
                                   provider: $0.provider, status: $0.status)
         }
-        if let lastLabelCatalog, !RemoteAccountRegistry.accounts.contains(where: {
+        guard registry != RemoteAccountRegistry.accounts else { return }
+        RemoteAccountRegistry.accounts = registry
+        if let lastLabelCatalog, !registry.contains(where: {
             $0.localID == lastLabelCatalog.account && $0.status == "connected"
         }) { self.lastLabelCatalog = nil }
         // Focus queries can run in a separate process. Persist only the account

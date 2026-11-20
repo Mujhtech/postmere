@@ -3,6 +3,7 @@ import Foundation
 nonisolated enum BackendError: LocalizedError, Sendable {
     case invalidURL, insecureURL, redirect, invalidResponse, tooLarge, notConnected
     case response(Int, String)
+    case mailSyncRateLimited(retryAt: Date)
     var errorDescription: String? {
         switch self {
         case .invalidURL: "Enter the server’s base URL without a query, fragment, or password."
@@ -12,6 +13,7 @@ nonisolated enum BackendError: LocalizedError, Sendable {
         case .tooLarge: "The server response exceeded the size limit."
         case .notConnected: "Sign in to your Postmere workspace to continue."
         case let .response(_, message): message
+        case .mailSyncRateLimited: "Mail sync is paused and will retry automatically."
         }
     }
 }
@@ -130,19 +132,7 @@ nonisolated struct BackendHTTPClient: Sendable {
             data.append(byte)
         }
         guard (200...299).contains(response.statusCode) else {
-            // Do not expose arbitrary response HTML or provider credentials in UI errors.
-            let message: String
-            switch response.statusCode {
-            case 401: message = "Your workspace sign-in is no longer valid, or the sign-in details were not accepted."
-            case 403: message = "This account does not have access to that operation."
-            case 404: message = "That item is no longer available."
-            case 409: message = "The item changed. Refresh it before trying again."
-            case 422, 400: message = "Check the information and try again."
-            case 429: message = "Too many requests. Wait a moment and try again."
-            case 503: message = "This service is not configured or is temporarily unavailable."
-            default: message = "The server could not complete the request (\(response.statusCode))."
-            }
-            throw BackendError.response(response.statusCode, message)
+            throw Self.responseError(status: response.statusCode, path: path, data: data, retryAfter: response.value(forHTTPHeaderField: "Retry-After"))
         }
         return data
     }

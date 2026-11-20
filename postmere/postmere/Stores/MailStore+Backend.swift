@@ -61,10 +61,28 @@ extension MailStore {
     func backendNotificationCandidates(for identity: RemoteAccountIdentity, excluding known: Set<UUID>) -> [MailMessage] {
         guard let cutoff = backendNotificationCutoffs[identity.localID] else { return [] }
         return messages.filter {
-            $0.account == identity.localID && !known.contains($0.id) && $0.sentAt >= cutoff
-                && $0.isUnread && !$0.isOutgoing && !$0.isDeletedOnProvider && $0.mailbox == .inbox
-                && $0.workflow.screeningState == .accepted
+            !known.contains($0.id) && canNotifyArrival($0, account: identity.localID, since: cutoff)
         }
+    }
+
+    private func canNotifyArrival(_ message: MailMessage, account: String, since cutoff: Date) -> Bool {
+        message.account == account && message.sentAt >= cutoff && message.isUnread && !message.isOutgoing
+            && !message.isDeletedOnProvider && message.mailbox == .inbox && message.workflow.screeningState == .accepted
+    }
+
+    /// Recheck the committed rows after the disk write. A user can read, move or remove them while it runs.
+    private func committedInsertions(at positions: [(id: UUID, index: Int)]) -> [MailMessage] {
+        var candidates: [MailMessage] = []
+        var moved: Set<UUID> = []
+        for (id, index) in positions {
+            if messages.indices.contains(index), messages[index].id == id {
+                candidates.append(messages[index])
+            } else {
+                moved.insert(id)
+            }
+        }
+        if !moved.isEmpty { candidates += messages.filter { moved.contains($0.id) } }
+        return candidates
     }
 
     /// Persist message changes and their resume cursor together so a failed disk
@@ -77,9 +95,15 @@ extension MailStore {
               let incoming = try? await page.localMessages(for: identity) else { return false }
         let oldCursor = backendSyncCursors[identity.localID]
         guard await mergeReceivedPage(incoming, deletedIDs: Set(page.deletedMessageIds ?? []),
-                                      read: pageRead, isCurrent: isCurrent, beforeSave: {
-            self.backendSyncCursors[identity.localID] = page.nextCursor
+                                      read: pageRead, trackInsertions: trackInsertions, isCurrent: isCurrent, beforeSave: { messagesChanged, newRows in
+            insertions = newRows
+            requiresSave = messagesChanged || self.backendSyncCursors[identity.localID] != page.nextCursor
+            if self.backendSyncCursors[identity.localID] != page.nextCursor {
+                self.backendSyncCursors[identity.localID] = page.nextCursor
+            }
         }) else { return false }
+        // An empty poll or exact replay should not encode the entire mailbox again.
+        guard requiresSave || persistenceError != nil || persistenceBlocked else { return true }
         guard await persistStateAsync() else {
             if backendSyncCursors[identity.localID] == page.nextCursor { backendSyncCursors[identity.localID] = oldCursor }
             return false

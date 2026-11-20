@@ -417,14 +417,14 @@ impl DeliveryTransport for FixtureDelivery {
     }
 }
 struct FixtureSync {
-    batches: Mutex<std::collections::VecDeque<SyncBatch>>,
+    batches: Mutex<std::collections::VecDeque<Result<SyncBatch, postmere_core::error::AppError>>>,
     seen: Mutex<Vec<SyncCheckpoint>>,
     calls: AtomicUsize,
 }
 impl FixtureSync {
     fn new(batches: Vec<SyncBatch>) -> Self {
         Self {
-            batches: Mutex::new(batches.into()),
+            batches: Mutex::new(batches.into_iter().map(Ok).collect()),
             seen: Mutex::new(vec![]),
             calls: AtomicUsize::new(0),
         }
@@ -447,12 +447,11 @@ impl SyncTransport for FixtureSync {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.seen.lock().unwrap().push(checkpoint);
-            Ok(self
-                .batches
+            self.batches
                 .lock()
                 .unwrap()
                 .pop_front()
-                .expect("fixture sync batch"))
+                .expect("fixture sync batch")
         })
     }
 }
@@ -1010,6 +1009,150 @@ async fn mail_scope_oauth_idempotency_worker_and_tracking_without_live_network()
     mail_sync::sync_account_with(&state, workspace, user, account, &initial_sync)
         .await
         .unwrap();
+    // A cursor-bearing history continuation reserves capacity even if there
+    // are no pending IDs on this page. Early wakeups do not read Gmail again.
+    let idle = FixtureSync::new(vec![]);
+    let early = mail_sync::sync_account_with(&state, workspace, user, account, &idle)
+        .await
+        .unwrap();
+    assert!(early.messages.is_empty());
+    assert_eq!(idle.calls.load(Ordering::SeqCst), 0);
+    let mut tx = auth.begin(&pool).await.unwrap();
+    sqlx::query("UPDATE mail_sync_state SET checkpoint=jsonb_set(checkpoint,'{gmail_history_read_after}',to_jsonb(now()-interval '1 second')) WHERE account_id=$1")
+        .bind(account).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let catchup = mail::cached_changes(&state, &auth, account, None, 200)
+        .await
+        .unwrap();
+    let empty = mail::cached_changes(&state, &auth, account, Some(&catchup.next_cursor), 200)
+        .await
+        .unwrap();
+    assert!(empty.messages.is_empty() && empty.deleted_message_ids.is_empty());
+    assert_eq!(empty.next_cursor, catchup.next_cursor);
+    // A throttled batch leaves its cursor intact and reschedules both manual
+    // and worker sync without spending another request during Retry-After.
+    let throttled = FixtureSync::new(vec![]);
+    let mut rate_error = postmere_core::error::AppError::rate_limited();
+    rate_error.code = "sync_provider_rate_limited";
+    rate_error.retry_after_seconds = Some(120);
+    throttled.batches.lock().unwrap().push_back(Err(rate_error));
+    for _ in 0..2 {
+        let result =
+            mail_sync::sync_account_with(&state, workspace, user, account, &throttled).await;
+        let Err(error) = result else {
+            panic!("expected provider cooldown");
+        };
+        assert_eq!(error.code, "sync_provider_rate_limited");
+        assert!(matches!(error.retry_after_seconds, Some(118..=120)));
+    }
+    assert_eq!(throttled.calls.load(Ordering::SeqCst), 1);
+    let sync_path = format!("/v1/mail/accounts/{account}/sync");
+    let (sync_status, cached) = request(
+        &app,
+        "POST",
+        &sync_path,
+        Some(&session.token),
+        json!({"refresh_provider":true}),
+    )
+    .await;
+    assert_eq!(sync_status, StatusCode::OK);
+    assert_eq!(cached["sync_status"]["phase"], "retrying");
+    assert!(cached["sync_status"]["retry_at"].is_string());
+    let (_, accounts) = request(
+        &app,
+        "GET",
+        "/v1/mail/accounts",
+        Some(&session.token),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        accounts
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == account.to_string())
+            .unwrap()["sync_status"],
+        cached["sync_status"]
+    );
+    assert!(!cached["messages"].as_array().unwrap().is_empty());
+    let (other_status, _) = request(
+        &app,
+        "POST",
+        &sync_path,
+        Some(&peer_session.token),
+        json!({"refresh_provider":true}),
+    )
+    .await;
+    assert!(matches!(
+        other_status,
+        StatusCode::NOT_FOUND | StatusCode::FORBIDDEN
+    ));
+    let mut tx = auth.begin(&pool).await.unwrap();
+    let (cursor,attempts,remaining):(String,i32,i32)=sqlx::query_as("SELECT s.checkpoint->>'cursor',(s.checkpoint#>>'{provider_backoff,attempts}')::int,extract(epoch from w.lease_until-now())::int FROM mail_sync_state s JOIN mail_sync_wakeups w USING(account_id) WHERE s.account_id=$1")
+        .bind(account).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(cursor, "fixture-next-page");
+    let recovery:bool=sqlx::query_scalar("SELECT (checkpoint->>'gmail_recovering_until')::timestamptz>now()+interval '14 minutes' FROM mail_sync_state WHERE account_id=$1").bind(account).fetch_one(&mut *tx).await.unwrap();
+    assert!(recovery);
+    assert_eq!(attempts, 1);
+    assert!((118..=120).contains(&remaining));
+    sqlx::query("UPDATE mail_sync_state SET checkpoint=jsonb_set(checkpoint,'{provider_backoff,until}',to_jsonb(now()-interval '1 second')) WHERE account_id=$1").bind(account).execute(&mut *tx).await.unwrap();
+    sqlx::query("UPDATE mail_sync_wakeups SET due_at=clock_timestamp(),lease_until=NULL WHERE account_id=$1").bind(account).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let due_status = mail::cached_changes(&state, &auth, account, Some(&empty.next_cursor), 200)
+        .await
+        .unwrap()
+        .sync_status
+        .unwrap();
+    assert_eq!(due_status.phase, "syncing");
+    assert!(due_status.retry_at.is_none());
+    // With a valid Gmail import cursor, an immediate foreground poll does
+    // not import another historical page. A webhook hint wakes history first.
+    let mut tx = auth.begin(&pool).await.unwrap();
+    let original: Value =
+        sqlx::query_scalar("SELECT checkpoint FROM mail_sync_state WHERE account_id=$1")
+            .bind(account)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    let mut importing = original.clone();
+    importing
+        .as_object_mut()
+        .unwrap()
+        .remove("provider_backoff");
+    importing["phase"] = json!("full");
+    importing["initial_history_id"] = json!("123");
+    importing["last_history_check"] = json!(Utc::now());
+    sqlx::query("UPDATE mail_sync_state SET checkpoint=$2,updated_at=clock_timestamp(),last_error=NULL WHERE account_id=$1").bind(account).bind(importing).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let arrival = FixtureSync::new(vec![SyncBatch {
+        messages: vec![],
+        deleted_ids: vec![],
+        checkpoint: SyncCheckpoint::default(),
+        has_more: true,
+    }]);
+    let page = mail_sync::sync_account_with(&state, workspace, user, account, &arrival)
+        .await
+        .unwrap();
+    assert!(page.messages.is_empty());
+    assert_eq!(arrival.calls.load(Ordering::SeqCst), 0);
+    let mut tx = auth.begin(&pool).await.unwrap();
+    sqlx::query("INSERT INTO mail_sync_signals(account_id,workspace_id,user_id) VALUES($1,$2,$3) ON CONFLICT(account_id) DO UPDATE SET generation=mail_sync_signals.generation+1").bind(account).bind(workspace).bind(user).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    mail_sync::sync_account_with(&state, workspace, user, account, &arrival)
+        .await
+        .unwrap();
+    let observed = arrival.seen.lock().unwrap().last().unwrap().clone();
+    assert!(observed.last_history_check.is_none());
+    assert_eq!(observed.cursor.as_deref(), Some("fixture-next-page"));
+    let mut tx = auth.begin(&pool).await.unwrap();
+    sqlx::query("UPDATE mail_sync_state SET checkpoint=$2 WHERE account_id=$1")
+        .bind(account)
+        .bind(original)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
     let first_page = mail::cached_changes(&state, &auth, account, None, 1)
         .await
         .unwrap();
@@ -1110,6 +1253,10 @@ async fn mail_scope_oauth_idempotency_worker_and_tracking_without_live_network()
         checkpoint: SyncCheckpoint::default(),
         has_more: false,
     }]);
+    let mut mail_events = sqlx::postgres::PgListener::connect_with(&pool)
+        .await
+        .unwrap();
+    mail_events.listen("postmere_events_v1").await.unwrap();
     mail_sync::sync_account_with(&state, workspace, user, account, &no_deletion)
         .await
         .unwrap();

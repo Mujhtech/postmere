@@ -9,7 +9,10 @@ extension MailStore {
     /// A loading list has no rows to navigate. Small stores without an attached list
     /// still resolve their selection synchronously for programmatic callers.
     var navigableMessages: [MailMessage]? {
-        if isSearchActive { return isSearchingMessages ? nil : activeSearchResults }
+        if isSearchActive {
+            let rows = activeSearchResults
+            return isSearchingMessages && rows.isEmpty ? nil : rows
+        }
         if let data = mailboxViewData { return data.messages }
         guard !usesMailboxViewData, !needsBackgroundSearch else { return nil }
         return filteredMessages

@@ -45,8 +45,15 @@ final class MailRuntime {
     var isSyncingBackend = false
     var backendHasMore = false
     var backendSearchCursor: String?
-    var lastBackendSync = Date.distantPast
-    var lastBackendSyncScope: String?
+    var mailSyncActivity: MailSyncActivity = .idle
+    @ObservationIgnored var pendingMailSync: BackendMailSyncDemand = []
+    @ObservationIgnored var mailSyncGeneration: UUID?
+    @ObservationIgnored var nextMailCacheCheck = Date.distantPast
+    @ObservationIgnored var nextAccountCatalogCheck = Date.distantPast
+    var lastMailSyncError: String?
+    @ObservationIgnored var mailSyncRateLimit: Date?
+    @ObservationIgnored var mailSyncStatuses: [UUID: BackendMailSyncStatus] = [:]
+    @ObservationIgnored var isSearchingBackend = false
     var backendSearchContext: BackendSearchContext?
     var isProcessingBackendOutbox = false
     var lastBackendOutboxRefresh = Date.distantPast
@@ -188,9 +195,8 @@ final class MailRuntime {
             await backend.retrySavedSession()
             await backend.expireSessionIfNeeded()
             reconcileRealtime()
-            if backend.canAccessWorkspace && !isSyncingBackend
-                && (backend.scope != lastBackendSyncScope || Date.now.timeIntervalSince(lastBackendSync) >= 60) {
-                Task { await sync() }
+            if backend.canAccessWorkspace && !isSyncingBackend && Date.now >= nextMailCacheCheck {
+                Task { await syncBackend(refreshProvider: false, refreshAccounts: Date.now >= nextAccountCatalogCheck) }
             }
             if backend.canAccessWorkspace {
                 Task { await synchronizePush() }
@@ -305,14 +311,10 @@ final class MailRuntime {
             try await self.backend.receiveEvents(lastEventID: cursor, receive: receive)
         }, refresh: { [weak self] changes in
             guard let self else { return }
-            // A search or manual/provider sync may already own the merge. Keep
-            // this event pending until it can reconcile through the same path.
-            while self.isSyncingBackend {
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-                guard self.backend.realtimeGeneration == requestGeneration else { return }
-            }
             guard !Task.isCancelled, self.backend.realtimeGeneration == requestGeneration else { return }
-            if !changes.intersection([.mail, .accounts]).isEmpty { await self.syncBackend(refreshProvider: false) }
+            if !changes.intersection([.mail, .accounts]).isEmpty {
+                await self.syncBackend(refreshProvider: false, refreshAccounts: changes.contains(.accounts))
+            }
             guard !Task.isCancelled, self.backend.realtimeGeneration == requestGeneration else { return }
             if changes.contains(.outbox) { await self.processBackendOutbox(forceRefresh: true) }
         })

@@ -12,14 +12,16 @@ pub struct AppError {
     pub status: StatusCode,
     pub code: &'static str,
     pub message: String,
+    pub retry_after_seconds: Option<u32>,
 }
 
 impl AppError {
-    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+    pub fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status,
             code,
             message: message.into(),
+            retry_after_seconds: None,
         }
     }
     pub fn bad_request(message: &str) -> Self {
@@ -46,11 +48,13 @@ impl AppError {
         Self::new(StatusCode::CONFLICT, "conflict", message)
     }
     pub fn rate_limited() -> Self {
-        Self::new(
+        let mut error = Self::new(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
             "Too many requests. Try again later.",
-        )
+        );
+        error.retry_after_seconds = Some(900);
+        error
     }
     pub fn unavailable() -> Self {
         Self::new(
@@ -104,7 +108,7 @@ impl IntoResponse for AppError {
         if self.status == StatusCode::TOO_MANY_REQUESTS {
             response
                 .headers_mut()
-                .insert("retry-after", "900".parse().unwrap());
+                .insert("retry-after", self.retry_after_seconds.unwrap_or(60).into());
         }
         response
     }

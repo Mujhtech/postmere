@@ -218,7 +218,7 @@ struct MailListView: View {
 
     private func subtitle(count: Int) -> String {
         if store.isSearchActive {
-            return store.hasSearchCriteria && !store.isSearchingMessages ? "\(count.formatted()) found" : ""
+            return store.hasSearchCriteria && (!store.isSearchingMessages || count > 0) ? "\(count.formatted()) found" : ""
         }
         return count == 1 ? "1 message" : "\(count.formatted()) messages"
     }

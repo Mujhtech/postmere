@@ -457,6 +457,53 @@ enum RegressionFailure: Error { case failed(String) }
         print("All backend regressions passed")
     }
 
+    static func syncProgress() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        let idle = try decoder.decode(BackendMailPage.self, from: Data(#"{"messages":[],"has_more":false}"#.utf8))
+        try check(idle.syncStatus == nil, "older servers omit sync status")
+        let waiting = try decoder.decode(BackendMailPage.self, from: Data(#"{"messages":[],"has_more":false,"sync_status":{"phase":"retrying","retry_at":"2026-11-20T12:08:00Z"}}"#.utf8))
+        try check(waiting.syncStatus?.phase == "retrying" && waiting.syncStatus?.retryAt != nil, "a cooldown retains its server retry time")
+        try check(!MailSyncActivity.idle.isActive && MailSyncActivity.idle.detail == nil, "idle sync has no sidebar indicator")
+        try check(MailSyncActivity.loadingCache(loaded: 1).explanation.contains("1 message loaded"), "loading announces the confirmed local count")
+        try check(MailSyncActivity.importing(cached: nil).detail == nil, "an import with no count shows indeterminate progress")
+    }
+
+    @MainActor static func mailLinks(directory: URL, account: RemoteAccountIdentity) throws {
+        let links = MailLinkDrafts()
+        let path = directory.appendingPathComponent("email-link.json")
+        let store = MailStore(messages: [], persistenceURL: path)
+        let url = URL(string: "mailto:a+tag@example.com,b@example.com?to=c@example.com&cc=d@example.com&bcc=e@example.com&subject=Caf%C3%A9%20%26%20tea&body=A%2BB%0D%0AC&from=ignored@example.com&attach=/tmp/ignored")!
+        try check(links.receive(url, verifiedScope: nil) && !links.openNext(in: store, verifiedScope: nil),
+                  "a cold mail link waits for verified access")
+        links.useWorkspace(account.scope)
+        try check(links.openNext(in: store, verifiedScope: account.scope) && store.isComposing
+                  && store.draftAccount.rawValue == account.localID && store.draftAttachments.isEmpty && store.outgoingQueue.isEmpty
+                  && store.draftTo == "a+tag@example.com, b@example.com, c@example.com" && store.draftCc == "d@example.com"
+                  && store.draftBcc == "e@example.com" && store.draftSubject == "Café & tea" && store.draftBody == "A+B\nC",
+                  "mailto opens a scoped editable draft and decodes all supported fields")
+        let second = URL(string: "mailto:second@example.com")!
+        links.receive(second, verifiedScope: account.scope)
+        try check(!links.openNext(in: store, verifiedScope: account.scope) && store.draftSubject == "Café & tea",
+                  "a second mail link preserves the current draft")
+        try check(store.flushPersistence(), "the first link draft is recoverable")
+        let reopened = MailStore(messages: [], persistenceURL: path)
+        try check(!links.openNext(in: reopened, verifiedScope: account.scope) && reopened.draftRecoveryAvailable,
+                  "a link waits while an unfinished draft can be recovered")
+        reopened.recoverDraft()
+        reopened.saveDraft()
+        try check(links.openNext(in: reopened, verifiedScope: account.scope) && reopened.draftTo == "second@example.com",
+                  "the next link opens after the previous draft is saved")
+        links.receive(second, verifiedScope: account.scope)
+        links.useWorkspace(nil)
+        try check(!links.hasPending, "signing out clears links associated with that workspace")
+        for bad in ["https://example.com", "mailto://site/example.com", "mailto:a@example.com?subject=Hi%0ABcc%3A",
+                    "mailto:?to=a@example.com%0D%0Ab@example.com", "mailto:?subject=a&subject=b"] {
+            try check(MailLinkDraft(url: URL(string: bad)!) == nil, "unsupported URL or invalid headers are rejected")
+        }
+    }
+
     @MainActor static func scopedDraftRecovery(directory: URL, account: RemoteAccountIdentity) throws {
         let stateURL = directory.appendingPathComponent("scoped-draft-recovery.json")
         let original = MailStore(messages: [], persistenceURL: stateURL)

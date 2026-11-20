@@ -360,15 +360,23 @@ struct BackendSessionFixtures {
         let heldAccounts = await iterator.next()!
         check(verified.isRestoring && !verified.canAccessWorkspace && verified.credential?.userID == person.user,
               "Restore stopped showing its loading gate before the initial account request completed")
+        check(verified.accountCatalogState == .loading, "Setup offered to add mail before the account lookup completed")
         heldAccounts.respond(500, Data("{}".utf8)); continuation.finish(); await restoring.value
         check(verified.canAccessWorkspace && !verified.isRestoring && verified.errorMessage != nil,
               "A transient account-list failure revoked the already verified workspace")
+        check(verified.accountCatalogState == .failed(verified.errorMessage ?? ""),
+              "Failed lookup appeared as an empty account list")
+        SessionFixtureProtocol.handler = { _, fixture in fixture.respond(200, Data("[]".utf8)) }
+        try? await verified.refreshAccounts()
+        check(verified.accountCatalogState == .loaded && verified.accounts.isEmpty,
+              "Successful retry with an empty account list did not enable first-inbox setup")
 
         let logoutGate = SessionFixtureGate(); await verifiedStore.pauseNextDelete(logoutGate); install(person)
         let signingOut = Task { await verified.logout() }
         await logoutGate.waitUntilEntered()
         check(!verified.canAccessWorkspace && verified.credential == nil && RemoteAccountRegistry.accounts.isEmpty,
               "Logout left the workspace accessible while credential deletion was suspended")
+        check(verified.accountCatalogState == .pending, "Signing out retained the previous account lookup state")
         await logoutGate.release(); await signingOut.value
 
         let offlineStore = SessionMemoryStore(person.credential); let offline = fixture(offlineStore)
@@ -669,6 +677,11 @@ struct BackendSessionFixtures {
         check(!session.isAccountConnected(rows[3].id, scope: originalScope), "Reconnect-required account was treated as connected")
         check(!session.isAccountConnected(rows[0].id, scope: "another-workspace"), "Account was available in the wrong scope")
         check(RemoteAccountRegistry.accounts.first(where: { $0.accountID == rows[3].id })?.status == "reconnect_required", "Account status was lost in the registry")
+
+        var catalogChanges = 0
+        session.onAccountCatalogChanged = { catalogChanges += 1 }
+        try! await session.refreshAccounts()
+        check(catalogChanges == 0, "An unchanged catalog invalidated the mailbox")
 
         let reversed = accountData(Array(rows.reversed()))
         SessionFixtureProtocol.handler = { request, fixture in

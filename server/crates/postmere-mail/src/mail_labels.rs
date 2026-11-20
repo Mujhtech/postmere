@@ -164,6 +164,7 @@ async fn label_session(
             }
         };
         return Err(AppError {
+            retry_after_seconds: None,
             status: axum::http::StatusCode::PRECONDITION_FAILED,
             code: "label_permission_required",
             message: message.into(),

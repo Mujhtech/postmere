@@ -77,6 +77,16 @@ struct BackendEventFixtures {
             do { try await stream.consume(token: "fixture", lastEventID: nil) { _ in }; throw RealtimeFixtureFailure(message: "Invalid stream response accepted") }
             catch let error as BackendError { try realtimeCheck(!error.localizedDescription.contains("secret-response"), "Server body leaked through error") }
         }
+        RealtimeFixtureProtocol.handler = { _, fixture in
+            fixture.response(429, headers: ["Retry-After":"900"], chunks: [])
+        }
+        let start = Date.now
+        do {
+            try await stream.consume(token: "fixture", lastEventID: nil) { _ in }
+            throw RealtimeFixtureFailure(message: "Throttled stream accepted")
+        } catch BackendError.mailSyncRateLimited(let retryAt) {
+            try realtimeCheck(retryAt >= start.addingTimeInterval(900), "Stream lost the server’s retry deadline")
+        }
         let recorder = RealtimeFixtureRecorder()
         RealtimeFixtureProtocol.recorder = recorder
         RealtimeFixtureProtocol.handler = { _, fixture in fixture.response(200, headers: ["Content-Type":"text/event-stream"], chunks: [Data(": heartbeat\n\n".utf8)], finish: false) }

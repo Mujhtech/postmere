@@ -141,6 +141,10 @@ nonisolated struct BackendEventStream: Sendable {
             defer { bytes.task.cancel() }
             guard let response = response as? HTTPURLResponse else { throw BackendError.invalidResponse }
             guard !(300...399).contains(response.statusCode) else { throw BackendError.redirect }
+            if response.statusCode == 429 {
+                throw BackendHTTPClient.responseError(status: 429, path: "/v1/events", data: Data(),
+                    retryAfter: response.value(forHTTPHeaderField: "Retry-After"))
+            }
             guard response.statusCode == 200 else {
                 throw BackendError.response(response.statusCode, response.statusCode == 401
                     ? "Your workspace session ended. Sign in again to continue."
@@ -209,7 +213,7 @@ final class BackendRealtimeCoordinator {
             var backoff = BackendEventBackoff()
             while !Task.isCancelled, self.generation == newGeneration {
                 let started = ContinuousClock.now
-                var unavailable = false
+                var minimumDelay: TimeInterval = 0
                 do {
                     try await connect(self.lastEventID) { [weak self] event in
                         guard let self, self.generation == newGeneration, !Task.isCancelled else { throw CancellationError() }
@@ -220,11 +224,12 @@ final class BackendRealtimeCoordinator {
                 } catch is CancellationError { break }
                 catch BackendError.notConnected { break }
                 catch BackendError.response(401, _) { break }
-                catch BackendError.response(let code, _) { unavailable = (400...499).contains(code) && code != 429 }
+                catch BackendError.mailSyncRateLimited(let retryAt) { minimumDelay = max(0, retryAt.timeIntervalSinceNow) }
+                catch BackendError.response(let code, _) where (400...499).contains(code) { minimumDelay = 300 }
                 catch { /* The existing poller keeps mail usable while offline. */ }
                 guard !Task.isCancelled, self.generation == newGeneration else { break }
                 let delay = backoff.nextDelay(stableConnection: started.duration(to: .now) >= .seconds(30), jitter: self.jitter())
-                do { try await self.sleep(unavailable ? 300 : delay) }
+                do { try await self.sleep(max(minimumDelay, delay)) }
                 catch { break }
             }
         }

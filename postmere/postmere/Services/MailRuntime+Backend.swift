@@ -1,75 +1,116 @@
 import Foundation
 
 extension MailRuntime {
-    func syncBackend(refreshProvider: Bool = true) async {
-        guard let sessionID = backend.realtimeGeneration, let requestScope = backend.scope, !isSyncingBackend else { return }
+    func syncBackend(refreshProvider: Bool = true, refreshAccounts: Bool = false) async {
+        guard let generation = backend.realtimeGeneration, let scope = backend.scope else { return }
+        if let until = mailSyncRateLimit, until > .now { return }
+        pendingMailSync.insert(.cache)
+        if refreshProvider { pendingMailSync.insert(.provider) }
+        if refreshAccounts || refreshProvider { pendingMailSync.insert(.catalog) }
+        // A hint arriving during a read may refer to a later commit. Keep one
+        // follow-up read, combining hints from every window, push and the stream.
+        guard !isSyncingBackend else { return }
         isSyncingBackend = true
-        if refreshProvider {
-            lastBackendSync = .now
-            lastBackendSyncScope = requestScope
-        }
         defer { isSyncingBackend = false }
-        do {
+        repeat {
+            let demand = pendingMailSync
+            pendingMailSync = []
+            mailSyncRateLimit = nil
+            do {
+                try await readMailCache(demand: demand, generation: generation, scope: scope)
+            } catch BackendError.mailSyncRateLimited(let retryAt) {
+                guard backend.realtimeGeneration == generation else { return }
+                mailSyncRateLimit = retryAt
+                nextMailCacheCheck = retryAt
+                mailSyncActivity = .waiting(retryAt: retryAt)
+                pendingMailSync = []
+                return
+            } catch {
+                guard backend.realtimeGeneration == generation else { return }
+                if !Task.isCancelled { reportMailSyncError(error.localizedDescription) }
+                nextMailCacheCheck = Date.now.addingTimeInterval(60)
+                mailSyncActivity = .idle
+                return
+            }
+        } while !pendingMailSync.isEmpty && !Task.isCancelled && backend.realtimeGeneration == generation
+    }
+
+    private func readMailCache(demand: BackendMailSyncDemand, generation: UUID, scope: String) async throws {
+        if demand.contains(.catalog) || backend.accountCatalogState != .loaded {
             try await backend.refreshAccounts()
-            guard backend.realtimeGeneration == sessionID else { return }
-            // Restore remote-delivery ownership before new cache rows can
-            // schedule a duplicate local alert after a quit/relaunch.
-            await synchronizePush()
-            guard backend.realtimeGeneration == sessionID else { return }
-            let identities = RemoteAccountRegistry.accounts.filter { $0.scope == requestScope }
-            var failures: [String] = []
-            for identity in identities {
-                guard backend.isAccountConnected(identity.accountID, scope: identity.scope) else { continue }
-                guard await store.prepareBackendNotifications(for: identity) else { return }
+            guard backend.realtimeGeneration == generation else { return }
+            nextAccountCatalogCheck = Date.now.addingTimeInterval(300)
+            for account in backend.accounts { mailSyncStatuses[account.id] = account.syncStatus }
+        }
+        guard backend.realtimeGeneration == generation else { return }
+        let accounts = RemoteAccountRegistry.accounts.filter {
+            $0.scope == scope && backend.isAccountConnected($0.accountID, scope: scope)
+        }
+        let connected = Set(accounts.map(\.accountID))
+        mailSyncStatuses = mailSyncStatuses.filter { connected.contains($0.key) }
+        if demand.contains(.provider), !accounts.isEmpty { mailSyncActivity = .syncing }
+
+        var remaining = accounts
+        var firstPass = true
+        var loaded = 0
+        var failures: [String] = []
+        while !remaining.isEmpty {
+            var next: [RemoteAccountIdentity] = []
+            for identity in remaining {
+                try Task.checkCancellation()
+                guard backend.realtimeGeneration == generation else { return }
+                guard backend.isAccountConnected(identity.accountID, scope: scope),
+                      await store.prepareBackendNotifications(for: identity) else { continue }
                 do {
-                    for _ in 0..<5 {
-                        try Task.checkCancellation()
-                        guard backend.realtimeGeneration == sessionID, backend.isAccountConnected(identity.accountID, scope: identity.scope) else { break }
-                        let cursor = store.backendSyncCursors[identity.localID]
-                        let known = Set(store.messages.filter { $0.account == identity.localID }.map(\.id))
-                        let read = store.beginProviderPage(for: identity.localID)
-                        defer { store.endProviderPage(read) }
-                        let page: BackendMailPage
-                        do {
-                            page = try await backend.request("POST", "/v1/mail/accounts/\(identity.accountID.uuidString)/sync", body: BackendSyncInput(cursor: cursor, refreshProvider: refreshProvider ? nil : false))
-                        } catch BackendError.response(400, _) where cursor != nil {
-                            guard backend.realtimeGeneration == sessionID, backend.isAccountConnected(identity.accountID, scope: identity.scope) else { break }
-                            // A retired cursor key or reset server cache requires a
-                            // complete replay. Retain all local messages meanwhile.
-                            store.backendSyncCursors[identity.localID] = nil
-                            guard await store.persistStateAsync() else { return }
-                            continue
-                        }
-                        guard backend.realtimeGeneration == sessionID else { return }
-                        guard backend.isAccountConnected(identity.accountID, scope: identity.scope) else { break }
-                        guard await store.applyBackendPage(page, identity: identity, read: read, isCurrent: {
-                            self.backend.realtimeGeneration == sessionID && self.backend.isAccountConnected(identity.accountID, scope: requestScope)
-                        }) else { return }
-                        guard backend.realtimeGeneration == sessionID else { return }
-                        guard backend.isAccountConnected(identity.accountID, scope: identity.scope) else { break }
-                        for message in store.backendNotificationCandidates(for: identity, excluding: known) {
-                            await notifyBackendMessage(message)
-                        }
-                        if !page.hasMore { break }
+                    let page = try await readMailPage(identity, generation: generation,
+                                                      refreshProvider: firstPass && demand.contains(.provider))
+                    guard backend.realtimeGeneration == generation else { return }
+                    guard let page, backend.isAccountConnected(identity.accountID, scope: scope) else { continue }
+                    mailSyncStatuses[identity.accountID] = page.syncStatus
+                    loaded += page.messages.count
+                    if page.hasMore {
+                        next.append(identity)
+                        mailSyncActivity = .loadingCache(loaded: loaded)
+                    }
+                } catch BackendError.response(400, _) where store.backendSyncCursors[identity.localID] != nil {
+                    // Retired cursor. Keep local messages while replaying the cache.
+                    guard backend.realtimeGeneration == generation else { return }
+                    store.backendSyncCursors[identity.localID] = nil
+                    if await store.persistStateAsync() { next.append(identity) }
+                } catch let error as BackendError {
+                    if case .mailSyncRateLimited = error { throw error }
+                    if backend.isAccountConnected(identity.accountID, scope: scope) {
+                        failures.append("\(identity.email): \(error.localizedDescription)")
                     }
                 } catch {
-                    guard backend.realtimeGeneration == sessionID else { return }
-                    if backend.isAccountConnected(identity.accountID, scope: identity.scope) {
+                    try Task.checkCancellation()
+                    if backend.isAccountConnected(identity.accountID, scope: scope) {
                         failures.append("\(identity.email): \(error.localizedDescription)")
                     }
                 }
-                guard backend.realtimeGeneration == sessionID else { return }
             }
             store.reconcileSelection()
             backend.errorMessage = failures.isEmpty ? nil : failures.joined(separator: "\n")
         } catch {
             if backend.realtimeGeneration == sessionID { backend.errorMessage = error.localizedDescription }
         }
+        lastMailSyncError = message
+    }
+
+    private func updateMailSyncActivity() {
+        let states = mailSyncStatuses.values
+        let activity: MailSyncActivity
+        if states.contains(where: { $0.phase == "importing" }) { activity = .importing(cached: nil) }
+        else if states.contains(where: { $0.phase == "syncing" }) { activity = .syncing }
+        else if let retry = states.filter({ $0.phase == "retrying" }).compactMap(\.retryAt).min() {
+            activity = .waiting(retryAt: retry)
+        } else { activity = .idle }
+        if mailSyncActivity != activity { mailSyncActivity = activity }
     }
 
     func searchBackend(account: MailAccount, query: String, loadMore: Bool = false) async {
         guard let sessionID = backend.realtimeGeneration, let identity = account.remote, backend.isAccountConnected(identity.accountID, scope: identity.scope),
-              !isSyncingBackend else { return }
+              !isSearchingBackend else { return }
         let context = BackendSearchContext(accountID: identity.accountID, scope: identity.scope, query: query)
         if loadMore {
             guard backendSearchContext == context else { return }
@@ -78,8 +119,8 @@ extension MailRuntime {
             backendSearchCursor = nil
             backendHasMore = false
         }
-        isSyncingBackend = true
-        defer { isSyncingBackend = false }
+        isSearchingBackend = true
+        defer { isSearchingBackend = false }
         do {
             let read = store.beginProviderPage(for: identity.localID)
             defer { store.endProviderPage(read) }
@@ -175,7 +216,14 @@ nonisolated struct BackendSearchContext: Equatable {
     let query: String
 }
 
-nonisolated struct BackendSyncInput: Encodable, Sendable { let cursor: String?; var refreshProvider: Bool? = nil }
+nonisolated struct BackendMailSyncDemand: OptionSet {
+    let rawValue: Int
+    static let cache = Self(rawValue: 1)
+    static let catalog = Self(rawValue: 2)
+    static let provider = Self(rawValue: 4)
+}
+
+nonisolated struct BackendSyncInput: Encodable, Sendable { let cursor: String?; let refreshProvider: Bool }
 
 nonisolated struct BackendSearchRequest: Encodable, Sendable {
     let query: String

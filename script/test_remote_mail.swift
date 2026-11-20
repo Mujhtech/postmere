@@ -147,15 +147,19 @@ import Foundation
     }
     let historical = notificationPayload(offset: -86_400)
     let arrivedDuringSetup = notificationPayload(offset: 1)
-    try check(await notificationStore.applyBackendPage(BackendMailPage(messages: [historical, arrivedDuringSetup], nextCursor: "bootstrap-one", hasMore: true), identity: first),
+    var arrivals: [MailMessage] = []
+    let bootstrap = BackendMailPage(messages: [historical, arrivedDuringSetup, arrivedDuringSetup], nextCursor: "bootstrap-one", hasMore: true)
+    try check(await notificationStore.applyBackendPage(bootstrap, identity: first, onArrivals: { arrivals += $0 }),
               "first sync may contain both older mail and a new arrival")
-    try check(notificationStore.backendNotificationCandidates(for: first, excluding: []).map(\.backendMessageID) == [arrivedDuringSetup.id],
-              "initial sync notifies only mail arriving after setup began")
-    let firstPageIDs = Set(notificationStore.messages.map(\.id))
+    try check(await notificationStore.applyBackendPage(bootstrap, identity: first, onArrivals: { arrivals += $0 })
+              && arrivals.map(\.backendMessageID) == [arrivedDuringSetup.id],
+              "initial sync notifies only once for genuine new arrivals across repeated rows and replayed pages")
+    arrivals = []
     let older = notificationPayload(offset: -864_000)
-    try check(await notificationStore.applyBackendPage(BackendMailPage(messages: [older], nextCursor: "bootstrap-two", hasMore: false), identity: first),
+    try check(await notificationStore.applyBackendPage(BackendMailPage(messages: [older], nextCursor: "bootstrap-two", hasMore: false),
+                                                      identity: first, onArrivals: { arrivals += $0 }),
               "later bootstrap history advances the cursor")
-    try check(notificationStore.backendNotificationCandidates(for: first, excluding: firstPageIDs).isEmpty,
+    try check(arrivals.isEmpty,
               "a nonempty cursor does not turn paginated historical imports into new mail notifications")
 
     let afterReopen = MailStore(messages: [], persistenceURL: notificationURL)
@@ -163,12 +167,12 @@ import Foundation
     try check(await afterReopen.prepareBackendNotifications(for: first, now: cutoff.addingTimeInterval(172_800))
               && afterReopen.backendNotificationCutoffs[first.localID] == cutoff,
               "relaunch and cursor replay preserve the original notification date")
-    let knownAfterReopen = Set(afterReopen.messages.map(\.id))
     let arrivedWhileClosed = notificationPayload(offset: 86_400)
     let laterHistoricalImport = notificationPayload(offset: -1_728_000)
-    try check(await afterReopen.applyBackendPage(BackendMailPage(messages: [historical, arrivedWhileClosed, laterHistoricalImport], nextCursor: "replayed", hasMore: false), identity: first),
+    try check(await afterReopen.applyBackendPage(BackendMailPage(messages: [historical, arrivedWhileClosed, laterHistoricalImport], nextCursor: "replayed", hasMore: false),
+                                                identity: first, onArrivals: { arrivals += $0 }),
               "cursor replay can contain offline arrivals alongside older history")
-    try check(afterReopen.backendNotificationCandidates(for: first, excluding: knownAfterReopen).map(\.backendMessageID) == [arrivedWhileClosed.id],
+    try check(arrivals.map(\.backendMessageID) == [arrivedWhileClosed.id],
               "offline arrivals still notify while replayed messages and older backfills remain quiet")
     try check(afterReopen.backendNotificationCandidates(for: second, excluding: []).isEmpty,
               "notification eligibility never crosses server-account identities")

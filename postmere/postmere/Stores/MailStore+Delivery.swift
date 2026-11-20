@@ -120,8 +120,12 @@ extension MailStore {
     }
 
     func processWorkflowDates(now: Date = .now) {
+        let accounts = searchableAccounts
+        if let scan = workflowDateScan, scan.revision == mailboxDataRevision, scan.visibleAccounts == accounts,
+           scan.nextWake.map({ $0 > now }) ?? true { return }
         var updated = messages
         var changed = false
+        var nextWake: Date?
         var dueConversations: Set<String> = []
         for index in updated.indices {
             guard updated[index].workflow.snoozedUntil != nil || updated[index].workflow.followUpAt != nil else { continue }
@@ -136,6 +140,8 @@ extension MailStore {
                 if updated[index].mailbox == .archive { updated[index].mailbox = .inbox }
                 if !updated[index].isDraft && updated[index].mailbox != .trash { updated[index].isUnread = true }
                 changed = true
+            } else if let wake = updated[index].workflow.snoozedUntil {
+                nextWake = min(nextWake ?? wake, wake)
             }
             let message = updated[index]
             if message.workflow.followUpAt != nil && message.workflow.followUpOnlyIfNoReply,
@@ -150,6 +156,7 @@ extension MailStore {
             }
         }
         if changed { messages = updated; reconcileSelection() }
+        workflowDateScan = (mailboxDataRevision, accounts, nextWake)
     }
 
     func mergeIncoming(_ incoming: [MailMessage]) {

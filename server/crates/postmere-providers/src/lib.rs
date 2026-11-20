@@ -14,6 +14,7 @@ use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
 mod labels;
+mod response_error;
 pub use labels::{
     MailLabel, create_label, has_label_scope, list_labels, message_label_membership,
     set_message_label,
@@ -151,6 +152,10 @@ impl Drop for Credentials {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderError {
     Unauthorized,
+    MissingScope,
+    ProviderPolicy,
+    Forbidden,
+    RateLimited { retry_after: Option<u32> },
     NotFound,
     Rejected,
     Unavailable,
@@ -163,6 +168,26 @@ impl From<ProviderError> for AppError {
         match value {
             ProviderError::Unauthorized => {
                 AppError::conflict("Reconnect this mail account before continuing.")
+            }
+            ProviderError::MissingScope => {
+                AppError::conflict("Reconnect this mail account to grant the required permission.")
+            }
+            ProviderError::ProviderPolicy => AppError::new(
+                reqwest::StatusCode::FORBIDDEN,
+                "provider_policy",
+                "The mail provider or organization policy prevents this operation.",
+            ),
+            ProviderError::Forbidden => AppError::new(
+                reqwest::StatusCode::FORBIDDEN,
+                "provider_forbidden",
+                "The mail provider denied access to this resource.",
+            ),
+            ProviderError::RateLimited { retry_after } => {
+                let mut error = AppError::rate_limited();
+                error.retry_after_seconds = retry_after;
+                error.code = "provider_rate_limited";
+                error.message = "The mail provider is limiting requests. Try again later.".into();
+                error
             }
             ProviderError::NotFound => AppError::not_found(),
             ProviderError::CategoryConflict => AppError::conflict(
@@ -862,12 +887,8 @@ async fn read_bytes(
     mut response: reqwest::Response,
     limit: usize,
 ) -> Result<Zeroizing<Vec<u8>>, ProviderError> {
-    match response.status().as_u16() {
-        200..=299 => {}
-        401 | 403 => return Err(ProviderError::Unauthorized),
-        404 => return Err(ProviderError::NotFound),
-        429 | 500..=599 => return Err(ProviderError::Unavailable),
-        _ => return Err(ProviderError::Rejected),
+    if !response.status().is_success() {
+        return Err(response_error::classify(response).await);
     }
     if response.content_length().is_some_and(|n| n > limit as u64) {
         return Err(ProviderError::InvalidResponse);
@@ -1539,12 +1560,59 @@ pub struct SyncCheckpoint {
     pub cursor: Option<String>,
     pub history_id: Option<String>,
     pub initial_history_id: Option<String>,
+    /// A recent upstream throttle keeps subsequent batches small during recovery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gmail_recovering_until: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gmail_history_read_after: Option<DateTime<Utc>>,
+    /// Only an expired history watermark needs individual deletion checks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gmail_reconcile_before: Option<DateTime<Utc>>,
+    /// A messages.list page token held while history.list catches up.
+    pub backfill_cursor: Option<String>,
+    pub last_history_check: Option<DateTime<Utc>>,
     pub pending_ids: Vec<String>,
     pub pending_deleted: Vec<String>,
     pub resume_cursor: Option<String>,
     pub target_history_id: Option<String>,
     pub modified_after: Option<DateTime<Utc>>,
     pub scan_started_at: Option<DateTime<Utc>>,
+}
+impl SyncCheckpoint {
+    fn poll_history_during_backfill(&mut self, now: DateTime<Utc>) {
+        if self.phase != "history"
+            && self.cursor.is_some()
+            && self.initial_history_id.is_some()
+            && self
+                .last_history_check
+                .is_none_or(|last| now - last >= Duration::seconds(60))
+        {
+            self.backfill_cursor = self.cursor.take();
+            self.history_id = self.initial_history_id.take();
+            self.phase = "history".into();
+        }
+    }
+
+    fn finish_history_batch(&mut self, now: DateTime<Utc>) -> bool {
+        if !self.pending_ids.is_empty() || !self.pending_deleted.is_empty() {
+            return true;
+        }
+        self.cursor = self.resume_cursor.take();
+        if self.cursor.is_some() {
+            return true;
+        }
+        if let Some(watermark) = self.target_history_id.take() {
+            self.history_id = Some(watermark);
+        }
+        self.last_history_check = Some(now);
+        if let Some(cursor) = self.backfill_cursor.take() {
+            self.cursor = Some(cursor);
+            self.initial_history_id = self.history_id.take();
+            self.phase = "full".into();
+            return true;
+        }
+        false
+    }
 }
 pub struct SyncBatch {
     pub messages: Vec<Message>,
@@ -1553,7 +1621,7 @@ pub struct SyncBatch {
     pub has_more: bool,
 }
 
-/// Gmail uses a full bootstrap followed by provider history. Microsoft uses a
+/// Gmail polls provider history during and after its initial import. Microsoft uses a
 /// lastModifiedDateTime watermark with overlap; exact cached IDs are separately
 /// verified by the worker before any deletion is recorded.
 pub async fn sync_batch(
@@ -1622,6 +1690,7 @@ pub async fn sync_batch(
             has_more: page.has_more,
         });
     }
+    checkpoint.poll_history_during_backfill(Utc::now());
     if checkpoint.phase != "history" {
         if checkpoint.initial_history_id.is_none() {
             let profile = request_json(
@@ -1635,6 +1704,10 @@ pub async fn sync_batch(
                 .get("historyId")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
+            if checkpoint.initial_history_id.is_none() {
+                return Err(ProviderError::InvalidResponse);
+            }
+            checkpoint.last_history_check = Some(Utc::now());
         }
         let page = fetch_page(
             state,
@@ -1655,7 +1728,9 @@ pub async fn sync_batch(
             messages: page.messages,
             deleted_ids: vec![],
             checkpoint,
-            has_more: page.has_more,
+            // On the last listing page, immediately reconcile changes since
+            // the last watermark, including arrivals during this request.
+            has_more: true,
         });
     }
     if checkpoint.pending_ids.is_empty() && checkpoint.pending_deleted.is_empty() {
@@ -1682,7 +1757,11 @@ pub async fn sync_batch(
                 return Ok(SyncBatch {
                     messages: vec![],
                     deleted_ids: vec![],
-                    checkpoint: SyncCheckpoint::default(),
+                    checkpoint: SyncCheckpoint {
+                        gmail_reconcile_before: Some(Utc::now()),
+                        gmail_recovering_until: checkpoint.gmail_recovering_until,
+                        ..Default::default()
+                    },
                     has_more: true,
                 });
             }
@@ -1729,18 +1808,7 @@ pub async fn sync_batch(
             }
         }
     }
-    if checkpoint.pending_ids.is_empty() && checkpoint.pending_deleted.is_empty() {
-        checkpoint.cursor = checkpoint.resume_cursor.take();
-        if checkpoint.cursor.is_none() {
-            checkpoint.history_id = checkpoint
-                .target_history_id
-                .take()
-                .or(checkpoint.history_id);
-        }
-    }
-    let has_more = !checkpoint.pending_ids.is_empty()
-        || !checkpoint.pending_deleted.is_empty()
-        || checkpoint.cursor.is_some();
+    let has_more = checkpoint.finish_history_batch(Utc::now());
     Ok(SyncBatch {
         messages,
         deleted_ids,
@@ -2027,6 +2095,38 @@ mod tests {
         assert_eq!(c.refresh_token.as_deref(), Some("rotated"));
         assert!(parse_tokens(json!({"access_token":"","expires_in":3600}), None).is_err());
     }
+    #[test]
+    fn gmail_interleaves_history_and_resumes_persisted_backfill() {
+        let now = Utc::now();
+        // Existing installations have neither of the new fields and may
+        // already be thousands of pages into the initial import.
+        let mut state: SyncCheckpoint = serde_json::from_value(serde_json::json!({
+            "cursor": "old-mail-page",
+            "initial_history_id": "before-import"
+        }))
+        .unwrap();
+        state.poll_history_during_backfill(now);
+        assert!(state.cursor.is_none());
+        assert_eq!(state.history_id.as_deref(), Some("before-import"));
+        state.pending_ids.push("remaining-change".into());
+        state.resume_cursor = Some("next-history-page".into());
+        assert!(state.finish_history_batch(now));
+        assert!(state.cursor.is_none());
+        state.pending_ids.clear();
+        assert!(state.finish_history_batch(now));
+        assert_eq!(state.cursor.as_deref(), Some("next-history-page"));
+        state = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        state.target_history_id = Some("after-arrival".into());
+        assert!(state.finish_history_batch(now));
+        assert_eq!(state.cursor.as_deref(), Some("old-mail-page"));
+        assert_eq!(state.initial_history_id.as_deref(), Some("after-arrival"));
+        state.poll_history_during_backfill(now + Duration::seconds(5));
+        assert_eq!(state.phase, "full");
+        state.poll_history_during_backfill(now + Duration::seconds(60));
+        assert_eq!(state.phase, "history");
+        assert_eq!(state.history_id.as_deref(), Some("after-arrival"));
+    }
+
     #[test]
     fn gmail_history_distinguishes_explicit_deletions_from_changed_messages() {
         let value = json!({"history":[{"messagesAdded":[{"message":{"id":"new"}}],"labelsAdded":[{"message":{"id":"changed"}}],"labelsRemoved":[{"message":{"id":"changed"}},{"message":{"id":"deleted"}}],"messagesDeleted":[{"message":{"id":"deleted"}}]}]});

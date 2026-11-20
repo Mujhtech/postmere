@@ -46,7 +46,7 @@ final class MailStore {
     var searchConversationCounts: [UUID: Int] = [:]
     @ObservationIgnored var searchTask: Task<Void, Never>?
     @ObservationIgnored var searchGeneration = 0
-    var searchResultAccounts = Set<String>()
+    var searchResultScope: MailboxViewScope?
     @ObservationIgnored var watchingSearchAccounts = false
     var searchText = "" {
         didSet { if searchText != oldValue { searchFiltersChanged() } }
@@ -775,9 +775,13 @@ final class MailStore {
 
     func reconcileSelection() {
         guard !isSearchingMessages, selectedMessageID != nil || !selectedMessageIDs.isEmpty else { return }
-        if !isSearchActive, usesMailboxViewData || needsBackgroundSearch, loadedMailboxView?.key != mailboxViewKey {
-            startMailboxViewLoad()
-            return
+        if !isSearchActive, usesMailboxViewData || needsBackgroundSearch {
+            guard let data = loadedMailboxView, data.key == mailboxViewKey else {
+                startMailboxViewLoad()
+                return
+            }
+            if pendingMoveSelection == nil, let lead = selectedMessageID, data.rowPositions[lead] != nil,
+               selectedMessageIDs.allSatisfy({ data.rowPositions[$0] != nil }) { return }
         }
         reconcileSelection(in: filteredMessages)
     }
@@ -790,7 +794,8 @@ final class MailStore {
         let shouldAdvance = pending.map {
             !isSearchActive && $0.lead == selectedMessageID && $0.selection == selectedMessageIDs && $0.scope == mailboxViewKey.scope
         } ?? false
-        selectedMessageIDs.formIntersection(ids)
+        let retained = selectedMessageIDs.intersection(ids)
+        if retained != selectedMessageIDs { selectedMessageIDs = retained }
         if selectedMessageID.map(ids.contains) != true {
             isUpdatingSelection = true
             selectedMessageID = visible.first(where: { selectedMessageIDs.contains($0.id) })?.id

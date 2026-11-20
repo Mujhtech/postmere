@@ -142,7 +142,7 @@ extension MailStore {
 
     var activeSearchResults: [MailMessage] {
         // A registry change can precede its asynchronous refresh callback on sign-out.
-        searchResultAccounts == searchableAccounts ? searchResults : []
+        searchResultScope?.accounts == searchableAccounts ? searchResults : []
     }
 
     func watchSearchAccounts() {
@@ -162,25 +162,29 @@ extension MailStore {
         }
     }
 
-    func resetSearchResults() {
+    func resetSearchResults(keepingRowsIn scope: MailboxViewScope? = nil) {
         searchGeneration += 1
         searchTask?.cancel()
         searchTask = nil
-        searchResults = []
-        searchConversationCounts = [:]
+        if scope == nil || searchResultScope != scope {
+            searchResults = []
+            searchConversationCounts = [:]
+        }
+        searchResultScope = scope
         isSearchingMessages = false
     }
 
     func refreshSearch() {
         guard isSearchActive else { return }
-        resetSearchResults()
         guard hasSearchCriteria else {
+            resetSearchResults()
             reconcileSelection()
             return
         }
+        // Keep this query's rows mounted while synchronization refreshes them.
+        resetSearchResults(keepingRowsIn: mailboxViewKey.scope)
         let request = searchRequest()
         let snapshot = messages
-        searchResultAccounts = request.accounts
         if !usesMailboxViewData && !needsBackgroundSearch {
             searchResults = request.run(snapshot)
             searchConversationCounts = MailboxViewData.conversationCounts(in: snapshot, for: searchResults)
@@ -213,7 +217,7 @@ extension MailStore {
 
     private func finishSearch(_ result: [MailMessage], counts: [UUID: Int], generation: Int) {
         guard isSearchActive, searchGeneration == generation else { return }
-        guard searchResultAccounts == searchableAccounts else { refreshSearch(); return }
+        guard searchResultScope?.accounts == searchableAccounts else { refreshSearch(); return }
         searchConversationCounts = counts
         searchResults = result
         isSearchingMessages = false

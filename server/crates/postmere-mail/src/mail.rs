@@ -58,6 +58,36 @@ pub fn router() -> Router<AppState> {
         .route("/v1/mail/outbox/{id}/retry", post(retry))
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct AccountSyncStatus {
+    pub phase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<DateTime<Utc>>,
+}
+
+// Summarize the durable scheduler state without scanning mail or exposing a
+// provider cursor. Both public read paths use this same projection under RLS.
+macro_rules! account_status_query {
+    ($fields:literal, $filter:literal) => {
+        concat!("SELECT ", $fields, "CASE WHEN a.status <> 'connected' THEN NULL ELSE jsonb_strip_nulls(jsonb_build_object(
+    'phase', CASE
+        WHEN s.last_error IS NOT NULL AND w.due_at>now() THEN 'retrying'
+        WHEN s.last_error IS NOT NULL THEN 'syncing'
+        WHEN a.last_synced_at IS NULL OR s.checkpoint->>'phase'='full' OR s.checkpoint->>'backfill_cursor' IS NOT NULL
+            OR (coalesce(s.checkpoint->>'phase','')='' AND s.checkpoint->>'cursor' IS NOT NULL) THEN 'importing'
+        WHEN w.lease_until>now() OR s.checkpoint->>'cursor' IS NOT NULL
+            OR coalesce(jsonb_array_length(s.checkpoint->'pending_ids'),0)>0 THEN 'syncing'
+        ELSE 'up_to_date' END,
+    'retry_at',CASE WHEN s.last_error IS NOT NULL AND w.due_at>now() THEN w.due_at END)) END AS sync_status ", "FROM provider_accounts a LEFT JOIN mail_sync_state s ON s.account_id=a.id LEFT JOIN mail_sync_wakeups w ON w.account_id=a.id ", $filter)
+    };
+}
+
+fn status_column(row: &sqlx::postgres::PgRow) -> Result<Option<AccountSyncStatus>, AppError> {
+    Ok(row
+        .try_get::<Option<sqlx::types::Json<AccountSyncStatus>>, _>("sync_status")?
+        .map(|value| value.0))
+}
+
 #[derive(Serialize)]
 pub struct Account {
     pub id: Uuid,
@@ -67,6 +97,8 @@ pub struct Account {
     pub status: String,
     pub last_synced_at: Option<DateTime<Utc>>,
     pub capabilities: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_status: Option<AccountSyncStatus>,
 }
 pub struct AccountSession {
     pub account: Account,
@@ -82,6 +114,7 @@ fn account_row(row: &sqlx::postgres::PgRow) -> Result<Account, AppError> {
         status: row.try_get("status")?,
         last_synced_at: row.try_get("last_synced_at")?,
         capabilities: row.try_get("capabilities")?,
+        sync_status: None,
     })
 }
 
@@ -94,11 +127,17 @@ async fn accounts(
 
 pub async fn list_accounts(state: &AppState, auth: &AuthContext) -> Result<Vec<Account>, AppError> {
     let mut tx = auth.begin_authorized(&state.pool).await?;
-    let rows=sqlx::query("SELECT id,provider,email,display_name,status,last_synced_at,capabilities FROM provider_accounts WHERE disabled_at IS NULL ORDER BY created_at,id").fetch_all(&mut *tx).await?;
-    let result = rows
-        .iter()
-        .map(account_row)
-        .collect::<Result<Vec<_>, _>>()?;
+    let query = account_status_query!(
+        "a.id,a.provider,a.email,a.display_name,a.status,a.last_synced_at,a.capabilities,",
+        "WHERE a.disabled_at IS NULL ORDER BY a.created_at,a.id"
+    );
+    let rows = sqlx::query(query).fetch_all(&mut *tx).await?;
+    let mut result = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let mut account = account_row(row)?;
+        account.sync_status = status_column(row)?;
+        result.push(account);
+    }
     tx.commit().await?;
     Ok(result)
 }
@@ -437,11 +476,32 @@ async fn sync(
     // A client cache cursor is independent of the server's provider checkpoint.
     // It catches changes already fetched while the desktop app was closed.
     if request.refresh_provider.unwrap_or(true) {
-        match crate::mail_sync::sync_account(&state, auth.workspace_id, auth.user_id, id).await {
-            Ok(_) => {}
-            Err(error) if error.status == axum::http::StatusCode::CONFLICT => {}
-            Err(error) => return Err(error),
+        // The worker owns provider I/O. Returning the cache immediately also
+        // prevents desktop pagination and simultaneous windows doing duplicate
+        // mailbox fetches or waiting behind a slow Gmail page.
+        let mut tx = auth.begin_authorized(&state.pool).await?;
+        let connected: Option<bool> = sqlx::query_scalar(
+            "SELECT status='connected' FROM provider_accounts WHERE id=$1 AND disabled_at IS NULL",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let connected = connected.ok_or_else(AppError::not_found)?;
+        let idle: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
+                .bind(format!(
+                    "mail-sync:{}:{}:{id}",
+                    auth.workspace_id, auth.user_id
+                ))
+                .fetch_one(&mut *tx)
+                .await?;
+        // An active worker already owns the wakeup row while fetching. Skip the
+        // upsert so returning the cache cannot block on that transaction.
+        if connected && idle {
+            sqlx::query("INSERT INTO mail_sync_wakeups(account_id,workspace_id,user_id,due_at) VALUES($1,$2,$3,now()) ON CONFLICT(account_id) DO UPDATE SET due_at=now() WHERE mail_sync_wakeups.due_at>now() AND (mail_sync_wakeups.lease_until IS NULL OR mail_sync_wakeups.lease_until<now())")
+                .bind(id).bind(auth.workspace_id).bind(auth.user_id).execute(&mut *tx).await?;
         }
+        tx.commit().await?;
     }
     Ok(Json(
         cached_changes(
@@ -549,6 +609,8 @@ pub(crate) async fn persist_message(
 
 #[derive(Serialize)]
 pub struct ChangePage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_status: Option<AccountSyncStatus>,
     pub messages: Vec<Message>,
     pub deleted_message_ids: Vec<Uuid>,
     pub next_cursor: String,
@@ -597,15 +659,13 @@ pub async fn cached_changes(
         }
     };
     let mut tx = auth.begin_authorized(&state.pool).await?;
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM provider_accounts WHERE id=$1 AND disabled_at IS NULL)",
-    )
-    .bind(account)
-    .fetch_one(&mut *tx)
-    .await?;
-    if !exists {
-        return Err(AppError::not_found());
-    }
+    let query = account_status_query!("", "WHERE a.id=$1 AND a.disabled_at IS NULL");
+    let status_row = sqlx::query(query)
+        .bind(account)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(AppError::not_found)?;
+    let sync_status = status_column(&status_row)?;
     crate::mail_sync::cache_write_lock(&mut tx, auth.workspace_id, auth.user_id, account).await?;
     let active:bool=sqlx::query_scalar("SELECT (expires_at IS NULL OR expires_at>clock_timestamp()) AND (absolute_expires_at IS NULL OR absolute_expires_at>clock_timestamp()) FROM sessions WHERE id=$1")
         .bind(auth.session_id).fetch_one(&mut *tx).await?;
@@ -654,13 +714,20 @@ pub async fn cached_changes(
             upper: None,
         }
     };
-    let next_cursor = URL_SAFE_NO_PAD.encode(state.crypto.seal(
-        auth.workspace_id,
-        account,
-        &serde_json::to_vec(&next).map_err(|_| AppError::internal("change_cursor_encode"))?,
-    )?);
+    let next_cursor = if let Some(existing) =
+        cursor.filter(|_| rows.is_empty() && decoded.upper.is_none())
+    {
+        existing.to_owned()
+    } else {
+        URL_SAFE_NO_PAD.encode(state.crypto.seal(
+            auth.workspace_id,
+            account,
+            &serde_json::to_vec(&next).map_err(|_| AppError::internal("change_cursor_encode"))?,
+        )?)
+    };
     tx.commit().await?;
     Ok(ChangePage {
+        sync_status,
         messages,
         deleted_message_ids,
         next_cursor,

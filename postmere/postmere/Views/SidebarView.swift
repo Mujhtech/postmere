@@ -106,6 +106,11 @@ struct SidebarView: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
                     .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(sidebarSecondary)
+                SidebarSyncIndicator(activity: runtime.mailSyncActivity)
+                    .layoutPriority(1)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)

@@ -186,6 +186,12 @@ struct BackendClientFixtures {
                 return code == status && !text.contains("provider-secret") && !text.contains("sql-password") && !text.contains("oauth-token") && !text.contains("<html>")
             }) { _ = try await transport.raw("GET", "/v1/mail/messages") }
         }
+        let beforeThrottle = Date.now
+        _ = reset { _, fixture in fixture.response(429, headers: ["Retry-After": "900"]) }
+        await error("Sync cooldown", matches: {
+            guard case BackendError.mailSyncRateLimited(let retryAt) = $0 else { return false }
+            return retryAt >= beforeThrottle.addingTimeInterval(900) && retryAt <= Date.now.addingTimeInterval(900)
+        }) { _ = try await transport.raw("POST", "/v1/mail/accounts/fixture/sync") }
         let redirected = reset { _, fixture in fixture.response(302, headers: ["Location": "https://attacker.example.com/leak"], body: Data([65])) }
         await error("Redirect", matches: { if case BackendError.redirect = $0 { return true }; return false }) { _ = try await transport.raw("GET", "/v1/mail/messages", token: "must-not-follow") }
         try await Task.sleep(for: .milliseconds(50))
