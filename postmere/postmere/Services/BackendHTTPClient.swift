@@ -137,6 +137,58 @@ nonisolated struct BackendHTTPClient: Sendable {
         return data
     }
 
+    private static func isAIRequest(_ path: String) -> Bool {
+        if path.hasPrefix("/v1/ai/") || path == "/v1/decisions/spam" { return true }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
+        return parts.count == 5 && parts[0] == "v1" && parts[1] == "mail" && parts[2] == "messages"
+            && UUID(uuidString: String(parts[3])) != nil && parts[4] == "sender-profile"
+    }
+
+    static func responseError(status: Int, path: String, data: Data, retryAfter: String? = nil) -> any Error {
+        if status == 429, ["/v1/events", "/v1/mail/accounts"].contains(path) || (path.hasPrefix("/v1/mail/accounts/") && path.hasSuffix("/sync")) {
+            let now = Date.now
+            var retryAt = now.addingTimeInterval(60)
+            if let value = retryAfter?.trimmingCharacters(in: .whitespacesAndNewlines) {
+                if let seconds = UInt32(value) { retryAt = now.addingTimeInterval(TimeInterval(seconds)) }
+                else {
+                    let formatter = DateFormatter()
+                    formatter.locale = Locale(identifier: "en_US_POSIX")
+                    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+                    formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+                    if let date = formatter.date(from: value) { retryAt = date }
+                }
+            }
+            return BackendError.mailSyncRateLimited(retryAt: max(now.addingTimeInterval(1), retryAt))
+        }
+        // Only client-owned messages may be shown. Provider bodies can contain private data.
+        if Self.isAIRequest(path), ![401, 403].contains(status) {
+            struct Envelope: Decodable {
+                struct Detail: Decodable { let code: String }
+                let error: Detail
+            }
+            if data.count <= 16 * 1024,
+               let detail = try? JSONDecoder().decode(Envelope.self, from: data),
+               let error = BackendAIError(rawValue: detail.error.code) { return error }
+            switch status {
+            case 408, 504: return BackendAIError.timeout
+            case 502, 503: return BackendAIError.unavailable
+            default: break
+            }
+        }
+        let message: String
+        switch status {
+        case 401: message = "Your workspace sign-in is no longer valid, or the sign-in details were not accepted."
+        case 403: message = "This account does not have access to that operation."
+        case 404: message = "That item is no longer available."
+        case 409: message = "The item changed. Refresh it before trying again."
+        case 422, 400: message = "Check the information and try again."
+        case 429: message = "Too many requests. Wait a moment and try again."
+        case 503: message = "This service is not configured or is temporarily unavailable."
+        default: message = "The server could not complete the request (\(status))."
+        }
+        return BackendError.response(status, message)
+    }
+
     static func decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase

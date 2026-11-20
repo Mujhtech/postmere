@@ -101,6 +101,10 @@ struct BackendClientFixtures {
         try await requestFixtures()
         progress("Checking responses and redirects")
         try await responseFixtures()
+        progress("Checking sender-profile requests")
+        try await senderProfileFixtures()
+        progress("Checking progressive summaries")
+        try await summaryFixtures()
         progress("Checking response size limits")
         try await sizeFixtures()
         if !failures.isEmpty {
@@ -196,6 +200,40 @@ struct BackendClientFixtures {
         await error("Redirect", matches: { if case BackendError.redirect = $0 { return true }; return false }) { _ = try await transport.raw("GET", "/v1/mail/messages", token: "must-not-follow") }
         try await Task.sleep(for: .milliseconds(50))
         check(redirected.count == 1, "Redirect caused a second request")
+    }
+
+    static func senderProfileFixtures() async throws {
+        let transport = try client(ambient: true)
+        let path = "/v1/mail/messages/\(accountID.uuidString)/sender-profile"
+        let recorder = reset { _, fixture in fixture.response(200, body: Data(#"{"email":"sender@example.com","status":"not_found"}"#.utf8)) }
+        let payload = Data(#"{"refresh":true}"#.utf8)
+        _ = try await transport.raw("POST", path, token: "explicit-profile-token", body: payload)
+        let request = recorder.last!
+        check(request.url?.path == path && request.httpMethod == "POST", "Sender-profile lookup must use the message-scoped POST endpoint")
+        check(request.timeoutInterval == 115, "Sender-profile lookup must allow the server's bounded enrichment deadline")
+        check(body(request) == payload && request.url?.query == nil, "Sender-profile transport must preserve the refresh-only request without appending mail data")
+        check(request.value(forHTTPHeaderField: "Authorization") == "Bearer explicit-profile-token" &&
+              request.value(forHTTPHeaderField: "Cookie") == nil && request.value(forHTTPHeaderField: "X-Ambient") == nil,
+              "Sender-profile lookup must keep credentials scoped and remove ambient headers")
+        for (status, code, expected) in [(503, "ai_not_configured", BackendAIError.notConfigured),
+                                         (504, "ai_timeout", .timeout), (502, "ai_provider_auth", .credentials),
+                                         (502, "ai_invalid_output", .invalidOutput), (429, "ai_provider_busy", .busy)] {
+            _ = reset { _, fixture in fixture.response(status, body: Data("{\"error\":{\"code\":\"\(code)\",\"message\":\"private-sender provider-key\"}}".utf8)) }
+            await error("Sender-profile \(code)", matches: {
+                $0 as? BackendAIError == expected && !$0.localizedDescription.contains("private-sender") && !$0.localizedDescription.contains("provider-key")
+            }) { _ = try await transport.raw("POST", path, token: "fixture", body: payload) }
+        }
+        for status in [401, 403] {
+            _ = reset { _, fixture in fixture.response(status, body: Data(#"{"error":{"code":"ai_provider_auth","message":"private-sender"}}"#.utf8)) }
+            await error("Sender-profile auth \(status)", matches: {
+                guard case let BackendError.response(code, message) = $0 else { return false }
+                return code == status && !message.contains("private-sender")
+            }) { _ = try await transport.raw("POST", path, token: "fixture", body: payload) }
+        }
+        let unrelated = reset { _, fixture in fixture.response(200, body: Data("{}".utf8)) }
+        _ = try await transport.raw("POST", "/v1/mail/messages/\(accountID.uuidString)/other", body: payload)
+        check(unrelated.last?.timeoutInterval != 115, "Long enrichment timeout must not affect unrelated mail routes")
+        print("PASS: sender-profile scoped POST, bounded enrichment timeout, refresh-only body and sanitized AI/provider errors")
     }
 
     static func sizeFixtures() async throws {

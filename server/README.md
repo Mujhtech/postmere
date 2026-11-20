@@ -364,6 +364,72 @@ user separately enables assistance through `GET/PUT /v1/ai/settings`. The
 settings response includes availability, provider/model, a data notice, and an
 editable style guide. No API key is stored in the desktop application.
 
+### Checking a message for spam
+
+After enabling AI in their workspace, a user can submit one cached message to
+`POST /v1/decisions/spam` with `{"message_id":"<UUID>"}`. The response contains
+the same `message_id`, a `verdict` and a short plain-text `reason`. The three
+verdicts are `possible_spam`, `no_spam_signals` and `uncertain`. They describe
+the evidence in the excerpt. The endpoint never moves, reports or modifies a
+message. Sender and link authenticity require separate verification.
+
+The server checks that the message belongs to the requesting user and workspace,
+that its account is connected, and that AI is enabled. It sends only the sender
+domain, the first 300 characters of the subject and up to 4,000 characters of
+plain-text content. The excerpt can contain personal or confidential information.
+The analyzer receives no internal IDs, separate recipient fields, attachments,
+HTML, mailbox history or credentials for the user's email account.
+
+By default the check uses the configured OpenAI model with structured output,
+no tools and `store:false`. To select a different analyzer, set both
+`POSTMERE_DECISION_URL` (an administrator-chosen HTTPS endpoint) and
+`POSTMERE_DECISION_TOKEN`. Postmere sends an HTTP POST containing JSON and
+`Authorization: Bearer <token>`. Redirects are disabled. Custom providers
+control their own data retention. A custom provider failure is returned to the
+requester without sending the message to another provider.
+
+The adapter accepts this request and returns the following JSON shape.
+
+```json
+{"task":"spam","message":{"sender_domain":"example.test","subject":"Invoice","text":"Please review the invoice."}}
+```
+
+```json
+{"verdict":"uncertain","reason":"The excerpt provides little context."}
+```
+
+The adapter must return a successful HTTP status and a single-line reason of
+1–500 characters. Postmere rejects unknown verdicts and unexpected fields.
+`GET /v1/ai/settings` exposes `decision_available` whenever a spam analyzer is
+configured. The existing `available` field covers the other OpenAI features.
+
+### Sender research and mail assistance
+
+`POST /v1/mail/messages/{message_id}/sender-profile` researches the selected
+incoming sender's public professional identity using the same OpenAI key,
+configured model, and user AI preference. The model must support Responses API
+`web_search` and structured JSON output. No separate enrichment subscription or
+API key is needed. The request body is `{ "refresh": false }`; use `true` for
+an explicit refresh. Only the sender's name and email address from the owned
+message envelope are used for research, never the subject, body, attachments,
+private notes, or conversation history.
+
+The response reports whether a profile was matched, no reliable match was
+found, or AI is disabled/unconfigured. Available profile fields cover name,
+role, company, general location, a short introduction, and public profile/site
+links. Each finding cites URLs returned by the provider's actual web research;
+the server rejects source URLs absent from the search metadata and withholds
+matches marked uncertain or inconsistent with the sender's name/address.
+Sender research is bounded, rate-limited, and cached within the current server
+process by workspace, user, account, and sender. Access and AI opt-in are
+rechecked after waiting and before returning a result. No model receives mail
+tools or credentials. The Mac displays the findings alongside the email and
+keeps source links available beside the facts.
+
+See [OpenAI's web search guide](https://developers.openai.com/api/docs/guides/tools-web-search)
+for tool/model support and search billing. Actual sender coverage depends on
+available public information; a name or email address does not guarantee a match.
+
 `POST /v1/ai/summary` and `/suggestions` accept selected `message_ids`;
 `/draft` accepts those IDs plus `draft_text`, `instruction`, and `notes`.
 `/ask` accepts a `question` and optional `account_ids`. Retrieval is bounded

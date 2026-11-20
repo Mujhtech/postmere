@@ -15,6 +15,25 @@ struct ReaderView: View {
     @State private var loadingAttachmentID: UUID?
     @State private var readingPosition = ScrollPosition(edge: .top)
     @State private var detectedDates: (source: DateSource, suggestions: [MailDateSuggestion])?
+    @State private var summaryTarget: MailConversationSummary?
+    @State private var isSummaryExpanded = true
+    @State private var senderResearch = MailSenderProfile()
+    @State private var senderDetailsSelection: SenderSelection?
+    @State private var senderLookupTask: Task<Void, Never>?
+    @State private var readerSize: CGSize = .zero
+    @State private var isEnablingSenderResearch = false
+    @State private var senderEnableError: String?
+
+    private struct SenderSelection {
+        enum Action { case lookup, refresh, enable }
+        let id = UUID()
+        let readerID: UUID
+        let messageID: UUID
+        let email: String
+        let account: String
+        let target: SenderProfileTarget?
+        let action: Action
+    }
 
     private struct DateSource: Equatable, Sendable {
         let messageID: UUID
@@ -67,36 +86,14 @@ struct ReaderView: View {
                     }
                 }
             } else if let message = store.selectedMessage {
-                let conversation = store.selectedConversation
-                let dateSource = DateSource(message)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(message.displaySubject)
-                            .font(.system(size: 24, weight: .semibold, design: .serif))
-                            .tracking(-0.4)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityAddTraits(.isHeader)
-                            .padding(.bottom, conversation.count > 1 ? 10 : 16)
-                        if conversation.count > 1 {
-                            conversationSummary(conversation, selected: message)
-                                .padding(.bottom, 16)
-                            workflowSummary(message)
-                            VStack(spacing: 12) {
-                                ForEach(conversation) { entry in
-                                    conversationMessage(entry)
-                                }
-                            }
-                        } else {
-                            HoverableMailMessage {
-                                VStack(alignment: .leading, spacing: 0) {
-                                    senderHeader(message, presentation: .single)
-                                    Divider().padding(.vertical, 14)
-                                    workflowSummary(message)
-                                    messageContents(message)
-                                }
-                            }
-                        }
+                HSplitView {
+                    readerWithActions(message)
+                        .frame(minWidth: showsSenderDetails ? 380 : nil, maxWidth: .infinity, maxHeight: .infinity)
+                    if showsSenderDetails, let sender = senderDetailsMessage {
+                        SenderContextView(message: sender, target: senderProfileTarget, research: senderResearch,
+                                          onRefresh: { requestSenderDetails(.refresh) }, onClose: closeSenderDetails,
+                                          onEnable: { requestSenderDetails(.enable) }, isEnabling: isEnablingSenderResearch, enableError: senderEnableError)
+                            .frame(minWidth: 280, idealWidth: 300, maxWidth: 320)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 20)
@@ -114,7 +111,17 @@ struct ReaderView: View {
                 InboxOverviewView(store: store)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Revealing the panel asks the split layout for enough room to retain
+        // a readable message; it never becomes a modal inspector at small sizes.
+        .frame(minWidth: showsSenderDetails ? 661 : nil, maxWidth: .infinity, maxHeight: .infinity)
+        .onGeometryChange(for: CGSize.self, of: { $0.size }) { readerSize = $0 }
+        .onChange(of: activeSenderRequestID) { _, requestID in
+            if requestID == nil, senderDetailsSelection?.target != nil { closeSenderDetails() }
+        }
+        .onDisappear(perform: closeSenderDetails)
+        .onChange(of: runtime.readerPanel?.id) {
+            if runtime.readerPanel != nil { closeSenderDetails() }
+        }
         .toolbar {
             if store.selectedMessage != nil || store.selectedMessageIDs.count > 1 { readerToolbar }
         }
@@ -159,7 +166,27 @@ struct ReaderView: View {
                 }, session: runtime.backend)
             }
         }
+        .task(id: summaryTarget?.requestID) {
+            // Keep generation alive when the lazy reader scrolls its summary offscreen.
+            if let summaryTarget { await summaryTarget.load(session: runtime.backend) }
+        }
+        .onChange(of: runtime.backend.realtimeGeneration) {
+            summaryTarget = nil
+            closeSenderDetails()
+        }
+        .onChange(of: store.selectedAccount) {
+            runtime.readerPanel = nil
+            closeSenderDetails()
+        }
+        .onChange(of: store.selectedMessageIDs.count > 1) { _, multiple in
+            if multiple { runtime.readerPanel = nil; summaryTarget = nil; closeSenderDetails() }
+        }
+        .onChange(of: runtime.backend.scope) {
+            noteDrafts.removeAll()
+            runtime.readerPanel = nil
+        }
         .onChange(of: store.selectedMessageID, initial: true) {
+            closeSenderDetails()
             readingPosition.scrollTo(edge: .top)
             presentedSheet = nil
             toolbarDetailsTarget = nil
@@ -173,6 +200,196 @@ struct ReaderView: View {
         )) {
             Button("OK") { attachmentError = nil }
         } message: { Text(attachmentError ?? "Please try again.") }
+    }
+
+    private func readerWithActions(_ message: MailMessage) -> some View {
+        let beside = readerSize.width >= 690
+        let layout = beside ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
+        return layout {
+            readingContent(message, conversation: store.selectedConversation)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if let request = runtime.readerPanel, request.messageID == message.id {
+                Rectangle().fill(.separator)
+                    .frame(width: beside ? 1 : nil, height: beside ? nil : 1)
+                    .accessibilityHidden(true)
+                ReaderActionPanel(request: request, message: message, runtime: runtime, noteDrafts: $noteDrafts) {
+                    guard runtime.readerPanel?.id == request.id else { return }
+                    closeActionPanel()
+                }
+                .id(request.id)
+                .frame(width: beside ? min(360, readerSize.width * 0.45) : nil,
+                       height: beside ? nil : min(340, readerSize.height * 0.47))
+            }
+        }
+    }
+
+    @ViewBuilder private func readingContent(_ message: MailMessage, conversation: [MailMessage]) -> some View {
+        let groups = ThreadMessageGroup.groups(in: conversation, individualTargets: usesIndividualSourceTargets)
+        let dateSource = DateSource(message)
+        let keepsSourceAtTop = summarySourceAnchor != nil
+        ScrollViewReader { reader in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    Text(message.displaySubject)
+                        .font(.system(size: 24, weight: .semibold, design: .serif))
+                        .tracking(-0.4)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityAddTraits(.isHeader)
+                        .padding(.bottom, conversation.count > 1 ? 10 : 16)
+                    if let target = summaryTarget, target.messageID == message.id,
+                       target.sessionID == runtime.backend.realtimeGeneration {
+                        MailConversationSummaryView(summary: target,
+                                                   isExpanded: $isSummaryExpanded) { sourceID in
+                            if let source = conversation.first(where: { $0.backendMessageID == sourceID }) {
+                                revealMessageInThread(source.id)
+                            }
+                        }
+                        .id(target.id)
+                        .padding(.bottom, 16)
+                    }
+                    if conversation.count > 1 {
+                        conversationSummary(conversation, selected: message)
+                            .padding(.bottom, 8)
+                        workflowSummary(message, conversation: conversation)
+                        let quoteThread = MailQuoteThread(messages: conversation)
+                        ForEach(groups) { group in
+                            ProgressiveThreadGroup(group: group, expanded: expandedMessageIDs,
+                                                   priorityID: summarySourceAnchor?.firstMessage ?? message.id) { entry, prepared in
+                                VStack(alignment: .leading, spacing: 0) {
+                                    if entry.id != conversation.first?.id { Divider() }
+                                    conversationMessage(entry, quoteThread: quoteThread, prepared: prepared)
+                                }
+                                .id(entry.id)
+                            }
+                            // Give a linked source room to align before its HTML has finished measuring.
+                            .frame(minHeight: summarySourceAnchor == group.id ? viewportHeight : nil, alignment: .topLeading)
+                            .id(group.id)
+                        }
+                    } else {
+                        HoverableMailMessage { trackerCount in
+                            VStack(alignment: .leading, spacing: 0) {
+                                senderHeader(message, presentation: .single, trackerCount: trackerCount.wrappedValue)
+                                Divider().padding(.vertical, 14)
+                                workflowSummary(message, conversation: conversation)
+                                messageContents(message, trackerCount: trackerCount)
+                            }
+                        }
+                        .id(ThreadGroupAnchor(firstMessage: message.id))
+                    }
+                }
+                .scrollTargetLayout()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 22)
+            }
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { viewportHeight = $0 }
+            .scrollPosition($readingPosition)
+            // A distant source can move as neighbouring HTML messages acquire their actual heights.
+            .onScrollGeometryChange(for: CGFloat.self, of: { keepsSourceAtTop ? $0.contentSize.height : 0 }) { _, _ in
+                if let summarySourceAnchor { reader.scrollTo(summarySourceAnchor, anchor: .top) }
+            }
+            .onChange(of: summarySourceAnchor) {
+                if let summarySourceAnchor { reader.scrollTo(summarySourceAnchor, anchor: .top) }
+            }
+            .onScrollPhaseChange { _, phase in
+                if phase == .tracking || phase == .interacting { summarySourceAnchor = nil }
+            }
+        }
+        .task(id: dateSource, priority: .utility) {
+            let suggestions = await dateSource.suggestions()
+            guard !Task.isCancelled else { return }
+            detectedDates = (dateSource, suggestions)
+        }
+    }
+
+    private var showsSenderDetails: Bool {
+        senderDetailsMessage != nil
+    }
+
+    private func closeActionPanel() {
+        closeSenderDetails()
+        runtime.readerPanel = nil
+    }
+
+    private func toggleActionPanel(_ action: ReaderPanelAction) {
+        if runtime.readerPanel?.action == action { closeActionPanel() }
+        else { runtime.openReaderPanel(action) }
+    }
+
+    private var senderDetailsMessage: MailMessage? {
+        guard let choice = senderDetailsSelection, runtime.readerPanel == nil,
+              store.selectedMessageIDs.count <= 1, let selected = store.selectedMessage,
+              selected.id == choice.readerID else { return nil }
+        let message = selected.id == choice.messageID ? selected : store.selectedConversation.first { $0.id == choice.messageID }
+        guard let message, message.account == choice.account,
+              message.senderEmail.caseInsensitiveCompare(choice.email) == .orderedSame else { return nil }
+        return message
+    }
+
+    private var senderProfileTarget: SenderProfileTarget? {
+        guard let target = senderDetailsSelection?.target, let message = senderDetailsMessage,
+              SenderProfileTarget.make(message: message, scope: runtime.backend.scope,
+                                       sessionGeneration: runtime.backend.realtimeGeneration) == target else { return nil }
+        return target
+    }
+
+    private var activeSenderRequestID: UUID? {
+        senderProfileTarget == nil ? nil : senderDetailsSelection?.id
+    }
+
+    private func closeSenderDetails() {
+        senderDetailsSelection = nil
+        senderLookupTask?.cancel()
+        senderLookupTask = nil
+        senderResearch.cancel()
+        isEnablingSenderResearch = false
+        senderEnableError = nil
+    }
+
+    private func selectSenderDetails(_ message: MailMessage, action: SenderSelection.Action = .lookup) {
+        guard store.selectedMessageIDs.count <= 1, let readerID = store.selectedMessageID else { return }
+        let target = SenderProfileTarget.make(message: message, scope: runtime.backend.scope,
+                                              sessionGeneration: runtime.backend.realtimeGeneration)
+        if action == .lookup, let choice = senderDetailsSelection, choice.readerID == readerID,
+           choice.messageID == message.id, choice.target == target, showsSenderDetails { return }
+        closeSenderDetails()
+        runtime.readerPanel = nil
+        let choice = SenderSelection(readerID: readerID, messageID: message.id,
+                                     email: message.senderEmail, account: message.account,
+                                     target: target, action: action)
+        senderDetailsSelection = choice
+        if target != nil {
+            senderLookupTask = Task { await loadSenderDetails(choice) }
+        }
+    }
+
+    private func requestSenderDetails(_ action: SenderSelection.Action) {
+        guard let message = senderDetailsMessage, senderProfileTarget != nil, !isEnablingSenderResearch else { return }
+        selectSenderDetails(message, action: action)
+    }
+
+    private func loadSenderDetails(_ choice: SenderSelection) async {
+        guard let target = choice.target, !Task.isCancelled, activeSenderRequestID == choice.id else { return }
+        if choice.action == .enable {
+            isEnablingSenderResearch = true
+            defer { if senderDetailsSelection?.id == choice.id { isEnablingSenderResearch = false } }
+            do {
+                let settings: MailAISettings = try await runtime.backend.request("GET", "/v1/ai/settings")
+                guard !Task.isCancelled, activeSenderRequestID == choice.id else { return }
+                if !settings.enabled {
+                    let _: MailAISettings = try await runtime.backend.request("PUT", "/v1/ai/settings",
+                        body: MailAISettingsInput(enabled: true, styleGuide: settings.styleGuide))
+                }
+            } catch {
+                if !Task.isCancelled, activeSenderRequestID == choice.id { senderEnableError = error.localizedDescription }
+                return
+            }
+        }
+        await senderResearch.load(target: target, refresh: choice.action != .lookup,
+                                  isCurrent: { activeSenderRequestID == choice.id }) { messageID, input in
+            try await runtime.backend.request(SenderProfileRequest.method, SenderProfileRequest.path(messageID: messageID), body: input)
+        }
     }
 
     private var searchPlaceholder: some View {
@@ -357,8 +574,10 @@ struct ReaderView: View {
             senderAvatar(message, size: avatarWidth)
             VStack(alignment: .leading, spacing: 4) {
                 if presentation == .single {
-                    senderLine(message, sender: sender, presentation: presentation)
-                        .textSelection(.enabled)
+                    Button { selectSenderDetails(message) } label: {
+                        senderLine(message, sender: sender, presentation: presentation)
+                    }.buttonStyle(.plain).help("Show sender details")
+                        .accessibilityLabel("Show sender details for \(sender)")
                 } else {
                     Button {
                         if presentation == .expanded { expandedMessageIDs.remove(message.id) }
@@ -459,8 +678,11 @@ struct ReaderView: View {
     }
 
     private func senderAvatar(_ message: MailMessage, size: CGFloat) -> some View {
-        MailParticipantAvatar(address: message.senderEmail, name: message.isOutgoing ? message.mailAccount.displayName : message.sender,
-                              size: size, messageID: message.id)
+        Button { selectSenderDetails(message) } label: {
+            MailParticipantAvatar(address: message.senderEmail, name: message.isOutgoing ? message.mailAccount.displayName : message.sender,
+                                  size: size, messageID: message.id, verifiedMark: message.currentSenderMark)
+        }.buttonStyle(.plain).help("Show sender details")
+            .accessibilityLabel("Show sender details for \(message.senderEmail)")
     }
 
     private func recipientAddresses(_ values: [String]) -> [String] {
@@ -638,8 +860,18 @@ struct ReaderView: View {
         if !compactToolbar { ToolbarSpacer(.fixed, placement: .primaryAction) }
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
-                if let message = syncedToolbarMessage { presentedSheet = .ai(message, .summary) }
+                if showsSenderDetails { closeSenderDetails() }
+                else if let message = store.selectedMessage { selectSenderDetails(message) }
             } label: {
+                PostmereLabel("Sender details", symbol: "sidebar.right", size: 17)
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(showsSenderDetails ? palette.accentInk : PostmereTheme.icon)
+            }
+            .help(showsSenderDetails ? "Hide sender details" : "Show sender details")
+            .accessibilityValue(showsSenderDetails ? "Shown" : "Hidden")
+            .disabled(store.selectedMessage == nil || store.selectedMessageIDs.count > 1)
+
+            Button(action: summarizeConversation) {
                 PostmereLabel("Summarize Conversation", symbol: "sparkles", size: 17)
                     .labelStyle(.iconOnly)
                     .foregroundStyle(PostmereTheme.icon)

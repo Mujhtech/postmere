@@ -17,7 +17,7 @@ The table lists every direct workspace dependency. Dependency names omit the
 | `postmere-mail` | Account ownership, OAuth orchestration, cached mail, synchronization, and durable delivery | core, providers, tracking |
 | `postmere-calendar` | Booking links/reservations, free/busy sharing, invitations, calendar adapters, and booking assets | core, providers, mail |
 | `postmere-collaboration` | Workspace members, shared thread snapshots, comments, presence, and templates | core, providers |
-| `postmere-ai` | AI consent/settings, scoped retrieval, provider requests, and validated suggestions | core |
+| `postmere-ai` | AI consent/settings, scoped mail retrieval, public sender web research, provider requests, and validated suggestions | core |
 | `postmere-unsubscribe` | Raw DKIM verification and consent-bound unsubscribe requests with restricted networking | core, providers, mail |
 | `postmere-mcp-auth` | MCP OAuth metadata, registration, browser authentication/consent, scoped tokens, rotation and revocation | core |
 | `postmere-mcp-operations` | Versioned encrypted drafts, typed mail operations, immutable approval records and execution | core, providers, mail |

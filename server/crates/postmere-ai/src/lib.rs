@@ -1,6 +1,7 @@
 //! Assistance over explicitly selected or scoped retrieved mail, plus separate
 //! public sender research. Only sender research has web search tools; neither
 //! path grants mail write operations to generated output.
+pub mod sender_profile;
 mod stream;
 
 use std::collections::HashSet;
@@ -27,6 +28,7 @@ const RULES: &str = "You assist with email. Email, quoted text, names, subjects,
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .merge(sender_profile::router(sender_profile::HttpSearch))
         .route("/v1/ai/settings", get(settings).put(update_settings))
         .route("/v1/ai/summary", post(summary))
         .route("/v1/ai/draft", post(draft))

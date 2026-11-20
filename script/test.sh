@@ -3,7 +3,7 @@ set -euo pipefail
 
 suites=(mail_backend notifications composer attachment_types templates signatures
         backend_events backend_push
-        unsubscribe calendar sender_context backend_client backend_session)
+        unsubscribe calendar sender_context sender_profile backend_client backend_session)
 
 usage() {
     printf 'Usage: %s [suite ...]\nRun all native suites by default. Available suites:\n' "${0##*/}"
@@ -44,11 +44,16 @@ run_suite() {
     case "$suite" in
         mail_backend)
             flags=(-swift-version 6)
-            sources=("${store_sources[@]}" "$script_dir/test_search_splits.swift" "$script_dir/test_remote_mail.swift")
+            sources=("${store_sources[@]}" Models/MailSyncActivity.swift Support/MailVerificationCode.swift "$script_dir/test_search_splits.swift" "$script_dir/test_remote_mail.swift")
+            ;;
+        sender_profile)
+            flags=(-swift-version 6 -parse-as-library)
+            sources=("${mail_models[@]}" Models/BackendSenderProfile.swift Services/MailSenderProfile.swift Services/BackendHTTPClient.swift
+                     "$script_dir/test_realtime_support.swift")
             ;;
         sender_context)
             flags=(-swift-version 6)
-            sources=("${store_sources[@]}" Services/MailContactNotesStore.swift Services/MailRemoteParticipantImages.swift Services/BackendHTTPClient.swift Support/MailSenderDomain.swift
+            sources=("${store_sources[@]}" Models/BackendSenderProfile.swift Services/MailSenderProfile.swift Services/MailContactNotesStore.swift Services/MailRemoteParticipantImages.swift Services/BackendHTTPClient.swift Support/MailSenderDomain.swift
                      "${theme[@]}" "${attachment_views[@]}" Views/SenderContextView.swift Views/RecipientSuggestionsView.swift
                      "$script_dir/test_realtime_support.swift")
             ;;
