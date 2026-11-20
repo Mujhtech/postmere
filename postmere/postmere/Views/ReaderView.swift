@@ -9,6 +9,7 @@ struct ReaderView: View {
     @Environment(MailRuntime.self) private var runtime
     @AppStorage("loadRemoteMailImagesAutomatically") private var automaticImages = true
     @AppStorage("readingFontSize") private var readingFontSize = 14.0
+    @AppStorage(MailReadingFont.preference) private var readingFont = MailReadingFont.original
     @State private var presentedSheet: ReaderSheet?
     @State private var noteDrafts: [UUID: String] = [:]
     @State private var attachmentError: String?
@@ -466,8 +467,15 @@ struct ReaderView: View {
                 senderHeader(message, presentation: isExpanded ? .expanded : .collapsed, trackerCount: trackerCount.wrappedValue)
                     .padding(.vertical, 12)
                 if isExpanded {
-                    Divider().padding(.horizontal, 16)
-                    messageContents(message).padding(16)
+                    if prepared || message.receivedHTML == nil {
+                        messageContents(message, trackerCount: trackerCount, quoteContext: quoteThread.context(for: message))
+                            .padding(.bottom, 16)
+                    } else {
+                        Text(verbatim: message.displayPreview)
+                            .font(readingFont.font(size: readingFontSize))
+                            .lineLimit(3)
+                            .padding(.bottom, 16)
+                    }
                 }
             }
         }
@@ -485,13 +493,11 @@ struct ReaderView: View {
             MailVerificationCodeView(message: message) { EmptyView() }
             Group {
                 if let html = message.receivedHTML {
-                    HTMLMessageBody(html: html, paragraphs: message.paragraphs, fontSize: readingFontSize) { count in
-                        if count > 0 { blockedTrackers[message.id] = count }
-                        else { blockedTrackers.removeValue(forKey: message.id) }
+                    HTMLMessageBody(html: html, paragraphs: message.paragraphs, fontSize: readingFontSize, readingFont: readingFont, quoteContext: quoteContext) { count in
+                        if trackerCount.wrappedValue != count { trackerCount.wrappedValue = count }
                     }
                 } else {
-                    RichTextMessageBody(rtf: message.bodyRTF, paragraphs: message.paragraphs, fontSize: readingFontSize)
-                        .id(message.id)
+                    RichTextMessageBody(rtf: message.bodyRTF, paragraphs: message.paragraphs, fontSize: readingFontSize, readingFont: readingFont, quoteContext: quoteContext)
                 }
             }
             .textSelection(.enabled)

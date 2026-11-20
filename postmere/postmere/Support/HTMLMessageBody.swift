@@ -8,6 +8,8 @@ struct HTMLMessageBody: View {
     let html: String
     let paragraphs: [String]
     let fontSize: Double
+    var readingFont = MailReadingFont.original
+    var quoteContext: MailQuoteContext?
     var onBlockedTrackerCountChange: (Int) -> Void = { _ in }
 
     @AppStorage("loadRemoteMailImagesAutomatically") private var automaticImages = true
@@ -26,6 +28,12 @@ struct HTMLMessageBody: View {
         let html: String
         let loadsImages: Bool
         let blocksTrackers: Bool
+        let quoteContext: MailQuoteContext?
+    }
+    private struct Typography: Equatable {
+        let font: MailReadingFont
+        let size: Double
+        let document: Int
     }
 
     var body: some View {
@@ -40,7 +48,7 @@ struct HTMLMessageBody: View {
             }
             if let imageError { Text(imageError).font(.caption).foregroundStyle(.secondary) }
             if failed {
-                RichTextMessageBody(rtf: nil, paragraphs: paragraphs, fontSize: fontSize)
+                RichTextMessageBody(rtf: nil, paragraphs: paragraphs, fontSize: fontSize, readingFont: readingFont, quoteContext: quoteContext)
                     .textSelection(.enabled)
             } else {
                 ZStack(alignment: .topLeading) {
@@ -51,8 +59,18 @@ struct HTMLMessageBody: View {
         }
         .onChange(of: layout.blockedTrackerCount, initial: true) { _, count in onBlockedTrackerCountChange(count) }
         .onChange(of: automaticImages) { consentedHTML = nil }
-        .task(id: Source(html: html, fontSize: fontSize, loadsImages: loadsImages, blocksTrackers: blocksTrackers)) {
-            await loadMessage()
+        .task(id: palette.rgb) {
+            _ = try? await page?.callJavaScript("document.documentElement.style.setProperty('--postmere-quote-ink', ink)",
+                                                arguments: ["ink": palette.accentInkCSS], contentWorld: .defaultClient)
+        }
+        .task(id: Typography(font: readingFont, size: fontSize, document: documentGeneration)) {
+            guard documentGeneration > 0, let page else { return }
+            _ = try? await page.callJavaScript("globalThis.postmereReadingType?.(family, size)",
+                                                arguments: ["family": readingFont.cssFamily, "size": fontSize],
+                                                contentWorld: .defaultClient)
+        }
+        .task(id: source) {
+            if loadedSource != source { await loadMessage(source) }
         }
         .onDisappear { page?.stopLoading() }
     }
@@ -60,7 +78,7 @@ struct HTMLMessageBody: View {
     @ViewBuilder private var openingPreview: some View {
         if let first = paragraphs.first(where: { !$0.isEmpty }) {
             Text(verbatim: String(first.prefix(600)))
-                .font(.system(size: fontSize))
+                .font(readingFont.font(size: fontSize))
                 .lineLimit(6)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
@@ -79,7 +97,7 @@ struct HTMLMessageBody: View {
     private func loadMessage(_ source: Source) async {
         loadedSource = nil
         page?.stopLoading()
-        let currentPage = layout.makePage()
+        let currentPage = layout.makePage(quoteContext: quoteContext, readingFont: readingFont, size: fontSize)
         page = currentPage
         failed = false
         imageError = nil
@@ -257,7 +275,7 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
     var blockedTrackerCount = 0
     @ObservationIgnored private weak var pageController: WKUserContentController?
 
-    func makePage() -> WebPage {
+    func makePage(quoteContext: MailQuoteContext?, readingFont: MailReadingFont, size: Double) -> WebPage {
         height = 1
         hasDocumentLayout = false
         needsReaderViewport = false
@@ -454,6 +472,10 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
         """#
         controller.addUserScript(WKUserScript(source: measure, injectionTime: .atDocumentStart,
                                               forMainFrameOnly: true, in: .defaultClient))
+        let typography = MailReadingFont.webScript + "\nglobalThis.postmereReadingType('\(readingFont.cssFamily)', \(size));"
+        controller.addUserScript(WKUserScript(source: typography, injectionTime: .atDocumentEnd,
+                                              forMainFrameOnly: true, in: .defaultClient))
+        if let quoteContext { MailHTMLQuoteDisclosure(context: quoteContext).install(in: controller) }
         var config = WebPage.Configuration()
         config.websiteDataStore = .nonPersistent()
         config.userContentController = controller

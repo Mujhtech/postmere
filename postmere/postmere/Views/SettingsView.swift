@@ -14,6 +14,7 @@ struct SettingsView: View {
     @State private var showsInboxManager = false
     @AppStorage("settingsTab") private var settingsTab = "general"
     @AppStorage("readingFontSize") private var readingFontSize = 14.0
+    @AppStorage(MailReadingFont.preference) private var readingFont = MailReadingFont.original
     @AppStorage("showMessagePreviews") private var showMessagePreviews = true
     @AppStorage(MenuBarInboxHost.visibilityPreference) private var showsMenuBarInbox = true
     @AppStorage("loadRemoteMailImagesAutomatically") private var loadRemoteMailImagesAutomatically = true
@@ -53,6 +54,11 @@ struct SettingsView: View {
             }
             Section("Reading") {
                 Toggle("Show message previews", isOn: $showMessagePreviews)
+                Picker("Message font", selection: $readingFont) {
+                    ForEach(MailReadingFont.allCases, id: \.self) { font in
+                        Text(font.title).tag(font)
+                    }
+                }
                 HStack(spacing: 10) {
                     Text("Message text size")
                         .accessibilityHidden(true)
@@ -69,9 +75,9 @@ struct SettingsView: View {
                 }
                 .accessibilityElement(children: .contain)
                 Text("The quick brown fox jumps over the lazy dog.")
-                    .font(.system(size: readingFontSize))
+                    .font(readingFont.font(size: readingFontSize))
                     .padding(.vertical, 8)
-                    .accessibilityLabel("Text size preview")
+                    .accessibilityLabel("Reading font preview")
             }
             Section("Calendar") { CalendarIntegrationSettingsView() }
             Section("AI assistance") { MailAISettingsView(session: runtime.backend) }
