@@ -4,6 +4,7 @@ import SwiftUI
 struct postmereApp: App {
     @NSApplicationDelegateAdaptor(PostmereAppDelegate.self) private var appDelegate
     @State private var runtime: MailRuntime
+    @AppStorage(MenuBarInboxHost.visibilityPreference) private var showsMenuBarInbox = true
 
     init() {
         let runtime = MailRuntime()
@@ -51,6 +52,14 @@ struct postmereApp: App {
             }
                 .postmereStyle()
         }
+
+        MenuBarExtra(isInserted: $showsMenuBarInbox) {
+            MenuBarInboxHost(runtime: runtime)
+                .postmereStyle()
+        } label: {
+            MenuBarInboxLabel(runtime: runtime)
+        }
+        .menuBarExtraStyle(.window)
     }
 }
 

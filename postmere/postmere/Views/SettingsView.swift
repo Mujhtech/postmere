@@ -15,6 +15,7 @@ struct SettingsView: View {
     @AppStorage("settingsTab") private var settingsTab = "general"
     @AppStorage("readingFontSize") private var readingFontSize = 14.0
     @AppStorage("showMessagePreviews") private var showMessagePreviews = true
+    @AppStorage(MenuBarInboxHost.visibilityPreference) private var showsMenuBarInbox = true
     @AppStorage("loadRemoteMailImagesAutomatically") private var loadRemoteMailImagesAutomatically = true
     @AppStorage("blockSenderTrackingPixels") private var blockSenderTrackingPixels = true
     @Environment(\.mailboxTheme) private var theme
@@ -46,30 +47,9 @@ struct SettingsView: View {
 
     private var readingSettings: some View {
         Form {
-            Section("Appearance") {
-                Picker("Appearance", selection: $appearance) {
-                    ForEach(MailAppearance.allCases, id: \.self) { value in
-                        Text(value.title).tag(value)
-                    }
-                }
-                .pickerStyle(.segmented)
-                LabeledContent("Primary color") {
-                    HStack(spacing: 10) {
-                        if primaryColorRGB != PostmereAccent.defaultRGB {
-                            Button("Reset") { primaryColorRGB = PostmereAccent.defaultRGB }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .accessibilityLabel("Reset primary color")
-                        }
-                        ColorPicker("Primary color", selection: Binding(
-                            get: { palette.swatch },
-                            set: { color in
-                                if let rgb = PostmereAccent.rgbValue(of: color) { primaryColorRGB = rgb }
-                            }
-                        ), supportsOpacity: false)
-                        .labelsHidden()
-                    }
-                }
+            defaultMailSettings
+            Section("Menu bar") {
+                Toggle("Show Postmere in the menu bar", isOn: $showsMenuBarInbox)
             }
             Section("Reading") {
                 Toggle("Show message previews", isOn: $showMessagePreviews)

@@ -346,12 +346,9 @@ final class MailRuntime {
         await syncBackend()
     }
 
-    func openMessage(_ id: UUID) {
-        guard backend.canAccessWorkspace,
-              let message = store.messages.first(where: { $0.id == id }), store.isAccountVisible(message) else { return }
-        store.selectMailbox(message.mailbox)
-        store.select(message)
-        openMailWindow?()
+    func openMessage(_ id: UUID, showWindow: (() -> Void)? = nil) {
+        guard backend.canAccessWorkspace, store.revealMessage(id) else { return }
+        (showWindow ?? openMailWindow)?()
     }
 
     func resolveAttachment(_ attachment: MailAttachment, in message: MailMessage) async throws -> MailAttachment {

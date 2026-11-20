@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// Keeps the Dock and sidebar up to date even while the mail window is closed.
+/// Keeps the Dock, sidebar, and menu bar up to date even while the mail window is closed.
 @MainActor @Observable
 final class MailboxCounts {
     private struct Request: Equatable {
@@ -18,6 +18,16 @@ final class MailboxCounts {
     @ObservationIgnored private var request: Request?
     @ObservationIgnored private var loading: Task<Void, Never>?
     private(set) var snapshot: SidebarCounts?
+
+    var menuBarInbox: MenuBarInbox? {
+        guard !store.isOpeningMailbox, let inbox = snapshot?.menuBarInbox,
+              inbox.accounts == menuAccounts(connected: dockAccounts()) else { return nil }
+        return inbox
+    }
+
+    private func menuAccounts(connected: Set<String>) -> Set<String> {
+        store.isPreview ? connected.union([MailAccount.work.rawValue, MailAccount.personal.rawValue]) : connected
+    }
 
     var showsUnreadInDock: Bool {
         didSet {
@@ -46,22 +56,20 @@ final class MailboxCounts {
             Task { @MainActor in self.observeMailbox() }
         }
         guard next != request else { return }
-        let recount = next.revision != request?.revision || next.accounts != request?.accounts
+        let menuAccounts = menuAccounts(connected: next.dockAccounts)
         request = next
         if snapshot?.accounts != next.accounts { snapshot = nil }
         updateBadge()
-        guard recount else { return }
         loading?.cancel()
         let messages = store.messages
         guard !next.accounts.isEmpty, !messages.isEmpty else {
-            snapshot = SidebarCounts(accounts: next.accounts)
+            snapshot = SidebarCounts(accounts: next.accounts, menuAccounts: menuAccounts)
             updateBadge()
             return
         }
         loading = Task { [weak self] in
-            guard let counts = try? await SidebarCounts.load(messages, accounts: next.accounts),
-                  !Task.isCancelled, let self, self.store.mailboxDataRevision == next.revision,
-                  self.store.searchableAccounts == next.accounts else { return }
+            guard let counts = try? await SidebarCounts.load(messages, accounts: next.accounts, menuAccounts: menuAccounts),
+                  !Task.isCancelled, let self, self.currentRequest == next else { return }
             self.snapshot = counts
             self.updateBadge()
         }
@@ -78,17 +86,34 @@ nonisolated struct SidebarCounts: Sendable {
     let accounts: Set<String>
     var mailboxes: [Mailbox: Int] = [:]
     var unreadByAccount: [String: Int] = [:]
+    var menuBarInbox: MenuBarInbox
 
-    @concurrent static func load(_ messages: [MailMessage], accounts: Set<String>) async throws -> Self {
-        var result = Self(accounts: accounts)
+    init(accounts: Set<String>, menuAccounts: Set<String>) {
+        self.accounts = accounts
+        menuBarInbox = MenuBarInbox(accounts: menuAccounts)
+    }
+
+    @concurrent static func load(_ messages: [MailMessage], accounts: Set<String>, menuAccounts: Set<String>) async throws -> Self {
+        var result = Self(accounts: accounts, menuAccounts: menuAccounts)
         var countedThreads: [Mailbox: Set<String>] = [:]
         let mailboxes = Mailbox.allCases
-        for message in messages {
+        for (index, message) in messages.enumerated() {
             try Task.checkCancellation()
             guard accounts.contains(message.account),
                   message.providerDeletedAt == nil || message.isDraft || message.mailbox == .outbox else { continue }
             for mailbox in mailboxes where message.belongs(to: mailbox) {
                 if mailbox == .inbox {
+                    if menuAccounts.contains(message.account) {
+                        if message.isUnread { result.menuBarInbox.addUnread(message) }
+                        if message.needsReply {
+                            let key = message.searchConversationKey
+                            if let prior = inboxReplyThreads[key] {
+                                if MenuBarInbox.newer(message, than: messages[prior]) { inboxReplyThreads[key] = index }
+                            } else {
+                                inboxReplyThreads[key] = index
+                            }
+                        }
+                    }
                     guard message.isUnread else { continue }
                     result.unreadByAccount[message.account, default: 0] += 1
                 } else if mailbox.isConversationQueue {
@@ -97,6 +122,56 @@ nonisolated struct SidebarCounts: Sendable {
                 result.mailboxes[mailbox, default: 0] += 1
             }
         }
+        for index in inboxReplyThreads.values {
+            try Task.checkCancellation()
+            result.menuBarInbox.add(messages[index], to: .needsReply)
+        }
         return result
+    }
+}
+
+nonisolated enum MenuBarInboxFilter: String, CaseIterable {
+    case all, people, updates, needsReply
+}
+
+/// Unread filters count individual messages. The reply queue counts one task per inbox conversation.
+nonisolated struct MenuBarInbox: Sendable {
+    let accounts: Set<String>
+    private static let people = MailSearchQuery(source: InboxSplit.peopleQuery)
+    private static let previewLimit = 6
+
+    private struct Section: Sendable {
+        var count = 0
+        var messages: [MailMessage] = []
+
+        mutating func add(_ message: MailMessage) {
+            count += 1
+            if messages.count == previewLimit, let last = messages.last {
+                guard MenuBarInbox.newer(message, than: last) else { return }
+                messages.removeLast()
+            }
+            let position = messages.firstIndex { MenuBarInbox.newer(message, than: $0) } ?? messages.endIndex
+            messages.insert(message, at: position)
+        }
+    }
+    private var sections: [MenuBarInboxFilter: Section] = [:]
+
+    init(accounts: Set<String>) { self.accounts = accounts }
+
+    func count(for filter: MenuBarInboxFilter) -> Int { sections[filter]?.count ?? 0 }
+    func messages(for filter: MenuBarInboxFilter) -> [MailMessage] { sections[filter]?.messages ?? [] }
+
+    fileprivate mutating func addUnread(_ message: MailMessage) {
+        add(message, to: .all)
+        add(message, to: Self.people.matches(message) ? .people : .updates)
+    }
+
+    fileprivate static func newer(_ lhs: MailMessage, than rhs: MailMessage) -> Bool {
+        if lhs.sentAt == rhs.sentAt { return lhs.id.uuidString < rhs.id.uuidString }
+        return lhs.sentAt > rhs.sentAt
+    }
+
+    fileprivate mutating func add(_ message: MailMessage, to filter: MenuBarInboxFilter) {
+        sections[filter, default: Section()].add(message)
     }
 }

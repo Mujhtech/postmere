@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 @MainActor
 final class PostmereAppDelegate: NSObject, NSApplicationDelegate {
@@ -12,6 +13,7 @@ final class PostmereAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         scrollbars.start()
+        runtime?.start()
         // Device registration is separate from authorization to show alerts.
         // NotificationService installs UNUserNotificationCenter's delegate in
         // App.init, before either launch or notification callbacks can arrive.

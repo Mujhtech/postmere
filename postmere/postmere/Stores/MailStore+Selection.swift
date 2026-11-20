@@ -1,6 +1,19 @@
 import Foundation
 
 extension MailStore {
+    /// A menu-bar or notification link can target a message outside the current list.
+    @discardableResult
+    func revealMessage(_ id: UUID) -> Bool {
+        guard let message = messages.first(where: { $0.id == id }), isAccountVisible(message) else { return false }
+        clearFilters()
+        selectedSavedViewID = nil
+        selectedInboxSplitID = nil
+        selectedAccount = nil
+        selectedMailbox = message.mailbox
+        select(message)
+        return true
+    }
+
     var selectedMessages: [MailMessage] {
         guard !selectedMessageIDs.isEmpty else { return [] }
         return (mailboxViewData?.messages ?? filteredMessages).filter { selectedMessageIDs.contains($0.id) }

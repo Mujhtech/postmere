@@ -145,19 +145,83 @@ enum RegressionFailure: Error { case failed(String) }
         counts.showsUnreadInDock = true
         try check(badge == 1, "re-enabling the Dock badge immediately shows the current count")
         RemoteAccountRegistry.accounts[0].status = "revoked"
-        try await waitUntil("disconnecting an account removes its unread mail from the Dock") { badge == nil }
+        try check(counts.menuBarInbox == nil, "revoking an account hides its menu bar preview before the asynchronous recount")
+        try await waitUntil("disconnecting an account removes its unread mail from the Dock and menu bar") {
+            badge == nil && counts.menuBarInbox?.count(for: .all) == 0
+        }
         RemoteAccountRegistry.accounts = accounts
-        try await waitUntil("reconnecting restores its unread count") { badge == 1 }
+        try await waitUntil("reconnecting restores its unread count") {
+            badge == 1 && counts.menuBarInbox?.count(for: .all) == 1
+        }
         counts.showsUnreadInDock = false
         try check(badge == nil, "turning off the preference clears a visible Dock badge immediately")
     }
 
+    @MainActor static func menuBarInboxData() async throws {
+        let first = "remote:first"
+        let second = "remote:second"
+        let hidden = "remote:revoked"
+        let accounts: Set<String> = [first, second, hidden]
+        let eligible: Set<String> = [first, second]
+        func message(_ sequence: Int, account: String = "remote:first") -> MailMessage {
+            MailMessage(sender: "Casey", senderEmail: "casey@example.org", initials: "C", subject: "Message " + String(sequence),
+                        preview: "", paragraphs: [], timeLabel: "", isUnread: true, account: account,
+                        sentAt: Date(timeIntervalSinceReferenceDate: Double(sequence)))
+        }
+        var people = (0..<8).map { message($0) }
+        people[4].workflow.needsReply = true
+        people[5].conversationID = people[4].conversationID
+        people[5].automaticReplyPending = true
+        people[5].isUnread = false
+        var separate = message(20, account: second)
+        separate.conversationID = people[4].conversationID
+        separate.workflow.needsReply = true
+        var updates = [message(10), message(11), message(12)]
+        updates[0].providerLabelIDs = ["CATEGORY_SOCIAL"]
+        updates[1].senderEmail = "no-reply@example.org"
+        updates[2].unsubscribeHeaders = MailUnsubscribeHeaders(listUnsubscribe: ["mailto:stop@example.org"],
+            listUnsubscribePost: [], authenticationResults: [], dkimSignatures: [], source: "fixture")
+        var filtered = (30..<34).map { message($0) }
+        filtered[0].workflow.snoozedUntil = .distantFuture
+        filtered[1].workflow.screeningState = .pending
+        filtered[2].providerDeletedAt = .now
+        filtered[3].mailbox = .archive
+        filtered[3].workflow.needsReply = true
+        let rows = people + updates + filtered + [separate, message(100, account: hidden)]
+        let result = try await SidebarCounts.load(rows, accounts: accounts, menuAccounts: eligible).menuBarInbox
+        try check(result.count(for: .all) == 11 && result.count(for: .people) == 8 && result.count(for: .updates) == 3,
+                  "menu bar filters count eligible unread inbox mail across accounts using the People split")
+        try check(result.messages(for: .all).map(\.id) == [separate, updates[2], updates[1], updates[0], people[7], people[6]].map(\.id),
+                  "menu bar preview keeps the six latest actual messages in date order")
+        try check(result.count(for: .needsReply) == 2 && result.messages(for: .needsReply).map(\.id) == [separate.id, people[5].id],
+                  "menu bar reply tasks include read mail, exclude archive and keep accounts' separate conversations")
+
+        let leading = message(100, account: "Work")
+        let target = message(70, account: "Personal")
+        let store = MailStore(messages: [leading, target])
+        store.selectedAccount = "Work"
+        store.selectInboxSplit(store.inboxSplits[1].id)
+        store.updateSearchText("earlier search")
+        try check(!store.revealMessage(UUID()) && store.isSearchActive && store.selectedInboxSplitID != nil
+                  && store.selectedAccount == "Work" && store.messages.allSatisfy(\.isUnread),
+                  "a stale menu bar target leaves search, mailbox selection and read states untouched")
+        try check(store.revealMessage(target.id) && !store.isSearchActive && store.selectedInboxSplitID == nil
+                  && store.selectedAccount == nil && store.selectedMailbox == .inbox,
+                  "revealing a menu bar message exits search and the previous account's inbox tab")
+        await store.loadMailboxView()
+        try check(store.selectedMessageID == target.id && store.selectedMessageIDs == [target.id]
+                  && store.messages.filter(\.isUnread).map(\.id) == [leading.id],
+                  "the reloaded inbox selects and marks only the requested message even when it is not the first row")
+    }
+
     @MainActor static func main() async throws {
+        try syncProgress()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PostmereRegression-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try await readerPersistence(directory: directory)
         try await dockUnreadCounts()
+        try await menuBarInboxData()
         try runSearchSplitRegressions(directory: directory)
         try await runBackgroundSearchRegressions()
         try await runRemoteMailRegressions(directory: directory)
