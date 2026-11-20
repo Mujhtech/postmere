@@ -8,19 +8,24 @@ struct CalendarInvitationSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             PostmereSheetHeader("Invitation")
-            CalendarInvitationView(invitation: invitation, onAddLocalEvent: { draft = $0 }, onRespond: responseAction)
+            CalendarInvitationView(invitation: invitation, onAddLocalEvent: { draft = $0 }, onRespond: session?.invitationResponse(for: invitation, account: account))
                 .padding(.horizontal, 24).padding(.bottom, 24)
         }.frame(width: 620)
             .sheet(item: $draft) { CalendarEventDraftView(draft: $0) }
     }
+}
 
-    private var responseAction: ((MailInvitationResponse) async throws -> Void)? {
-        guard let session, session.isConnected, let identity = account?.remote,
-              identity.scope == session.scope,
-              let connectedAccount = session.accounts.first(where: { $0.id == identity.accountID }),
+extension BackendSession {
+    func invitationResponse(for invitation: MailCalendarInvitation, account: MailAccount?) -> ((MailInvitationResponse) async throws -> Void)? {
+        guard invitation.canRespond, isConnected, let identity = account?.remote,
+              identity.scope == scope,
+              invitation.organizer.caseInsensitiveCompare(identity.email) != .orderedSame,
+              invitation.attendees.contains(where: { $0.caseInsensitiveCompare(identity.email) == .orderedSame }),
+              let connectedAccount = accounts.first(where: { $0.id == identity.accountID }),
               connectedAccount.status == "connected", connectedAccount.capabilities?.contains("calendar") == true,
               let uid = invitation.uid else { return nil }
-        return { response in
+        return { [weak self] response in
+            guard let session = self else { throw BackendError.notConnected }
             guard session.isConnected, session.scope == identity.scope else { throw BackendError.notConnected }
             do {
                 let result: CalendarRSVPResult = try await session.request("POST", "/v1/calendar/invitations/respond",

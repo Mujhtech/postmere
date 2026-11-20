@@ -46,6 +46,13 @@ import Foundation
     try await checkVerifiedSenderMarks(message: one, identity: first, other: second)
     try await checkDuplicateDeliveries(payload, identity: first, other: second, directory: directory)
     try check(one.id != two.id && one.conversationID != two.conversationID, "identical server IDs remain isolated across server identities")
+    let calendarBytes = Data("BEGIN:VCALENDAR\r\nSUMMARY:Design review\r\nEND:VCALENDAR".utf8)
+    var calendarFile = BackendAttachment(id: UUID(), filename: "meeting", mimeType: "text/calendar; method=REQUEST",
+                                         sizeBytes: calendarBytes.count, providerAttachmentId: nil)
+    calendarFile.inlineDataBase64 = calendarBytes.base64EncodedString().replacingOccurrences(of: "=", with: "")
+    let localCalendar = calendarFile.localAttachment(messageID: messageID, email: first.email)
+    try check(localCalendar.isCalendarFile && localCalendar.inlineCalendarData == calendarBytes,
+              "unnamed inline calendar alternatives are available offline in the native cache")
     let stateURL = directory.appendingPathComponent("remote-state.json")
     let store = MailStore(messages: [two], persistenceURL: stateURL)
     let page = BackendMailPage(messages: [payload], nextCursor: "cursor-one", hasMore: false)

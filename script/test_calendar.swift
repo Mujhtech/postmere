@@ -48,6 +48,7 @@ private struct CalendarChecks {
         ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:me@example.com
         DESCRIPTION:First line\\nSecond\\, line
         LOCATION:Room 2
+        X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij
         URL:javascript:bad
         RRULE:FREQ=WEEKLY;COUNT=4
         BEGIN:VALARM
@@ -63,6 +64,15 @@ private struct CalendarChecks {
         precondition(event.attendees == ["me@example.com"] && event.notes == "First line\nSecond, line")
         precondition(event.end.timeIntervalSince(event.start) == 3_600 && event.canRespond && event.urlString.isEmpty)
         precondition(event.recurrence != nil && !event.warnings.isEmpty)
+        let withoutEnd = try MailCalendarInvitationParser.parse(data: Data(invitation.replacingOccurrences(of: "DTEND:20271124T160000Z", with: "").utf8))[0]
+        precondition(withoutEnd.hasEstimatedEnd && !withoutEnd.canRespond)
+        precondition(event.meetingLink?.title == "Join Google Meet" && event.meetingLink?.url.host == "meet.google.com")
+        let legacyHTML = #"<a href="https://meet.google.com/abc-defg-hij?authuser=0&amp;pli=1">Join</a>"#
+        precondition(MailMeetingLink.first(in: legacyHTML, html: true)?.url.query == "authuser=0&pli=1")
+        precondition(MailMeetingLink.first(in: #"<img src="https://meet.google.com/abc-defg-hij">"#, html: true) == nil)
+        precondition(MailMeetingLink.first(in: "https://meet.google.com.attacker.example/abc-defg-hij") == nil)
+        precondition(MailMeetingLink.first(in: "https://meet.google.com@attacker.example/abc-defg-hij") == nil)
+        precondition(MailMeetingLink.first(in: "Meet at https://meet.google.com/abc-defg-hij.")?.title == "Join Google Meet")
         let canceled = try MailCalendarInvitationParser.parse(data: Data(invitation.replacingOccurrences(of: "METHOD:REQUEST", with: "METHOD:CANCEL").utf8))
         precondition(canceled[0].isCanceled && !canceled[0].canRespond)
         let daily = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:day\nDTSTART;VALUE=DATE:20270314\nSUMMARY:Day off\nEND:VEVENT\nEND:VCALENDAR"

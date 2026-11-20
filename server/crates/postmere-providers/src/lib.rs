@@ -13,7 +13,9 @@ use url::Url;
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
+mod invitation;
 mod labels;
+pub use invitation::{fetch_calendar_invitation, is_graph_mime_invitation};
 mod response_error;
 pub use labels::{
     MailLabel, create_label, has_label_scope, list_labels, message_label_membership,
@@ -634,7 +636,7 @@ pub async fn fetch_message(
     }
 }
 
-/// Fetch the provider's exact RFC 5322 bytes only for cryptographic verification.
+/// Fetch the provider's exact RFC 5322 bytes for verification or MIME parts omitted by its JSON API.
 /// The caller supplies an owned provider message ID, never a URL.
 pub async fn fetch_raw_message(
     state: &AppState,
@@ -1208,7 +1210,14 @@ fn gmail_parts(
                 .next()
                 .is_some_and(|value| value.trim().eq_ignore_ascii_case("attachment"))
         });
-    if !filename.is_empty() || attached {
+    // Gmail can put an unnamed invitation beside the plain and HTML alternatives.
+    let calendar_part = mime.split(';').next().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "text/calendar" | "application/ics" | "application/icalendar"
+        )
+    });
+    if !filename.is_empty() || attached || calendar_part {
         let provider_id = body
             .get("attachmentId")
             .and_then(Value::as_str)
@@ -1219,7 +1228,9 @@ fn gmail_parts(
             .unwrap_or(filename);
         attachments.push(Attachment {
             id: stable_id(account, "attachment", &format!("{message}:{part_id}")),
-            filename: if filename.is_empty() {
+            filename: if filename.is_empty() && calendar_part {
+                "Invitation.ics".into()
+            } else if filename.is_empty() {
                 "Attachment".into()
             } else {
                 decoded_header(filename)
@@ -1317,7 +1328,7 @@ pub fn normalize_graph(account: Uuid, value: &Value) -> Result<Message, Provider
     } else {
         received_text(content, "", provider_preview)
     };
-    let attachments = value
+    let mut attachments = value
         .get("attachments")
         .and_then(Value::as_array)
         .map(|a| {
@@ -1344,6 +1355,7 @@ pub fn normalize_graph(account: Uuid, value: &Value) -> Result<Message, Provider
                 .collect()
         })
         .unwrap_or_default();
+    invitation::add_graph_invitation(value, account, id, &mut attachments);
     let headers =
         json!({"headers":value.get("internetMessageHeaders").cloned().unwrap_or(json!([]))});
     // Graph folder IDs are opaque. The sync layer resolves known folder IDs;

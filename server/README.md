@@ -481,6 +481,7 @@ treat missing pages as deletions.
 | `POST /v1/mail/accounts/{id}/search` | `{query,cursor?,limit?}` searches deeper at the provider and caches the results. Query syntax is Gmail search or Microsoft Graph search, respectively. |
 | `PATCH /v1/mail/messages/{id}` | `{is_read?,is_starred?,mailbox?}`; destinations are `inbox`, `archive`, or `trash`. Returns `{}` after provider confirmation and cache update. |
 | `GET /v1/mail/messages/{id}/attachments/{attachment_id}` | Return an attachment owned by that scoped message, with a 25 MiB download limit. |
+| `GET /v1/mail/messages/{id}/calendar-invitation` | Recover an invitation from the original MIME of an owned, previously cached message. Returns up to 512 KiB of `text/calendar`, or 404 if there is no event. |
 
 Messages contain server/account/provider IDs, sender and recipient address
 objects, plain/HTML bodies, preview, timestamp, read/star state, mailbox, provider

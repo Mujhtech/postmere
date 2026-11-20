@@ -6,6 +6,12 @@ import UserNotifications
 @MainActor
 @Observable
 final class MailRuntime {
+    @ObservationIgnored let invitationData: NSCache<NSString, MailInvitationBytes> = {
+        let cache = NSCache<NSString, MailInvitationBytes>()
+        cache.countLimit = 64
+        cache.totalCostLimit = 4 * 1_024 * 1_024
+        return cache
+    }()
     let store: MailStore
     let backend = BackendSession()
     let defaultMail: DefaultMailAppService

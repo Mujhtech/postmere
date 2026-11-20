@@ -50,6 +50,10 @@ pub fn router() -> Router<AppState> {
             get(crate::sender_mark::get),
         )
         .route(
+            "/v1/mail/messages/{id}/calendar-invitation",
+            get(calendar_invitation),
+        )
+        .route(
             "/v1/mail/messages/{id}/attachments/{attachment}",
             get(attachment),
         )
@@ -1084,6 +1088,39 @@ pub async fn apply_message_mutation_with(
     tx.commit().await?;
     Ok(updated)
 }
+async fn calendar_invitation(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    // Old caches may predate invitation normalization. Only the message owner
+    // can request recovery, and the database supplies the provider message ID.
+    let mut tx = auth.begin_authorized(&state.pool).await?;
+    let (account_id, provider_id): (Uuid, String) = sqlx::query_as(
+        "SELECT account_id, provider_message_id FROM mail_messages WHERE id=$1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(AppError::not_found)?;
+    tx.commit().await?;
+    let session = account_session(&state, &auth, account_id).await?;
+    let bytes = provider::fetch_calendar_invitation(
+        &state,
+        Provider::parse(&session.account.provider)?,
+        &session.credentials.access_token,
+        &provider_id,
+    )
+    .await?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/calendar; charset=utf-8"),
+            (header::CACHE_CONTROL, "private, no-store"),
+        ],
+        bytes,
+    ))
+}
+
 async fn attachment(
     State(state): State<AppState>,
     auth: AuthContext,
@@ -1101,16 +1138,33 @@ async fn attachment(
             .map_err(|_| AppError::internal("attachment_decode"))?
     } else {
         let session = account_session(&state, &auth, message.account_id).await?;
-        provider::fetch_attachment(
-            &state,
-            Provider::parse(&session.account.provider)?,
-            &session.credentials.access_token,
-            &message.provider_message_id,
-            item.provider_attachment_id
-                .as_deref()
-                .ok_or_else(AppError::not_found)?,
-        )
-        .await?
+        let provider = Provider::parse(&session.account.provider)?;
+        if provider == Provider::Microsoft
+            && provider::is_graph_mime_invitation(
+                message.account_id,
+                &message.provider_message_id,
+                item,
+            )
+        {
+            provider::fetch_calendar_invitation(
+                &state,
+                provider,
+                &session.credentials.access_token,
+                &message.provider_message_id,
+            )
+            .await?
+        } else {
+            provider::fetch_attachment(
+                &state,
+                provider,
+                &session.credentials.access_token,
+                &message.provider_message_id,
+                item.provider_attachment_id
+                    .as_deref()
+                    .ok_or_else(AppError::not_found)?,
+            )
+            .await?
+        }
     };
     if bytes.len() > 25 * 1024 * 1024 {
         return Err(AppError::bad_request(

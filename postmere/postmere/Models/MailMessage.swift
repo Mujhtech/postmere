@@ -133,7 +133,7 @@ nonisolated enum Mailbox: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-struct MailAttachment: Codable, Hashable, Identifiable {
+nonisolated struct MailAttachment: Codable, Hashable, Identifiable {
     var id = UUID()
     var name: String
     var detail: String
@@ -143,6 +143,15 @@ struct MailAttachment: Codable, Hashable, Identifiable {
     var providerAccountEmail: String? = nil
     var mimeType: String? = nil
     var byteCount: Int? = nil
+    var inlineCalendarData: Data? = nil
+
+    var isCalendarFile: Bool {
+        if name.lowercased().hasSuffix(".ics") { return true }
+        let type = mimeType?.split(separator: ";").first?.trimmingCharacters(in: .whitespaces).lowercased()
+        return type == "text/calendar" || type == "application/ics" || type == "application/icalendar"
+    }
+
+    static let maximumCalendarBytes = 512 * 1_024
 }
 
 /// Original list headers imported from the provider. Keeping duplicates lets

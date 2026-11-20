@@ -28,8 +28,10 @@ nonisolated struct MailCalendarInvitation: Identifiable, Sendable {
     let recurrence: String?
     let isCanceled: Bool
     let warnings: [String]
+    var meetingLink: MailMeetingLink?
+    var hasEstimatedEnd = false
     var id: String { "\(uid ?? title)|\(start.timeIntervalSince1970)|\(sequence)" }
-    var canRespond: Bool { method == "REQUEST" && uid != nil && !organizer.isEmpty && !isCanceled }
+    var canRespond: Bool { method == "REQUEST" && uid != nil && !organizer.isEmpty && !isCanceled && !hasEstimatedEnd }
 
     var eventDraft: MailCalendarEventDraft {
         MailCalendarEventDraft(title: title, start: start, end: end, timeZoneIdentifier: timeZoneIdentifier,
@@ -37,10 +39,63 @@ nonisolated struct MailCalendarInvitation: Identifiable, Sendable {
     }
 }
 
+nonisolated struct MailMeetingLink: Equatable, Sendable {
+    let url: URL
+    let title: String
+
+    init?(_ value: String, conferenceProperty: Bool = false) {
+        guard let url = URL(string: value), url.scheme?.lowercased() == "https", let host = url.host?.lowercased(),
+              !host.isEmpty, url.user == nil, url.password == nil, url.port == nil || url.port == 443 else { return nil }
+        let path = url.path.lowercased()
+        if host == "meet.google.com",
+           path.range(of: #"^/[a-z]{3}-[a-z]{4}-[a-z]{3}/?$"#, options: .regularExpression) != nil {
+            title = "Join Google Meet"
+        } else if ["teams.microsoft.com", "teams.live.com", "teams.cloud.microsoft"].contains(host),
+                  path.hasPrefix("/l/meetup-join/") || path.hasPrefix("/meet/") {
+            title = "Join Microsoft Teams"
+        } else if conferenceProperty {
+            title = "Join meeting on \(host)"
+        } else { return nil }
+        self.url = url
+    }
+
+    // Only direct meeting destinations qualify. Ignore tracking links, image URLs and lookalike domains.
+    private static let textURL = try! NSRegularExpression(pattern: #"(?i)https://[^\s<>"']{1,4096}"#)
+    private static let anchorURL = try! NSRegularExpression(pattern: #"(?i)<a\b[^<>]{0,2048}?\s+href\s*=\s*["'](https://[^"'<>]{1,4096})["']"#)
+
+    static func first(in text: String, html: Bool = false) -> Self? {
+        guard text.localizedCaseInsensitiveContains("meet.google.com") || text.localizedCaseInsensitiveContains("teams.") else { return nil }
+        let contents = text as NSString
+        let expression = html ? anchorURL : textURL
+        var found: Self?
+        expression.enumerateMatches(in: text, range: NSRange(location: 0, length: contents.length)) { match, _, stop in
+            guard let match else { return }
+            let value = contents.substring(with: match.range(at: html ? 1 : 0))
+                .trimmingCharacters(in: CharacterSet(charactersIn: ".,;)]}"))
+                .replacingOccurrences(of: "&amp;", with: "&")
+            if let link = Self(value) { found = link; stop.pointee = true }
+        }
+        return found
+    }
+}
+
 /// Bounded, display-only iCalendar parsing. Remote attachments and linked
 /// resources are never fetched. Scheduling/RSVP is a separate provider action.
 /// Content unfolding, escaped TEXT and exclusive all-day DTEND follow RFC 5545.
 nonisolated enum MailCalendarInvitationParser {
+    @concurrent static func parseInBackground(_ data: Data) async throws -> [MailCalendarInvitation] {
+        try parse(data: data)
+    }
+
+    @concurrent static func readFile(_ url: URL) async throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let limit = 512 * 1_024
+        guard let data = try handle.read(upToCount: limit + 1), data.count <= limit else {
+            throw MailCalendarError.invitationTooLarge
+        }
+        return data
+    }
     private struct Property {
         let name: String
         let parameters: [String: String]
@@ -96,11 +151,13 @@ nonisolated enum MailCalendarInvitationParser {
             warnings.append("The time zone \(requestedZone) is not recognized. Review the times before adding a local event.")
         }
         let end: Date
+        var hasEstimatedEnd = false
         if let endProperty = first("DTEND"), let value = date(endProperty, fallbackZone: timeZone) { end = value }
         else if let duration = first("DURATION").flatMap({ duration($0.value, from: start, calendar: calendar) }) { end = duration }
         else if allDay { end = calendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400) }
         else {
             end = start.addingTimeInterval(3_600)
+            hasEstimatedEnd = true
             warnings.append("No supported end time was supplied. Review the proposed one-hour duration.")
         }
         guard end > start else { return nil }
@@ -110,12 +167,16 @@ nonisolated enum MailCalendarInvitationParser {
         let title = unescape(first("SUMMARY")?.value ?? "Calendar invitation")
         let urlString = first("URL")?.value ?? ""
         let safeURL = URL(string: urlString).flatMap { ["https", "http"].contains($0.scheme?.lowercased() ?? "") && $0.host != nil && $0.user == nil && $0.password == nil ? $0.absoluteString : nil } ?? ""
+        let location = unescape(first("LOCATION")?.value ?? ""), notes = unescape(first("DESCRIPTION")?.value ?? "")
+        let conference = ["CONFERENCE", "X-GOOGLE-CONFERENCE", "X-MICROSOFT-SKYPETEAMSMEETINGURL"]
+            .compactMap { first($0)?.value }.compactMap { MailMeetingLink($0, conferenceProperty: true) }.first
         return MailCalendarInvitation(uid: first("UID")?.value.nilIfBlank, sequence: max(0, Int(first("SEQUENCE")?.value ?? "") ?? 0),
             method: method, title: title, start: start, end: end, timeZoneIdentifier: timeZone.identifier, isAllDay: allDay,
             organizer: address(first("ORGANIZER")?.value ?? ""),
             attendees: properties.filter { $0.name == "ATTENDEE" }.map { address($0.value) }.filter { !$0.isEmpty },
-            location: unescape(first("LOCATION")?.value ?? ""), notes: unescape(first("DESCRIPTION")?.value ?? ""),
-            urlString: safeURL, recurrence: recurrence, isCanceled: isCanceled, warnings: warnings)
+            location: location, notes: notes, urlString: safeURL, recurrence: recurrence, isCanceled: isCanceled, warnings: warnings,
+            meetingLink: conference ?? MailMeetingLink(safeURL) ?? MailMeetingLink.first(in: location) ?? MailMeetingLink.first(in: notes),
+            hasEstimatedEnd: hasEstimatedEnd)
     }
 
     private static func property(_ line: String) -> Property? {

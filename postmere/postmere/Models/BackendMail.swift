@@ -23,6 +23,24 @@ nonisolated struct BackendAttachment: Codable, Identifiable, Sendable {
     let mimeType: String
     let sizeBytes: Int
     let providerAttachmentId: String?
+    var inlineDataBase64: String? = nil
+
+    func localAttachment(messageID: UUID, email: String) -> MailAttachment {
+        var attachment = MailAttachment(id: id, name: filename,
+            detail: ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file),
+            providerAttachmentID: id.uuidString, providerMessageID: messageID.uuidString,
+            providerAccountEmail: email, mimeType: mimeType, byteCount: sizeBytes)
+        if attachment.isCalendarFile, let inlineDataBase64,
+           inlineDataBase64.utf8.count <= (MailAttachment.maximumCalendarBytes + 2) / 3 * 4 {
+            var encoded = inlineDataBase64.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+            encoded += String(repeating: "=", count: (4 - encoded.utf8.count % 4) % 4)
+            if let data = Data(base64Encoded: encoded), data.count <= MailAttachment.maximumCalendarBytes {
+                attachment.inlineCalendarData = data
+            }
+        }
+        if attachment.isCalendarFile && sizeBytes == 0 { attachment.detail = "Calendar invitation" }
+        return attachment
+    }
 }
 
 nonisolated struct BackendMailPage: Decodable, Sendable {
@@ -125,12 +143,8 @@ extension BackendMailMessage {
                     isUnread: !isRead, isStarred: isStarred, mailbox: Mailbox(rawValue: mailbox) ?? .archive,
                     account: identity.localID, tint: "8BA794", isOutgoing: mailbox == "sent" || from.email.caseInsensitiveCompare(identity.email) == .orderedSame,
                     toRecipients: to.map(\.email), ccRecipients: cc.map(\.email), bccRecipients: bcc.map(\.email),
-                    attachments: attachments.map {
-                        MailAttachment(id: $0.id, name: $0.filename,
-                                       detail: ByteCountFormatter.string(fromByteCount: Int64($0.sizeBytes), countStyle: .file),
-                                       providerAttachmentID: $0.id.uuidString, providerMessageID: id.uuidString,
-                                       providerAccountEmail: identity.email, mimeType: $0.mimeType, byteCount: $0.sizeBytes)
-                    }, conversationID: Self.localID(identity.localID + ":thread:" + (providerThreadId ?? providerMessageId)),
+                    attachments: attachments.map { $0.localAttachment(messageID: id, email: identity.email) },
+                    conversationID: Self.localID(identity.localID + ":thread:" + (providerThreadId ?? providerMessageId)),
                     sentAt: sentAt, providerMessageID: providerMessageId, providerAccountEmail: identity.email,
                     providerThreadID: providerThreadId, bodyHTML: htmlBody, providerLabelIDs: providerLabels,
                     unsubscribeHeaders: listUnsubscribe.isEmpty ? nil : MailUnsubscribeHeaders(

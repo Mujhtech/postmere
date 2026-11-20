@@ -529,12 +529,17 @@ struct ReaderView: View {
         Task {
             defer { loadingAttachmentID = nil }
             do {
+                if attachment.isCalendarFile {
+                    let data = try await runtime.calendarInvitationBytes(attachment: attachment, message: message)
+                    if save { saveAttachment(attachment, data: data) }
+                    else if let invitation = try await MailCalendarInvitationParser.parseInBackground(data).first {
+                        presentedSheet = .invitation(invitation, message.mailAccount)
+                    }
+                    return
+                }
                 let resolved = try await runtime.resolveAttachment(attachment, in: message)
                 if save { saveAttachment(resolved) }
-                else if resolved.name.lowercased().hasSuffix(".ics"), let url = resolved.localURL,
-                        let invitation = try MailCalendarInvitationParser.parse(data: Data(contentsOf: url)).first {
-                    presentedSheet = .invitation(invitation, message.mailAccount)
-                } else { presentedSheet = .attachment(resolved) }
+                else { presentedSheet = .attachment(resolved) }
             } catch { attachmentError = error.localizedDescription }
         }
     }
