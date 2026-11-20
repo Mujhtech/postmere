@@ -97,7 +97,8 @@ run_suite() {
             sources=("${editor_sources[@]}")
             case "$suite" in
                 composer) sources+=("${attachment_views[@]}" Views/SnippetPickerView.swift) ;;
-                templates) sources+=(Models/InboxSplit.swift Stores/MailPersistence.swift Support/ComposeAttachments.swift
+                templates) sources+=(Models/InboxSplit.swift Stores/MailSyncIdentity.swift Stores/MailSyncRepair.swift
+                                     Stores/MailPersistence.swift Support/ComposeAttachments.swift
                                      "${attachment_views[@]}" Views/SnippetPickerView.swift) ;;
                 signatures) sources+=(Support/MailSignature.swift Views/SignatureEditorView.swift) ;;
             esac

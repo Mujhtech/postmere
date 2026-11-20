@@ -40,6 +40,14 @@ import Foundation
     overviewStore.searchText = "no-such-subject"
     let search = InboxOverview(store: overviewStore)
     try check(!search.isInbox && search.sections.isEmpty, "an empty search never shows unrelated mail in the reader")
+    var padded = one
+    let visible = "Family 👩‍💻 ❤️ and فارسی‌زبان"
+    let filler = String(repeating: "\u{200C}\u{034F} ", count: 50)
+    padded.preview = visible + filler
+    try check(padded.displayPreview == visible && padded.preview == visible + filler,
+              "visible preview strips newsletter padding while preserving emoji, internal joiners and the provider original")
+    padded.preview = filler
+    try check(padded.displayPreview.isEmpty, "a padding-only snippet has no visible preview")
     try checkReceivedBodyRecovery(one, directory: directory)
     try checkTrackingPixelRules()
     try checkVerificationCodes(identity: first)

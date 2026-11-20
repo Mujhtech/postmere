@@ -117,17 +117,6 @@ struct ReaderView: View {
             case .attachment(let attachment): AttachmentPreviewSheet(attachment: attachment)
             case .invitation(let invitation, let account):
                 CalendarInvitationSheet(invitation: invitation, session: runtime.backend, account: account)
-            case .sender(let message):
-                SenderContextView(store: store, email: message.senderEmail, accountKey: MailContactIdentity.accountKey(for: message), displayName: message.sender,
-                    onOpenMessage: { selected in
-                        presentedSheet = nil
-                        store.selectAccount(selected.account)
-                        store.selectedInboxSplitID = nil
-                        store.selectedMailbox = selected.mailbox
-                        store.select(selected)
-                    }, onOpenAttachment: { attachment, source in resolveAttachment(attachment, message: source, save: false) })
-            case .ai(let message, let mode):
-                MailAIAssistantView(runtime: runtime, mode: mode, messages: store.conversationMessages(for: message))
             case .unsubscribe(let message):
                 UnsubscribeView(message: message, onComposeEmail: { email in
                     guard !store.isComposing && !store.draftRecoveryAvailable else {

@@ -345,6 +345,15 @@ struct MailMessage: Codable, nonisolated Equatable, Identifiable {
     var accountLabel: String { MailAccount.scopeLabel(for: account, providerEmail: providerAccountEmail) }
     var displaySubject: String { Self.displaySubject(subject) }
 
+    // Newsletter preheaders often end in invisible padding that wraps into an empty line.
+    private nonisolated static let previewPadding = CharacterSet.whitespacesAndNewlines.union(
+        CharacterSet(charactersIn: "\u{00AD}\u{034F}\u{200B}\u{200C}\u{200D}\u{2060}\u{FEFF}")
+    )
+
+    nonisolated var displayPreview: String {
+        preview.trimmingCharacters(in: Self.previewPadding)
+    }
+
     static func displaySubject(_ subject: String) -> String {
         subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(No subject)" : subject
     }

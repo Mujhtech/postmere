@@ -278,7 +278,7 @@ struct InboxTabsView: View {
     private func moreTabs(_ overflow: [InboxSplit], counts: [UUID: Int]) -> some View {
         if overflow.isEmpty {
             Button(action: onManage) {
-                moreIcon
+                moreIcon("Manage inbox tabs and VIPs")
             }
             .buttonStyle(.plain)
             .help("Manage inbox tabs and VIPs")
@@ -294,7 +294,7 @@ struct InboxTabsView: View {
                 Divider()
                 Button("Manage Inbox Tabs and VIPs…", action: onManage)
             } label: {
-                moreIcon
+                moreIcon("More inbox tabs")
             }
             .menuStyle(.button)
             .buttonStyle(.plain)
@@ -305,8 +305,10 @@ struct InboxTabsView: View {
         }
     }
 
-    private var moreIcon: some View {
-        PostmereIcon("ellipsis.circle", size: 16)
+    private func moreIcon(_ title: String) -> some View {
+        Label(title, systemImage: "ellipsis.circle")
+            .labelStyle(.iconOnly)
+            .font(.system(size: 15))
             .foregroundStyle(.secondary)
             .frame(width: rowHeight, height: rowHeight)
             .contentShape(Rectangle())

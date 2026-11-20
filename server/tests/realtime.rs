@@ -102,6 +102,7 @@ async fn message(state: &AppState, auth: &AuthContext, account: Uuid) -> Uuid {
         categories: vec![],
         delivery_headers: None,
         attachments: vec![],
+        has_mailing_list_id: false,
         list_unsubscribe: vec![],
         list_unsubscribe_post: vec![],
         authentication_results: vec![],

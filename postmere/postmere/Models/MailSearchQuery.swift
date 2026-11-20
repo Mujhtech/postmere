@@ -311,8 +311,8 @@ private nonisolated struct MailSearchParser {
             issue("Use has:attachment or has:unsubscribe.", at: token)
             return nil
         }
-        if token.field == "is" && !["unread", "read", "starred", "vip", "needsreply", "outgoing", "incoming", "draft", "snoozed", "followup"].contains(value) {
-            issue("Use is:unread, is:read, is:starred, is:vip, is:needsreply, is:outgoing, is:incoming, is:draft, is:snoozed, or is:followup.", at: token)
+        if token.field == "is" && !["unread", "read", "starred", "vip", "needsreply", "outgoing", "incoming", "draft", "snoozed", "followup", "subscription", "purchase"].contains(value) {
+            issue("Use is:unread, is:read, is:starred, is:vip, is:needsreply, is:outgoing, is:incoming, is:draft, is:snoozed, is:followup, is:subscription, or is:purchase.", at: token)
             return nil
         }
         if token.field == "filetype" && value.range(of: #"^[a-z0-9][a-z0-9.+*/-]*$|^\.[a-z0-9]+$"#, options: .regularExpression) == nil {
@@ -431,7 +431,9 @@ private nonisolated struct MailSearchTerm: Sendable {
             case "read": return !message.isUnread
             case "starred": return message.isStarred
             case "vip": return !context.matchingVIPs(for: message).isEmpty
-            case "needsreply": return message.workflow.needsReply
+            case "needsreply": return message.needsReply
+            case "subscription": return message.isSubscriptionMail
+            case "purchase": return message.isPurchaseMail
             case "outgoing": return message.isOutgoing
             case "incoming": return !message.isOutgoing
             case "draft": return message.isDraft

@@ -12,6 +12,7 @@ nonisolated struct MailStateSnapshot: Codable, Sendable {
     var outgoingQueue: [OutgoingMailItem]
     var activeDraft: ActiveMailDraft?
     var senderScreeningEnabled: Bool
+    var inboxSplitDefaultsVersion = InboxSplit.defaultsVersion
     var inboxSplits: [InboxSplit]
     var selectedInboxSplitID: UUID?
     var inboxSplitOverlapPolicy: InboxSplitOverlapPolicy = .firstMatch
@@ -65,7 +66,12 @@ nonisolated struct MailStateSnapshot: Codable, Sendable {
         outgoingQueue = try values.decodeIfPresent([OutgoingMailItem].self, forKey: .outgoingQueue) ?? []
         activeDraft = try values.decodeIfPresent(ActiveMailDraft.self, forKey: .activeDraft)
         senderScreeningEnabled = try values.decodeIfPresent(Bool.self, forKey: .senderScreeningEnabled) ?? false
-        inboxSplits = try values.decodeIfPresent([InboxSplit].self, forKey: .inboxSplits) ?? InboxSplit.defaults
+        let previousDefaults = try values.decodeIfPresent(Int.self, forKey: .inboxSplitDefaultsVersion) ?? 0
+        if let saved = try values.decodeIfPresent([InboxSplit].self, forKey: .inboxSplits) {
+            inboxSplits = previousDefaults < InboxSplit.defaultsVersion ? InboxSplit.upgradingLegacyTabs(saved) : saved
+        } else {
+            inboxSplits = InboxSplit.defaults
+        }
         selectedInboxSplitID = try values.decodeIfPresent(UUID.self, forKey: .selectedInboxSplitID)
         inboxSplitOverlapPolicy = try values.decodeIfPresent(InboxSplitOverlapPolicy.self, forKey: .inboxSplitOverlapPolicy) ?? .firstMatch
         vipContacts = try values.decodeIfPresent([VIPContact].self, forKey: .vipContacts) ?? []

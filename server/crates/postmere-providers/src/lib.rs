@@ -248,6 +248,8 @@ pub struct Message {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_headers: Option<DeliveryHeaders>,
     pub attachments: Vec<Attachment>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_mailing_list_id: bool,
     pub list_unsubscribe: Vec<String>,
     pub list_unsubscribe_post: Vec<String>,
     #[serde(default)]
@@ -971,6 +973,12 @@ fn header_values(value: &Value, name: &str) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+fn has_list_id(headers: &Value) -> bool {
+    header_values(headers, "List-Id")
+        .iter()
+        .any(|id| !id.trim().is_empty())
+}
+
 /// These are header claims, including when the mail was forwarded. Only
 /// report the first trace hop and let the MIME parser recognize its protocol.
 fn delivery_headers(headers: &Value) -> Option<DeliveryHeaders> {
@@ -1188,6 +1196,7 @@ pub fn normalize_gmail(account: Uuid, value: &Value) -> Result<Message, Provider
         provider_labels: labels,
         categories: Vec::new(),
         attachments,
+        has_mailing_list_id: has_list_id(payload),
         list_unsubscribe: header_values(payload, "List-Unsubscribe"),
         list_unsubscribe_post: header_values(payload, "List-Unsubscribe-Post"),
         authentication_results: header_values(payload, "Authentication-Results"),
@@ -1428,6 +1437,7 @@ pub fn normalize_graph(account: Uuid, value: &Value) -> Result<Message, Provider
             .map(|s| vec![s.into()])
             .unwrap_or_default(),
         attachments,
+        has_mailing_list_id: has_list_id(&headers),
         list_unsubscribe: header_values(&headers, "List-Unsubscribe"),
         list_unsubscribe_post: header_values(&headers, "List-Unsubscribe-Post"),
         authentication_results: header_values(&headers, "Authentication-Results"),
@@ -2004,7 +2014,7 @@ mod tests {
     #[test]
     fn gmail_fixture_normalizes_nested_body_flags_headers_and_attachment_ids() {
         let account = Uuid::new_v4();
-        let fixture = json!({"id":"gmail-1","threadId":"thread-1","internalDate":"1730610000000","snippet":"A preview","labelIds":["INBOX","UNREAD","STARRED","CATEGORY_UPDATES"],"payload":{"mimeType":"multipart/mixed","headers":[{"name":"From","value":"\"Last, First\" <person@example.com>"},{"name":"To","value":"One <one@example.com>, Two <two@example.com>"},{"name":"Subject","value":"=?UTF-8?B?Q2Fmw6k=?="},{"name":"List-Unsubscribe","value":"<https://example.com/unsubscribe>"}],"parts":[{"partId":"0","mimeType":"text/plain","body":{"data":URL_SAFE_NO_PAD.encode("Hello café")}},{"partId":"1","mimeType":"application/pdf","filename":"plan.pdf","body":{"attachmentId":"blob-1","size":12}}]}});
+        let fixture = json!({"id":"gmail-1","threadId":"thread-1","internalDate":"1730610000000","snippet":"A preview","labelIds":["INBOX","UNREAD","STARRED","CATEGORY_UPDATES"],"payload":{"mimeType":"multipart/mixed","headers":[{"name":"From","value":"\"Last, First\" <person@example.com>"},{"name":"To","value":"One <one@example.com>, Two <two@example.com>"},{"name":"Subject","value":"=?UTF-8?B?Q2Fmw6k=?="},{"name":"List-Unsubscribe","value":"<https://example.com/unsubscribe>"},{"name":"List-ID","value":"Design <design.example.org>"}],"parts":[{"partId":"0","mimeType":"text/plain","body":{"data":URL_SAFE_NO_PAD.encode("Hello café")}},{"partId":"1","mimeType":"application/pdf","filename":"plan.pdf","body":{"attachmentId":"blob-1","size":12}}]}});
         let first = normalize_gmail(account, &fixture).unwrap();
         let second = normalize_gmail(account, &fixture).unwrap();
         assert_eq!(first.id, second.id);
@@ -2017,6 +2027,7 @@ mod tests {
         assert_eq!(first.mailbox, "inbox");
         assert_eq!(first.text_body, "Hello café");
         assert_eq!(first.list_unsubscribe.len(), 1);
+        assert!(first.has_mailing_list_id);
         assert_ne!(
             first.id,
             normalize_gmail(Uuid::new_v4(), &fixture).unwrap().id,
@@ -2118,7 +2129,7 @@ mod tests {
 
     #[test]
     fn microsoft_fixture_preserves_recipients_flags_and_list_headers() {
-        let value = json!({"id":"ms-1","conversationId":"conversation","receivedDateTime":"2026-11-17T10:00:00Z","subject":"Review","from":{"emailAddress":{"name":"Pat","address":"pat@example.com"}},"toRecipients":[{"emailAddress":{"address":"one@example.com"}}],"ccRecipients":[{"emailAddress":{"address":"two@example.com"}}],"body":{"contentType":"HTML","content":"<p>Full body</p>"},"bodyPreview":"Full body","isRead":true,"flag":{"flagStatus":"flagged"},"parentFolderId":"folder-1","categories":["Design review","Green"],"attachments":[{"id":"attachment-1","name":"document.pdf","contentType":"application/pdf","size":123}],"internetMessageHeaders":[{"name":"List-Unsubscribe-Post","value":"List-Unsubscribe=One-Click"}]});
+        let value = json!({"id":"ms-1","conversationId":"conversation","receivedDateTime":"2026-11-17T10:00:00Z","subject":"Review","from":{"emailAddress":{"name":"Pat","address":"pat@example.com"}},"toRecipients":[{"emailAddress":{"address":"one@example.com"}}],"ccRecipients":[{"emailAddress":{"address":"two@example.com"}}],"body":{"contentType":"HTML","content":"<p>Full body</p>"},"bodyPreview":"Full body","isRead":true,"flag":{"flagStatus":"flagged"},"parentFolderId":"folder-1","categories":["Design review","Green"],"attachments":[{"id":"attachment-1","name":"document.pdf","contentType":"application/pdf","size":123}],"internetMessageHeaders":[{"name":"List-Unsubscribe-Post","value":"List-Unsubscribe=One-Click"},{"name":"list-id","value":"Updates <updates.example.org>"}]});
         let m = normalize_graph(Uuid::new_v4(), &value).unwrap();
         assert!(m.is_read && m.is_starred);
         assert_eq!(m.provider_labels, ["folder-1"]);
@@ -2128,6 +2139,7 @@ mod tests {
         assert_eq!(m.html_body.as_deref(), Some("<p>Full body</p>"));
         assert_eq!(m.attachments[0].size_bytes, 123);
         assert_eq!(m.list_unsubscribe_post.len(), 1);
+        assert!(m.has_mailing_list_id);
     }
     #[test]
     fn gmail_html_only_and_multipart_keep_the_html_and_complete_plain_body() {

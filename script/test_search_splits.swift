@@ -174,7 +174,7 @@ func runSearchSplitRegressions(directory: URL) throws {
     legacy["savedViews"] = legacyViews
     try JSONSerialization.data(withJSONObject: legacy).write(to: legacyURL)
     let migrated = MailStore(messages: [], persistenceURL: legacyURL)
-    try check(migrated.persistenceError == nil && migrated.inboxSplits.map(\.name) == ["Important", "People", "Newsletters", "Notifications"]
+    try check(migrated.persistenceError == nil && migrated.inboxSplits.map(\.name) == ["Important", "People", "Purchases", "Subscriptions", "Notifications"]
               && migrated.vipContacts.isEmpty && migrated.selectedInboxSplitID == nil, "legacy snapshots acquire editable default tabs without losing mail")
     try check(migrated.savedViews[0].criteria.searchField == .all && migrated.savedViews[0].criteria.mailbox == nil, "legacy missing search field defaults to All Text and omitted mailbox remains All Mailboxes")
     try check(InboxSplit.defaults.allSatisfy { MailSearchQuery(source: $0.criteria.query).isValid }, "all default tab predicates are valid editable queries")
@@ -274,7 +274,18 @@ func runBackgroundSearchRegressions() async throws {
     store.setSelection([messages.last!.id])
     try PostmereBackendRegression.check(store.selectedMessageID == messages.last!.id && store.filteredMessages.first?.isUnread == false
                                          && !store.isSearchingMessages, "opening a large-search result updates its row without rerunning the query")
+    let changedID = store.messages[1].id
+    store.messages[1].subject = "Gamma"
+    try PostmereBackendRegression.check(store.isSearchingMessages && store.filteredMessages.count == 90
+                                         && store.navigableMessages?.first?.id == messages.last?.id,
+                                         "same-query sync keeps the existing rows visible and selectable while refreshing")
+    await store.searchTask?.value
+    try PostmereBackendRegression.check(store.filteredMessages.count == 89 && !store.filteredMessages.contains { $0.id == changedID },
+                                         "the completed refresh removes messages that stopped matching")
+    store.messages[1].subject = "Beta"
+    await store.searchTask?.value
     store.updateSearchText("Alpha")
+    try PostmereBackendRegression.check(store.filteredMessages.isEmpty, "a changed query clears the previous query's rows")
     let closing = store.searchTask
     store.endSearch()
     await closing?.value

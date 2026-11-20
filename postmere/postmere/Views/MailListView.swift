@@ -26,10 +26,13 @@ struct MailListView: View {
     private var query: String { store.searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var hasMessageFilters: Bool { store.unreadOnly || store.attachmentsOnly }
     private var searchesAllMailboxes: Bool { store.searchesAllMailboxes }
+    private var selectedTab: InboxSplit? {
+        guard store.selectedMailbox == .inbox, let id = store.selectedInboxSplitID else { return nil }
+        return store.inboxSplits.first { $0.id == id && !$0.isHidden }
+    }
     private var mailboxTitle: String {
         if let view = store.selectedSavedView { return view.name }
-        if store.selectedMailbox == .inbox,
-           let split = store.inboxSplits.first(where: { $0.id == store.selectedInboxSplitID && !$0.isHidden }) { return split.name }
+        if let selectedTab { return selectedTab.name }
         if let account = store.selectedAccount { return "\(MailAccount.scopeLabel(for: account)) \(store.selectedMailbox.title)" }
         return store.selectedMailbox == .inbox ? "All Inboxes" : store.selectedMailbox.title
     }
@@ -105,6 +108,7 @@ struct MailListView: View {
                     }
                 }
                 .listStyle(.inset)
+                .scrollContentBackground(theme == .native ? .automatic : .hidden)
                 .alternatingRowBackgrounds(.disabled)
                 .contextMenu(forSelectionType: UUID.self) { ids in
                     if ids.count > 1 {
@@ -138,11 +142,12 @@ struct MailListView: View {
                     if loadingMailbox {
                         ProgressView("Loading messages…").controlSize(.small).font(.callout)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(.background)
+                            .background(theme == .native ? AnyShapeStyle(.background) : AnyShapeStyle(theme.colors(for: scheme).canvas))
                     }
                 }
             }
         }
+        .background(theme == .native ? Color.clear : theme.colors(for: scheme).canvas)
         .overlay(alignment: .bottom) {
             if showsAction, let action = store.lastAction {
                 HStack(spacing: 10) {
@@ -188,10 +193,8 @@ struct MailListView: View {
     }
 
     private func messageRows(_ messages: ArraySlice<MailMessage>, counts: [UUID: Int]) -> some View {
-        // Reuse the native row at each position when changing tabs. Selection and actions still use the message ID.
-        ForEach(0..<messages.count, id: \.self) { offset in
+        ForEach(messages.enumerated(), id: \.element.id) { offset, message in
             let index = messages.startIndex + offset
-            let message = messages[index]
             let selected = store.selectedMessageIDs.contains(message.id)
             MailRow(message: message, verifiedSenderMark: store.displayedSenderMark(for: message), conversationCount: counts[message.id] ?? 1,
                     location: resultLocation(for: message), showsReplyRequest: store.selectedMailbox == .needsReply, showsSearchDate: store.isSearchActive,
@@ -199,7 +202,8 @@ struct MailListView: View {
                     isSelected: selected)
                 .mailSelection(selected,
                                joinsAbove: selected && index > messages.startIndex && store.selectedMessageIDs.contains(messages[index - 1].id),
-                               joinsBelow: selected && index + 1 < messages.endIndex && store.selectedMessageIDs.contains(messages[index + 1].id))
+                               joinsBelow: selected && index + 1 < messages.endIndex && store.selectedMessageIDs.contains(messages[index + 1].id),
+                               horizontalInset: 10) // Match the inset list’s native context-menu outline.
                 .tag(message.id)
                 .listRowInsets(EdgeInsets(top: 11, leading: 10, bottom: 11, trailing: 10))
                 .swipeActions(edge: .leading, allowsFullSwipe: false) {
@@ -319,6 +323,7 @@ struct MailListView: View {
         if store.unreadOnly && !store.attachmentsOnly { return "No unread messages" }
         if hasMessageFilters { return "No matching messages" }
         if store.selectedSavedView != nil { return "No matching messages" }
+        if let selectedTab { return "No messages in \(selectedTab.name)" }
         switch store.selectedMailbox {
         case .inbox: return "Inbox is empty"
         case .starred: return "No starred messages"
@@ -340,6 +345,13 @@ struct MailListView: View {
         if !query.isEmpty { return "No messages match “\(query)” in \(searchLocation). Try another search or adjust your filters." }
         if hasMessageFilters { return "No messages in \(mailboxTitle) match your filters." }
         if store.selectedSavedView != nil { return "Messages that match this view’s rules will appear here." }
+        if let selectedTab {
+            switch selectedTab.criteria.query {
+            case "is:subscription": return "Mailing lists and newsletters from this inbox appear here."
+            case "is:purchase": return "Receipts, order confirmations, and shipping updates from this inbox appear here."
+            default: return "Inbox conversations that match this tab’s rules appear here."
+            }
+        }
         switch store.selectedMailbox {
         case .inbox: return "Messages in this inbox will appear here."
         case .starred: return "Star a message to keep it close at hand."
@@ -491,6 +503,7 @@ struct MailListView: View {
 }
 
 private struct MailRow: View {
+    @Environment(\.mailboxInset) private var inset
     let message: MailMessage
     let verifiedSenderMark: MailVerifiedSenderMark?
     let conversationCount: Int
@@ -541,7 +554,7 @@ private struct MailRow: View {
                             .foregroundStyle(secondaryForeground)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
-                            .background(isSelected ? Color.clear : PostmereTheme.subtleFill, in: Capsule())
+                            .background(isSelected ? Color.clear : inset, in: Capsule())
                             .fixedSize()
                             .help("\(conversationCount) messages in conversation")
                             .accessibilityLabel("\(conversationCount) messages in conversation")

@@ -17,18 +17,60 @@ nonisolated struct InboxSplit: Codable, Equatable, Identifiable {
     var criteria: SavedInboxCriteria
     var isHidden = false
 
-    static var defaults: [InboxSplit] {
-        [
-            InboxSplit(id: UUID(uuidString: "26FDFE19-6DC0-48FC-B849-87939F0A0001")!, name: "Important",
-                       criteria: SavedInboxCriteria(query: "is:vip OR is:starred OR is:needsreply")),
-            InboxSplit(id: UUID(uuidString: "26FDFE19-6DC0-48FC-B849-87939F0A0002")!, name: "People",
-                       criteria: SavedInboxCriteria(query: "is:incoming -has:unsubscribe -category:promotions -category:forums -category:updates -category:social -from:noreply -from:no-reply -from:notifications")),
-            InboxSplit(id: UUID(uuidString: "26FDFE19-6DC0-48FC-B849-87939F0A0003")!, name: "Newsletters",
-                       criteria: SavedInboxCriteria(query: "has:unsubscribe OR category:promotions OR category:forums")),
-            InboxSplit(id: UUID(uuidString: "26FDFE19-6DC0-48FC-B849-87939F0A0004")!, name: "Notifications",
-                       criteria: SavedInboxCriteria(query: "category:updates OR category:social OR from:noreply OR from:no-reply OR from:notifications"))
-        ]
+    static let peopleQuery = "is:incoming -has:unsubscribe -category:promotions -category:forums -category:updates -category:social -from:noreply -from:no-reply -from:notifications"
+
+    static let defaultsVersion = 1
+    private static let stockPeople = InboxSplit(id: UUID(uuidString: "26FDFE19-6DC0-48FC-B849-87939F0A0002")!, name: "People",
+                                              criteria: SavedInboxCriteria(query: peopleQuery + " -is:subscription -is:purchase"))
+    private static let subscriptions = InboxSplit(id: UUID(uuidString: "26FDFE19-6DC0-48FC-B849-87939F0A0003")!, name: "Subscriptions",
+                                                 criteria: SavedInboxCriteria(query: "is:subscription"))
+    private static let purchases = InboxSplit(id: UUID(uuidString: "26FDFE19-6DC0-48FC-B849-87939F0A0005")!, name: "Purchases",
+                                             criteria: SavedInboxCriteria(query: "is:purchase"))
+    private static let notifications = InboxSplit(id: UUID(uuidString: "26FDFE19-6DC0-48FC-B849-87939F0A0004")!, name: "Notifications",
+                                                 criteria: SavedInboxCriteria(query: "category:updates OR category:social OR from:noreply OR from:no-reply OR from:notifications"))
+
+    static let defaults: [InboxSplit] = [
+        InboxSplit(id: UUID(uuidString: "26FDFE19-6DC0-48FC-B849-87939F0A0001")!, name: "Important",
+                   criteria: SavedInboxCriteria(query: "is:vip OR is:starred OR is:needsreply")),
+        stockPeople, purchases, subscriptions, notifications
+    ]
+
+    static func upgradingLegacyTabs(_ saved: [InboxSplit]) -> [InboxSplit] {
+        var tabs = saved
+        if let index = tabs.firstIndex(where: { $0.id == stockPeople.id && $0.name == stockPeople.name
+            && $0.criteria == SavedInboxCriteria(query: peopleQuery) }) {
+            tabs[index].criteria = stockPeople.criteria
+        }
+
+        let legacyIndex = tabs.firstIndex { $0.id == subscriptions.id }
+        let legacyCriteria = SavedInboxCriteria(query: "has:unsubscribe OR category:promotions OR category:forums")
+        if let index = legacyIndex, tabs[index].name == "Newsletters", tabs[index].criteria == legacyCriteria {
+            // Identity, selection, position and visibility belong to the user.
+            if !tabs.contains(where: { $0.id != subscriptions.id && $0.name.caseInsensitiveCompare(subscriptions.name) == .orderedSame }) {
+                tabs[index].name = subscriptions.name
+            }
+            tabs[index].criteria = subscriptions.criteria
+        } else if !tabs.contains(where: { $0.name.caseInsensitiveCompare(subscriptions.name) == .orderedSame }) {
+            var added = subscriptions
+            if legacyIndex != nil {
+                // The old ID belongs to a customized tab. Give the new definition its own identity.
+                added.id = UUID(uuidString: "26FDFE19-6DC0-48FC-B849-87939F0A0006")!
+            } else {
+                // Keep a previously removed mailing-list tab out of the tab bar.
+                added.isHidden = true
+            }
+            if !tabs.contains(where: { $0.id == added.id }) {
+                tabs.insert(added, at: tabs.firstIndex { $0.id == notifications.id } ?? tabs.endIndex)
+            }
+        }
+
+        if !tabs.contains(where: { $0.id == purchases.id || $0.name.caseInsensitiveCompare(purchases.name) == .orderedSame }) {
+            let beforeBroadTab = tabs.firstIndex { $0.criteria == subscriptions.criteria || $0.id == notifications.id }
+            tabs.insert(purchases, at: beforeBroadTab ?? tabs.endIndex)
+        }
+        return tabs
     }
+
 }
 
 nonisolated struct VIPContact: Codable, Equatable, Identifiable {
