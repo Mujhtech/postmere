@@ -12,18 +12,30 @@
     }
 }
 
+(postmere_proxy) {
+    # Event streams are flushed immediately by Caddy. Keep cancellation on disconnect.
+    reverse_proxy app:8080 {
+        transport http {
+            dial_timeout 5s
+            response_header_timeout {args[0]}
+        }
+    }
+}
+
 {$POSTMERE_HOST} {
     # Access logging is deliberately omitted: OAuth callback URLs contain codes.
     request_body {
         max_size 30MB
     }
 
-    reverse_proxy app:8080 {
-        # Preserve Host/Authorization. Caddy flushes text/event-stream responses
-        # immediately while retaining upstream cancellation on disconnect.
-        transport http {
-            dial_timeout 5s
-            response_header_timeout 30s
-        }
+    @ai_generation {
+        method POST
+        path /v1/ai/summary /v1/ai/draft /v1/ai/ask /v1/ai/suggestions /v1/decisions/spam /v1/mail/messages/*/sender-profile
+    }
+    handle @ai_generation {
+        import postmere_proxy 110s
+    }
+    handle {
+        import postmere_proxy 30s
     }
 }

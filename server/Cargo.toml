@@ -35,7 +35,6 @@ sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio
 thiserror = "2.0"
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "io-util"] }
 tower = { version = "0.5", features = ["util", "limit"] }
-tower-http = { version = "0.6", features = ["limit", "timeout", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = { version = "2.5", features = ["serde"] }
@@ -84,13 +83,13 @@ axum.workspace = true
 serde.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
-tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 ring.workspace = true
 postmere-providers.workspace = true
 postmere-mcp-operations.workspace = true

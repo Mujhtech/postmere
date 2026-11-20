@@ -144,8 +144,11 @@ docker compose up -d app caddy
 ```
 
 On an existing managed HTTPS platform, use the same environment and callback
-values without Caddy. Disable response buffering for `/v1/events`, preserve
-the public Host header, and retain PostgreSQL connectivity and background CPU.
+values without Caddy. Disable response buffering for `/v1/events` and streaming
+responses from `POST /v1/ai/summary`. Allow 110 seconds for AI generation
+response headers, including `POST /v1/mail/messages/{id}/sender-profile` for
+web-researched sender details. Preserve the public Host header and retain PostgreSQL
+connectivity and background CPU.
 For an external PostgreSQL service, replace the socket URLs and remove the
 bundled database dependencies; use `sslmode=verify-full` with a non-superuser,
 non-RLS-bypass runtime role as described in the [server guide](../README.md).
