@@ -117,7 +117,6 @@ struct MailListView: View {
                         messageActions(message)
                     }
                 }
-                .background { MessageMenuAccent(accent: accent).accessibilityHidden(true) }
                 .focused($isListFocused)
                 .accessibilityLabel("Messages in \(searchLocation)")
                 .onDeleteCommand {

@@ -5,6 +5,7 @@ import Combine
 final class PostmereAppDelegate: NSObject, NSApplicationDelegate {
     weak var runtime: MailRuntime?
     private let scrollbars = PostmereScrollbars()
+    private let menuHighlighter = PostmereMenuHighlighter()
     private var appearanceObservation: AnyCancellable?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -13,6 +14,7 @@ final class PostmereAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         scrollbars.start()
+        menuHighlighter.start()
         runtime?.start()
         // Device registration is separate from authorization to show alerts.
         // NotificationService installs UNUserNotificationCenter's delegate in
