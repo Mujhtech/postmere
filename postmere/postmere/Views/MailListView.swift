@@ -507,20 +507,28 @@ private struct MailRow: View {
                         .foregroundStyle(secondaryForeground)
                         .fixedSize()
                 }
-                HStack(spacing: 7) {
-                    Text(message.displaySubject)
-                        .font(.system(size: 12, weight: message.isUnread ? .medium : .regular))
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if message.isStarred || !message.attachments.isEmpty { messageIndicators }
-                }
-                if showMessagePreviews {
-                    Text(message.preview)
-                        .font(.system(size: 12))
-                        .foregroundStyle(secondaryForeground)
-                        .lineSpacing(2)
-                        .lineLimit(2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 7) {
+                        Text(message.displaySubject)
+                            .font(.system(size: 12, weight: message.isUnread ? .medium : .regular))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if message.isStarred || !message.attachments.isEmpty { messageIndicators }
+                    }
+                    if showMessagePreviews {
+                        MailVerificationCodeView(message: message, compact: true) {
+                            let preview = showsReplyRequest ? (message.replyRequestText ?? message.displayPreview) : message.displayPreview
+                            if !preview.isEmpty {
+                                Text(verbatim: preview)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(secondaryForeground)
+                                    .lineSpacing(2)
+                                    .lineLimit(2)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.top, 4)
+                            }
+                        }
+                    }
                 }
                 if let location {
                     Text(location)

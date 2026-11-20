@@ -250,6 +250,62 @@ import Foundation
     } == true, "the blocker leaves ordinary assets and distinct recipient URLs alone")
 }
 
+@MainActor private func checkVerificationCodes(identity: RemoteAccountIdentity) throws {
+    func expect(_ expected: String?, _ description: String, subject: String = "Account notification",
+                paragraphs: [String] = [], html: String? = nil) throws {
+        let actual = MailVerificationCode.detect(subject: subject, paragraphs: paragraphs, html: html)
+        try PostmereBackendRegression.check(actual == expected, description)
+    }
+
+    try expect("034091", "a subject-only sign-in code keeps its leading zero", subject: "Your sign-in code is 034091")
+    try expect("824931", "a code can precede its verification label", subject: "824931 is your verification code")
+    try expect("053804", "Google's G- prefix leaves the six digits ready to enter",
+               paragraphs: ["G-053804 is your Google verification code."])
+    try expect("571024", "an instruction can place the value after the sign-in action",
+               subject: "Sign-in attempt", paragraphs: ["Enter this code to sign in: 571024"])
+    try expect("012345", "a temporary verification prompt can put the code on the next line",
+               subject: "Your OpenAI code", paragraphs: ["Enter this temporary verification code to continue:\n012345"])
+    try expect("012839", "a grouped one-time password copies as a single value",
+               paragraphs: ["Your one-time password is 012 839.", "It expires in 10 minutes."])
+    try expect("K4R8Q2", "an explicitly identified alphanumeric verification code preserves its characters",
+               paragraphs: ["Your verification code: K4R8Q2"])
+    try expect("609381", "a security code repeated in the subject and body is unambiguous",
+               subject: "Your verification code is 609381", paragraphs: ["Your verification code: 609381"])
+    try expect(nil, "conflicting verification codes do not produce a copy action",
+               subject: "Your verification code is 123456", paragraphs: ["Your verification code: 654321"])
+    try expect(nil, "an order number and a postal code are not verification codes",
+               subject: "Receipt for order 349298", paragraphs: ["Your package is on its way to postal code 100001."])
+    try expect(nil, "a sign-in footer does not turn a promotional code into a verification code",
+               subject: "Sale ends soon", paragraphs: ["Use discount code 847291 at checkout.", "Sign in to your account for early access."])
+    try expect(nil, "a hotel booking confirmation is not an account verification code",
+               subject: "Your hotel reservation", paragraphs: ["Your confirmation code is K4R8Q2."])
+    try expect(nil, "a quoted sign-in email cannot surface an old code",
+               paragraphs: ["Thanks for the help.", "On Tuesday, Example wrote:\n> Your sign-in code is 028175."])
+    try expect("054291", "a visible code in an HTML table survives entity decoding and formatting",
+               html: "<table><tr><td>Your verification code:</td></tr><tr><td><strong>05&#52;291</strong></td></tr></table>")
+
+    // Exercise the provider path too. Cached paragraphs and previews can include
+    // text that the reader hides, including earlier replies and preheaders.
+    let html = """
+        <html><head><title>Your verification code is 311141</title></head><body>
+        <div style="display: none">Your verification code is 999999.</div>
+        <p>You requested help with your account.</p>
+        <a href="https://example.invalid/?verification_code=123456">Visit support</a>
+        <blockquote type="cite">Your verification code is 432104.</blockquote>
+        </body></html>
+        """
+    let remote = BackendMailMessage(id: UUID(), accountId: identity.accountID, providerMessageId: "verification-fixture",
+        providerThreadId: nil, subject: "Account notification", from: BackendAddress(email: "sender@example.invalid"),
+        to: [], cc: [], bcc: [], textBody: "", htmlBody: html, preview: "Your verification code is 999999.",
+        sentAt: .now, isRead: false, isStarred: false, mailbox: "inbox", providerLabels: [],
+        attachments: [], listUnsubscribe: [], listUnsubscribePost: [])
+    let message = remote.localMessage(identity: identity)
+    let hiddenCode = MailVerificationCode.detect(subject: message.subject, paragraphs: message.paragraphs,
+                                                 html: message.receivedHTML, preview: message.preview)
+    try PostmereBackendRegression.check(hiddenCode == nil,
+        "HTML metadata, hidden preheaders, URL parameters and quoted codes stay excluded after provider text recovery")
+}
+
 @MainActor private func checkReceivedBodyRecovery(_ source: MailMessage, directory: URL) throws {
     let check = PostmereBackendRegression.check
     let html = "<html><head><style>p {color:navy}</style></head><body><p>Alex&#39;s tea &amp; coffee</p><p>Closing invitation</p></body></html>"
