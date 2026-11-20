@@ -478,6 +478,10 @@ struct MailListView: View {
         guard isListFocused,
               store.isSearchActive || store.mailboxViewData != nil,
               press.modifiers.isEmpty || (press.characters == "#" && press.modifiers == .shift) else { return .ignored }
+        if press.key == .escape, store.selectedMessageIDs.count > 1 {
+            store.clearSelection()
+            return .handled
+        }
         if press.key == .escape, store.isSearchActive {
             store.endSearch()
             return .handled

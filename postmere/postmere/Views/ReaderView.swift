@@ -72,16 +72,7 @@ struct ReaderView: View {
     var body: some View {
         Group {
             if store.selectedMessageIDs.count > 1 {
-                ContentUnavailableView {
-                    PostmereLabel.emptyState("\(store.selectedMessageIDs.count) Messages Selected", symbol: "envelope.on.envelope", size: 40)
-                } description: {
-                    Text("Use the list actions or Message menu to organize your selection.")
-                } actions: {
-                    HStack {
-                        Button("Archive", action: store.archiveSelected).disabled(!store.canMoveSelected(to: .archive))
-                        Button("Move to Trash", action: store.deleteSelected).disabled(!store.canMoveSelected(to: .trash))
-                    }
-                }
+                MultiSelectionView(store: store)
             } else if let message = store.selectedMessage {
                 HSplitView {
                     readerWithActions(message)

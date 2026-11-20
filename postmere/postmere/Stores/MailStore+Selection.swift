@@ -162,4 +162,22 @@ extension MailStore {
         persistenceSuspended -= 1
         persistState()
     }
+
+    /// Snoozes each selected conversation once.
+    func snoozeMessages(_ ids: Set<UUID>, until date: Date) {
+        persistenceSuspended += 1
+        let selected = messages.filter { ids.contains($0.id) && $0.allowsWorkflowActions }
+        var handled: Set<String> = []
+        for message in selected where handled.insert(conversationKey(for: message)).inserted {
+            snoozeMessage(message.id, until: date)
+        }
+        persistenceSuspended -= 1
+        persistState()
+        if handled.count > 1 { lastAction = "Snoozed \(handled.count) conversations" }
+    }
+
+    func clearSelection() {
+        pendingMailboxSelection = nil
+        selectedMessageID = nil
+    }
 }
