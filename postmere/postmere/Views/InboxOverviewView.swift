@@ -48,7 +48,7 @@ struct InboxOverviewView: View {
                             ForEach(section.messages) { message in
                                 Button { open(message, in: section.mailbox) } label: {
                                     HStack(spacing: 10) {
-                                        ParticipantPhoto(address: message.senderEmail, name: message.sender, size: 32)
+                                        ParticipantPhoto(address: message.senderEmail, name: message.sender, size: 32, verifiedMark: store.displayedSenderMark(for: message))
                                         VStack(alignment: .leading, spacing: 3) {
                                             Text(message.sender).fontWeight(.semibold).lineLimit(1)
                                             Text(message.displaySubject).foregroundStyle(.secondary).lineLimit(1)

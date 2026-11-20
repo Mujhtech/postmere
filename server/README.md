@@ -195,6 +195,21 @@ The list endpoint excludes file bodies; fetch the selected template explicitly.
 Version conflicts return HTTP 409, so reload before replacing a stale share or
 template. Private notes are never included in shared snapshots.
 
+## Verified sender marks
+
+`GET /v1/mail/messages/{id}/sender-mark` checks a received Gmail message when
+the reader opens it. A successful response contains `verified_sender_mark` with
+the exact From domain, `provider: "gmail"`, `verified_by: "postmere"`, a
+base64-encoded certified SVG and an RFC3339 `expires_at`. The field is null
+when the message has no qualifying proof. Temporary verification failures
+return HTTP 503.
+
+Postmere checks the signature against the raw message, verifies the domain's
+DMARC policy, then checks the BIMI mark certificate and its embedded artwork.
+The DNS resolver receives only DNS names. The client can cache the result through
+the earlier of its reported expiry and 24 hours. A domain favicon, imported
+authentication header or ordinary contact photo cannot grant a verification badge.
+
 ## Unsubscribe API
 
 `GET /v1/mail/messages/{id}/unsubscribe` returns `{one_click_url,reason}` without

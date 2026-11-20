@@ -229,7 +229,24 @@ nonisolated struct MailEnvelopeDetails: Codable, Equatable, Sendable {
     }
 }
 
-struct MailMessage: Codable, Identifiable {
+nonisolated struct MailVerifiedSenderMark: Codable, Equatable, Sendable {
+    let messageID: UUID
+    let account: String
+    let domain: String
+    let verifier: String
+    let expiresAt: Date
+    let logoPNG: Data
+
+    func matches(_ message: MailMessage) -> Bool {
+        expiresAt > .now && messageID == message.backendMessageID && account == message.account && message.incomingSenderDomain == domain
+    }
+
+    var explanation: String {
+        "\(verifier) verified that this message came from \(domain) and that the sender controls the displayed logo."
+    }
+}
+
+struct MailMessage: Codable, nonisolated Equatable, Identifiable {
     var id: UUID
     var conversationID: UUID
     var sentAt: Date
@@ -264,6 +281,7 @@ struct MailMessage: Codable, Identifiable {
     var providerLabelIDs: [String]
     var providerCategories: [String]?
     var envelopeDetails: MailEnvelopeDetails?
+    var verifiedSenderMark: MailVerifiedSenderMark?
     var providerDeletedAt: Date?
     // Optional so mailbox snapshots created before unsubscribe support still decode.
     var unsubscribeHeaders: MailUnsubscribeHeaders?
@@ -292,6 +310,18 @@ struct MailMessage: Codable, Identifiable {
     }
 
     nonisolated var isDraft: Bool { mailbox == .drafts || (mailbox == .trash && trashedFrom == .drafts) }
+
+    nonisolated var incomingSenderDomain: String? {
+        guard !isOutgoing, !isDraft, mailbox != .outbox, providerDeletedAt == nil else { return nil }
+        let parts = senderEmail.split(separator: "@", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+        return parts[1].lowercased()
+    }
+
+    nonisolated var currentSenderMark: MailVerifiedSenderMark? {
+        guard let mark = verifiedSenderMark, mark.matches(self) else { return nil }
+        return mark
+    }
 
     nonisolated var receivedHTML: String? {
         guard !isDraft, mailbox != .outbox, let bodyHTML,

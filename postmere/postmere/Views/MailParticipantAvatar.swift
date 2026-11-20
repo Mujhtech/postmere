@@ -6,9 +6,20 @@ struct MailParticipantAvatar: View {
     var name = ""
     var size: CGFloat
     var messageID: UUID?
+    var verifiedMark: MailVerifiedSenderMark?
     @State private var showsProfile = false
 
     var body: some View {
+        if let verifiedMark, ParticipantPhoto.logo(for: verifiedMark) != nil {
+            TimelineView(.explicit([Date.distantPast, verifiedMark.expiresAt])) { context in
+                avatar(mark: context.date < verifiedMark.expiresAt ? verifiedMark : nil)
+            }
+        } else {
+            avatar(mark: nil)
+        }
+    }
+
+    private func avatar(mark verifiedMark: MailVerifiedSenderMark?) -> some View {
         Button { showsProfile = true } label: {
             ParticipantPhoto(address: address, name: name, size: size, verifiedMark: verifiedMark)
         }
@@ -37,6 +48,7 @@ struct ParticipantPhoto: View {
     let name: String
     let size: CGFloat
     var enlarged = false
+    var verifiedMark: MailVerifiedSenderMark?
     @State private var loadedKey: PhotoKey?
     @State private var photo: MailRemoteParticipantImages.Photo?
 
@@ -56,6 +68,53 @@ struct ParticipantPhoto: View {
     }
 
     var body: some View {
+        if let verifiedMark, let logo = Self.logo(for: verifiedMark) {
+            // Reevaluate at the end of the evidence lifetime, even if the open message doesn't change.
+            TimelineView(.explicit([Date.distantPast, verifiedMark.expiresAt])) { context in
+                if context.date < verifiedMark.expiresAt {
+                    VStack(spacing: 7) {
+                        Image(nsImage: logo).resizable().scaledToFit()
+                            .padding(size * 0.05)
+                            .frame(width: size, height: size)
+                            .background(.white, in: .circle)
+                            .clipShape(.circle)
+                            .overlay(alignment: .topTrailing) {
+                                Image(systemName: "checkmark.seal.fill")
+                                    .symbolRenderingMode(.palette)
+                                    .foregroundStyle(.white, .blue)
+                                    .font(.system(size: enlarged ? 22 : 12, weight: .bold))
+                                    .accessibilityHidden(true)
+                            }
+                        if enlarged {
+                            Text(verifiedMark.explanation).font(.caption).foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+                    .help(verifiedMark.explanation)
+                } else {
+                    fallback
+                }
+            }
+        } else {
+            fallback
+        }
+    }
+
+    private static let logos: NSCache<NSData, NSImage> = {
+        let cache = NSCache<NSData, NSImage>()
+        cache.countLimit = 128
+        return cache
+    }()
+
+    fileprivate static func logo(for mark: MailVerifiedSenderMark) -> NSImage? {
+        let key = mark.logoPNG as NSData
+        if let cached = logos.object(forKey: key) { return cached }
+        guard mark.logoPNG.starts(with: [137, 80, 78, 71, 13, 10, 26, 10]), let logo = NSImage(data: mark.logoPNG) else { return nil }
+        logos.setObject(logo, forKey: key)
+        return logo
+    }
+
+    private var fallback: some View {
         let photos = MailContactPhotos.shared
         let gravatar = MailRemoteParticipantImages.gravatar
         let icons = MailRemoteParticipantImages.websiteIcons

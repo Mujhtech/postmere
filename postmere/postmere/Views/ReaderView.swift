@@ -335,8 +335,26 @@ struct ReaderView: View {
     private func senderHeader(_ message: MailMessage, presentation: HeaderPresentation) -> some View {
         let name = message.isOutgoing ? (presentation == .single ? message.mailAccount.displayName : "You") : message.sender
         let sender = name.isEmpty ? message.senderEmail : name
-        return HStack(alignment: .top, spacing: 10) {
-            senderAvatar(message, size: presentation == .single ? 36 : 32)
+        let avatarWidth: CGFloat = presentation == .single ? 36 : 32
+        return VStack(alignment: .leading, spacing: 5) {
+            senderIdentity(message, sender: sender, avatarWidth: avatarWidth, presentation: presentation, trackerCount: trackerCount)
+            if presentation != .collapsed && message.mailbox != .junk && message.workflow.screeningState == .pending {
+                SenderDeliveryChoice(address: message.senderEmail, avatarWidth: avatarWidth) { route in
+                    store.acceptSender(of: message, route: route)
+                } block: {
+                    store.blockSender(of: message)
+                }
+            }
+        }
+        .task(id: presentation != .collapsed && automaticImages ? message.id : nil) {
+            if presentation != .collapsed && automaticImages { await runtime.loadSenderMark(for: message) }
+        }
+    }
+
+    private func senderIdentity(_ message: MailMessage, sender: String, avatarWidth: CGFloat,
+                                presentation: HeaderPresentation, trackerCount: Int) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            senderAvatar(message, size: avatarWidth)
             VStack(alignment: .leading, spacing: 4) {
                 if presentation == .single {
                     senderLine(message, sender: sender, presentation: presentation)

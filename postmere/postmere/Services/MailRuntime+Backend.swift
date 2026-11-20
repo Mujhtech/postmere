@@ -100,6 +100,26 @@ extension MailRuntime {
         }
     }
 
+    func loadSenderMark(for message: MailMessage) async {
+        guard message.currentSenderMark == nil, let id = message.backendMessageID, message.incomingSenderDomain != nil,
+              let identity = message.mailAccount.remote, identity.provider == "gmail", let generation = backend.realtimeGeneration,
+              backend.isAccountConnected(identity.accountID, scope: identity.scope) else { return }
+        let key = "\(identity.localID)/\(id.uuidString)" as NSString
+        if let next = absentSenderMarks.object(forKey: key), next.timeIntervalSinceNow > 0 { return }
+        do {
+            // Rapid keyboard navigation should not start remote verification for every skipped message.
+            try await Task.sleep(for: .milliseconds(250))
+            let result: BackendSenderMarkResponse = try await backend.request("GET", "/v1/mail/messages/\(id.uuidString)/sender-mark")
+            let mark = await result.verifiedSenderMark?.render(for: message, identity: identity)
+            guard !Task.isCancelled, backend.realtimeGeneration == generation,
+                  backend.isAccountConnected(identity.accountID, scope: identity.scope) else { return }
+            if let mark { store.cacheSenderMark(mark, localID: message.id) }
+            else { absentSenderMarks.setObject(Date.now.addingTimeInterval(1800) as NSDate, forKey: key) }
+        } catch {
+            // Optional sender artwork should never interrupt reading or become a persistent failure.
+        }
+    }
+
     func fetchProviderMessage(_ id: UUID, for identity: RemoteAccountIdentity) async throws -> MailMessage {
         guard let sessionID = backend.realtimeGeneration,
               backend.isAccountConnected(identity.accountID, scope: identity.scope) else { throw BackendError.notConnected }

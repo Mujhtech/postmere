@@ -8,6 +8,12 @@ import UserNotifications
 final class MailRuntime {
     let store: MailStore
     let backend = BackendSession()
+    let defaultMail: DefaultMailAppService
+    @ObservationIgnored let absentSenderMarks: NSCache<NSString, NSDate> = {
+        let cache = NSCache<NSString, NSDate>()
+        cache.countLimit = 1_000
+        return cache
+    }()
     let mailboxCounts: MailboxCounts
     let notifications = MailNotificationService()
     let push = MailPushService()

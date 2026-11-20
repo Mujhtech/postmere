@@ -510,6 +510,32 @@ async fn mail_scope_oauth_idempotency_worker_and_tracking_without_live_network()
     sqlx::query("INSERT INTO mail_messages(id,workspace_id,user_id,account_id,provider_message_id,provider_thread_id,sent_at,normalized,search_text) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'Scope fixture Private body')").bind(message.id).bind(workspace).bind(user).bind(account).bind(&message.provider_message_id).bind(&message.provider_thread_id).bind(message.sent_at).bind(serde_json::to_value(&message).unwrap()).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     let message_path = format!("/v1/mail/messages/{}", message.id);
+    let sender_mark_path = format!("{message_path}/sender-mark");
+    let (mark_status, mark) = request(
+        &app,
+        "GET",
+        &sender_mark_path,
+        Some(&session.token),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(mark_status, StatusCode::OK);
+    assert_eq!(mark, json!({"verified_sender_mark": null}));
+    let invitation_path = format!("{message_path}/calendar-invitation");
+    for protected in [&sender_mark_path, &invitation_path] {
+        assert_eq!(
+            request(&app, "GET", protected, None, Value::Null).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        for token in [&peer_session.token, &outside_session.token] {
+            assert_eq!(
+                request(&app, "GET", protected, Some(token), Value::Null)
+                    .await
+                    .0,
+                StatusCode::NOT_FOUND
+            );
+        }
+    }
     label_routes(&state, &auth, &session.token, &peer_session.token, &message).await;
     assert_eq!(
         request(

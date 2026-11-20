@@ -46,6 +46,10 @@ pub fn router() -> Router<AppState> {
             get(get_message).patch(mutate_message),
         )
         .route(
+            "/v1/mail/messages/{id}/sender-mark",
+            get(crate::sender_mark::get),
+        )
+        .route(
             "/v1/mail/messages/{id}/attachments/{attachment}",
             get(attachment),
         )

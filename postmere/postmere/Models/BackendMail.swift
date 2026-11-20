@@ -36,6 +36,7 @@ nonisolated struct BackendMailPage: Decodable, Sendable {
         for row in messages where row.accountId == identity.accountID {
             try Task.checkCancellation()
             var message = await row.makeLocalMessage(identity: identity)
+            message.verifiedSenderMark = await row.verifiedSenderMark?.render(for: message, identity: identity)
             message.restoreReceivedText(provider: identity.provider)
             converted.append(message)
         }
@@ -70,6 +71,7 @@ nonisolated struct BackendMailMessage: Decodable, Sendable {
     var categories: [String]? = nil
     var dkimSignatures: [String]? = nil
     var deliveryHeaders: MailDeliveryHeaders? = nil
+    var verifiedSenderMark: BackendSenderMark? = nil
 }
 
 nonisolated struct BackendMessageEnvelope: Decodable, Sendable {
@@ -102,6 +104,7 @@ extension BackendMailMessage {
 
     func localMessage(identity: RemoteAccountIdentity) -> MailMessage {
         var message = makeLocalMessage(identity: identity)
+        message.verifiedSenderMark = verifiedSenderMark?.localMark(for: message, identity: identity)
         message.restoreReceivedText(provider: identity.provider)
         return message
     }

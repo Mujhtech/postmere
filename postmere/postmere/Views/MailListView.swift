@@ -190,8 +190,8 @@ struct MailListView: View {
             let index = messages.startIndex + offset
             let message = messages[index]
             let selected = store.selectedMessageIDs.contains(message.id)
-            MailRow(message: message, conversationCount: counts[message.id] ?? 1,
-                    location: resultLocation(for: message), showsSearchDate: store.isSearchActive,
+            MailRow(message: message, verifiedSenderMark: store.displayedSenderMark(for: message), conversationCount: counts[message.id] ?? 1,
+                    location: resultLocation(for: message), showsReplyRequest: store.selectedMailbox == .needsReply, showsSearchDate: store.isSearchActive,
                     outgoingItem: store.outgoingQueue.first { $0.id == message.id },
                     isSelected: selected)
                 .mailSelection(selected,
@@ -446,6 +446,7 @@ struct MailListView: View {
 
 private struct MailRow: View {
     let message: MailMessage
+    let verifiedSenderMark: MailVerifiedSenderMark?
     let conversationCount: Int
     var location: String?
     var showsSearchDate = false
@@ -474,7 +475,7 @@ private struct MailRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
             MailParticipantAvatar(address: message.isOutgoing ? message.toRecipients.first ?? message.senderEmail : message.senderEmail,
-                                  name: message.isOutgoing ? "" : message.sender, size: 28, messageID: message.id)
+                                  name: message.isOutgoing ? "" : message.sender, size: 28, messageID: message.id, verifiedMark: verifiedSenderMark)
                 .overlay(alignment: .bottomTrailing) {
                     if message.isUnread {
                         Circle().fill(unreadFill).frame(width: 7, height: 7)

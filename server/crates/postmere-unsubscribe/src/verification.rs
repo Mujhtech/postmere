@@ -1,10 +1,11 @@
 //! Raw-message DKIM authentication. Authentication-Results is deliberately unused:
 //! provider APIs can contain imported mail with attacker-authored receiver headers.
-use super::{command_url, public_hostname};
+use super::command_url;
 use mail_auth::{
     AuthenticatedMessage, DkimResult, MessageAuthenticator, common::crypto::Algorithm,
     dkim::Signature,
 };
+use postmere_core::public_network::public_hostname;
 use std::time::Duration;
 use url::Url;
 

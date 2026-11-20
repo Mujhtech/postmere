@@ -148,6 +148,8 @@ final class MailStore {
     @ObservationIgnored var pendingSave: DispatchWorkItem?
     @ObservationIgnored var saveRevision = 0
     @ObservationIgnored private var updatingReaderMessage = false
+    @ObservationIgnored private var updatingSenderArtwork = false
+    private var recentSenderMarks: [UUID: MailVerifiedSenderMark] = [:]
     @ObservationIgnored var searchQueryCache: [String: MailSearchQuery] = [:]
     var isOpeningMailbox = false
     @ObservationIgnored var openingTask: Task<Void, Never>?
@@ -426,6 +428,30 @@ final class MailStore {
         refreshSearchRow(messages[index])
         schedulePersistence()
         syncProviderChange(from: previous, to: messages[index])
+    }
+
+    /// Rows in prepared tabs share immutable snapshots. Overlay late artwork without regrouping them.
+    func displayedSenderMark(for message: MailMessage) -> MailVerifiedSenderMark? {
+        if let mark = message.currentSenderMark { return mark }
+        guard let mark = recentSenderMarks[message.id], mark.matches(message) else { return nil }
+        return mark
+    }
+
+    func cacheSenderMark(_ mark: MailVerifiedSenderMark, localID: UUID) {
+        guard let index = messages.firstIndex(where: { $0.id == localID }),
+              mark.matches(messages[index]), messages[index].currentSenderMark != mark else { return }
+        updatingSenderArtwork = true
+        messages[index].verifiedSenderMark = mark
+        updatingSenderArtwork = false
+        if let position = lastReaderThread?.messages.firstIndex(where: { $0.id == localID }) {
+            lastReaderThread?.messages[position].verifiedSenderMark = mark
+        }
+        if recentSenderMarks.count.isMultiple(of: 64) {
+            recentSenderMarks = recentSenderMarks.filter { $0.value.expiresAt > .now }
+        }
+        recentSenderMarks[localID] = mark
+        for record in pendingMergeReaders.values { record(.senderMark(localID, mark)) }
+        schedulePersistence()
     }
 
     func cacheEnvelope(_ details: MailEnvelopeDetails, messageID: UUID, account: String) {

@@ -5,6 +5,7 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod error;
+pub mod public_network;
 pub mod tokens;
 
 use std::{sync::Arc, time::Duration};

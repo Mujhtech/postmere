@@ -194,7 +194,11 @@ extension MailStore {
                                             account: read.account, keepingLabelsFor: newerLabels, trackInsertions: trackInsertions)
             let offsets = readerChanges.isEmpty ? [:] : await mergedPositions(result.messages)
             guard !Task.isCancelled, isCurrent() else { return false }
-            guard revision &+ readerChanges.count == mailboxDataRevision, newerLabels == read.newerLabels,
+            let membershipRevisions = readerChanges.count {
+                if case .senderMark = $0 { return false }
+                return true
+            }
+            guard revision &+ membershipRevisions == mailboxDataRevision, newerLabels == read.newerLabels,
                   inputs.screening == senderScreeningEnabled, inputs.rules == senderRules else { continue }
             var expectedOverrides = inputs.overrides
             for change in readerChanges {
@@ -206,7 +210,11 @@ extension MailStore {
                     result.messages[index].isUnread = false
                     var pending = result.overrides[owner] ?? ProviderMessageOverride()
                     pending.isUnread = providerOverrides[id]?.isUnread
-                    result.overrides[id] = pending.isEmpty ? nil : pending
+                    result.overrides[owner] = pending.isEmpty ? nil : pending
+                case .senderMark(let id, let mark):
+                    if let index = offsets[result.replacedIDs[id] ?? id], mark.matches(result.messages[index]) {
+                        result.messages[index].verifiedSenderMark = mark
+                    }
                 case .envelope(let id, let details):
                     if let index = offsets[result.replacedIDs[id] ?? id] { result.messages[index].envelopeDetails = details }
                 }
@@ -315,7 +323,20 @@ extension MailStore {
                 message.id = previous.id
                 message.conversationID = previous.conversationID
                 message.workflow = previous.workflow
-                message.backendOutboxID = previous.backendOutboxID
+                if message.replyRequestCandidates == previous.replyRequestCandidates {
+                    message.replyRequestText = previous.replyRequestText
+                }
+                message.automaticReplyPending = previous.automaticReplyPending
+                message.backendMessageID = message.backendMessageID ?? previous.backendMessageID
+                if message.providerMessageID?.isEmpty != false { message.providerMessageID = previous.providerMessageID }
+                message.providerThreadID = message.providerThreadID ?? previous.providerThreadID
+                message.rfcMessageID = message.rfcMessageID ?? previous.rfcMessageID
+                message.backendOutboxID = previous.backendOutboxID ?? message.backendOutboxID
+                message.envelopeDetails = message.envelopeDetails ?? previous.envelopeDetails
+                if message.verifiedSenderMark == nil, let mark = previous.currentSenderMark,
+                   mark.matches(message) {
+                    message.verifiedSenderMark = mark
+                }
                 message.trackOpens = previous.trackOpens
                 message.trackLinks = previous.trackLinks
                 if var pending = overrides[message.id] {
@@ -392,6 +413,7 @@ extension MailStore {
 enum ReaderMailChange {
     case read(UUID)
     case envelope(UUID, MailEnvelopeDetails)
+    case senderMark(UUID, MailVerifiedSenderMark)
 }
 
 private enum BackendQueueError {

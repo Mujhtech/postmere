@@ -9,6 +9,17 @@ publish.workspace = true
 postmere-core.workspace = true
 postmere-providers.workspace = true
 postmere-tracking.workspace = true
+flate2 = "1"
+mail-auth.workspace = true
+psl = "2"
+reqwest.workspace = true
+ring.workspace = true
+roxmltree = "0.21"
+rustls-pki-types = { version = "1", features = ["std"] }
+rustls-webpki = { version = "0.103", features = ["ring", "std"] }
+sha1 = "0.10"
+url.workspace = true
+x509-cert = { version = "0.2", features = ["sct"] }
 axum.workspace = true
 base64.workspace = true
 chrono.workspace = true
