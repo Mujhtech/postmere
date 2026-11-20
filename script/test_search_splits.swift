@@ -6,6 +6,8 @@ func runSearchSplitRegressions(directory: URL) throws {
         try PostmereBackendRegression.check(condition(), description)
     }
     try runSearchSessionRegressions()
+    try runReplyIntentRegressions()
+    try runSmartCategoryRegressions()
 
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(identifier: "America/New_York")!
@@ -355,4 +357,56 @@ func runBackgroundSearchRegressions() async throws {
     await store.loadMailboxView()
     try PostmereBackendRegression.check(store.mailboxViewData?.messages.isEmpty == true && store.selectedMessageID == nil,
                                         "an empty new account cannot receive another account’s mailbox results")
+}
+
+@MainActor
+private func runReplyIntentRegressions() throws {
+    func message(_ body: String, subject: String = "An update", from: String = "maya@example.com") -> MailMessage {
+        MailMessage(sender: "Maya", senderEmail: from, initials: "M", subject: subject,
+                    preview: "", paragraphs: [body], timeLabel: "Now", toRecipients: ["alex@example.com"],
+                    providerAccountEmail: "alex@example.com")
+    }
+    func expect(_ input: MailMessage, _ expected: String?, _ reason: String) throws {
+        try PostmereBackendRegression.check(MailReplyIntent.request(in: input) == expected, reason)
+    }
+    let request = "Could you share the revised proof by Thursday?"
+    try expect(message("Hi Alex,\n\nThe team is ready. " + request), request, "reply queue quotes the specific current sentence")
+    try expect(message("Please confirm the time for tomorrow."), "Please confirm the time for tomorrow.", "imperatives without a question mark can warrant a reply")
+    try expect(message("Would Tuesday work for you?"), "Would Tuesday work for you?", "scheduling question")
+    try expect(message("Any thoughts on the price?"), "Any thoughts on the price?", "short personal question")
+    try expect(message("See attached.", subject: "When are you free?"), "When are you free?", "original actionable subject")
+    try expect(message("All sorted.", subject: "Re: When are you free?"), nil, "quoted reply subject is not a fresh ask")
+    try expect(message("Thanks.\nOn Monday, Alex wrote:\n" + request), nil, "ignore quoted plaintext reply")
+    try expect(message("Here it is.\n-----Original Message-----\n" + request), nil, "ignore Outlook forwarded requests")
+    try expect(message("Erledigt.", subject: "AW: " + request), nil, "a localized reply subject does not belong to the new sender")
+    try expect(message("Danke.\nAm Montag, den 16. November\nschrieb Alex:\n" + request), nil,
+               "a wrapped German reply attribution ends the authored body")
+    try expect(message("Danke.\nVon: Alex\nGesendet: Donnerstag\nAn: Maya\nBetreff: Termin\n" + request), nil,
+               "an Outlook header block works even when From contains only a display name")
+    try expect(message(request + "\n-----Ursprüngliche Nachricht-----\nPlease confirm tomorrow."), request,
+               "keep the sender’s own ask above German quoted mail")
+    try expect(message(request + " No need to reply."), nil, "explicit response exemption")
+    try expect(message("Let me know if you have any questions."), nil, "optional invitation for questions")
+    try expect(message("Ready to save? Shop now."), nil, "promotional questions")
+    try expect(message(request, from: "no-reply@example.com"), nil, "automated sender")
+    try expect(message("Please confirm your email address.", subject: "Your verification code"), nil, "verification notice")
+    var list = message(request)
+    list.unsubscribeHeaders = MailUnsubscribeHeaders(listUnsubscribe: ["<https://example.com/remove>"], listUnsubscribePost: [], authenticationResults: [], dkimSignatures: [], source: "gmail")
+    try expect(list, nil, "list distribution metadata")
+    var cc = message(request)
+    cc.toRecipients = ["someone@example.com"]
+    cc.ccRecipients = ["Alex <ALEX@example.com>"]
+    try expect(cc, nil, "request addressed to another recipient")
+    var html = message(request)
+    html.bodyHTML = "<p>Done.</p><div class='gmail_quote'>" + request + "</div>"
+    try expect(html, nil, "flattened HTML quote must not create a request")
+    html.bodyHTML = "<p>Danke.</p><div id='x_divRplyFwdMsg'>Von: Alex</div><p>" + request + "</p>"
+    try expect(html, nil, "an Outlook reply marker ends the HTML author's content")
+    html.bodyHTML = "<p>Done.</p><div hidden>" + request + "</div>"
+    try expect(html, nil, "hidden HTML preheader must not create a request")
+    html.bodyHTML = "<p>Good morning!</p><p>Could you share the <strong>revised</strong> proof by Thursday?</p>"
+    try expect(html, request, "HTML styled across inline elements returns the actual ask")
+    var sent = message(request)
+    sent.isOutgoing = true
+    try expect(sent, nil, "sent questions are not incoming tasks")
 }

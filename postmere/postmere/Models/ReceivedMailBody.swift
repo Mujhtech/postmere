@@ -1,7 +1,7 @@
 import Foundation
 
 /// WebKit blockers apply to the exact resource identified in a received message.
-enum MailTrackingPixelRules {
+nonisolated enum MailTrackingPixelRules {
     static func encoded(for urls: [String]) throws -> String {
         let rules: [[String: Any]] = Set(urls).sorted().map { url in
             ["trigger": ["url-filter": "^" + NSRegularExpression.escapedPattern(for: url) + "$",
@@ -75,5 +75,72 @@ nonisolated extension MailMessage {
         return text.split(whereSeparator: \.isNewline).map {
             $0.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         }.filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+}
+
+/// Bounded, local extraction of the visible author's text, omitting HTML replies,
+/// hidden preheaders and common provider quote containers.
+nonisolated enum MailAuthoredText {
+    private static let maxTextBytes = 32_768
+    private static let invisibleStyle = regex(#"(?i)(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse)|opacity\s*:\s*0(?:\.0+)?|max-height\s*:\s*0(?:px)?)\s*(?:!important\s*)?(?:;|$)"#)
+    private static let simpleSelector = regex(#"^(?:[A-Za-z][\w-]*)?([.#][\w-]+)$"#)
+
+    private static func regex(_ pattern: String) -> NSRegularExpression { try! NSRegularExpression(pattern: pattern) }
+
+    private static func matches(_ pattern: NSRegularExpression, in text: String) -> Bool {
+        pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    private static func prefix(_ string: String, bytes: Int) -> String {
+        String(decoding: string.utf8.prefix(bytes), as: UTF8.self)
+    }
+
+    static func visibleHTML(_ html: String) -> String {
+        guard !Task.isCancelled, html.utf8.count <= 384 * 1_024,
+              html.range(of: "<!ENTITY", options: .caseInsensitive) == nil,
+              let document = try? XMLDocument(xmlString: html, options: [.documentTidyHTML, .nodeLoadExternalEntitiesNever]),
+              let root = document.rootElement() else { return "" }
+
+        var hiddenSelectors: Set<String> = []
+        for style in (try? document.nodes(forXPath: "//style")) ?? [] {
+            for rule in (style.stringValue ?? "").split(separator: "}") {
+                let blocks = rule.split(separator: "{", omittingEmptySubsequences: false)
+                guard blocks.count >= 2, let declarations = blocks.last,
+                      matches(invisibleStyle, in: String(declarations)) else { continue }
+                for part in blocks[blocks.count - 2].split(separator: ",") {
+                    let selector = part.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let match = simpleSelector.firstMatch(in: selector, range: NSRange(selector.startIndex..., in: selector)),
+                       let range = Range(match.range(at: 1), in: selector) { hiddenSelectors.insert(String(selector[range])) }
+                }
+            }
+        }
+        let omitted: Set<String> = ["head", "script", "style", "template", "iframe", "object", "blockquote", "noscript", "title"]
+        let blocks: Set<String> = ["p", "div", "li", "tr", "section", "article", "h1", "h2", "h3", "h4", "h5", "h6"]
+        let skipClasses: Set<String> = ["gmail_quote", "gmail_quote_container", "yahoo_quoted", "moz-cite-prefix", "preheader", "previewtext"]
+        var text = ""
+        var reachedReply = false
+        func visit(_ node: XMLNode, depth: Int) {
+            guard depth < 96, !reachedReply, !Task.isCancelled, text.utf8.count < maxTextBytes else { return }
+            if node.kind == .text {
+                text += prefix(node.stringValue ?? "", bytes: maxTextBytes - text.utf8.count)
+                return
+            }
+            guard let element = node as? XMLElement, let name = element.localName?.lowercased(), !omitted.contains(name) else { return }
+            let id = element.attribute(forName: "id")?.stringValue ?? ""
+            if ["divrplyfwdmsg", "x_divrplyfwdmsg", "ms-outlook-mobile-reference-message"].contains(id.lowercased()) {
+                reachedReply = true
+                return
+            }
+            let classes = (element.attribute(forName: "class")?.stringValue ?? "").split(whereSeparator: \.isWhitespace)
+            guard element.attribute(forName: "hidden") == nil, element.attribute(forName: "aria-hidden")?.stringValue?.lowercased() != "true",
+                  !hiddenSelectors.contains("#" + id), !classes.contains(where: { skipClasses.contains($0.lowercased()) || hiddenSelectors.contains("." + $0) }),
+                  !matches(invisibleStyle, in: element.attribute(forName: "style")?.stringValue ?? "") else { return }
+            if (blocks.contains(name) || name == "br") && !text.hasSuffix("\n") { text += "\n" }
+            for child in element.children ?? [] { visit(child, depth: depth + 1) }
+            if blocks.contains(name) && !text.hasSuffix("\n") { text += "\n" }
+            if name == "td" || name == "th" { text += " " }
+        }
+        visit(root, depth: 0)
+        return text.replacingOccurrences(of: "\u{00A0}", with: " ")
     }
 }

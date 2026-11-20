@@ -165,7 +165,7 @@ struct MailAIAssistantView: View {
         switch item.action {
         case "needs_reply":
             runtime.store.setNeedsReply(true, for: message.id)
-            undoAction = { runtime.store.setNeedsReply(message.workflow.needsReply, for: message.id) }
+            undoAction = { runtime.store.setNeedsReply(message.needsReply, for: message.id) }
         case "archive":
             runtime.store.moveMessages([message.id], to: .archive)
             undoAction = runtime.store.undoLastMove

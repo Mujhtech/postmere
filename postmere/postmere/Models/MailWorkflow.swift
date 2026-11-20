@@ -5,8 +5,9 @@ enum SenderScreeningState: String, Codable, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
-struct MailWorkflowState: Codable, Equatable {
+nonisolated struct MailWorkflowState: Codable, Equatable {
     var needsReply = false
+    var replyDecisionAt: Date?
     var snoozedUntil: Date?
     var followUpAt: Date?
     var followUpOnlyIfNoReply = true

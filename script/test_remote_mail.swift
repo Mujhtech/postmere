@@ -16,6 +16,7 @@ import Foundation
     let one = payload.localMessage(identity: first), two = payload.localMessage(identity: second)
     try check(one.envelopeDetails?.signingDomains == ["example.com"] && one.envelopeDetails?.deliveryHeaders?.receivedWith == "ESMTPS"
               && one.envelopeDetails?.recipientNames["me@example.com"] == "Alex", "reader preserves delivery headers and display names, and rejects ambiguous signer domains")
+    try await checkAutomaticReplyQueue(one, otherAccount: two, directory: directory)
     var needsReply = one
     needsReply.workflow.needsReply = true
     var earlier = needsReply
@@ -87,6 +88,7 @@ import Foundation
               && MailStore(messages: [], persistenceURL: stateURL).backendSyncCursors[first.localID] == "cursor-three",
               "an advancing empty page persists its cursor without rebuilding rows")
     try check(store.messages.first { $0.id == one.id }?.isDeletedOnProvider == true && store.messages.first { $0.id == two.id }?.isDeletedOnProvider == false, "deletion affects only its server-account namespace")
+    try await checkIdleWorkflowDates(one, identity: first, other: second)
 
     let backgroundURL = directory.appendingPathComponent("sync-during-input.json")
     let backgroundStore = MailStore(messages: [], persistenceURL: backgroundURL)

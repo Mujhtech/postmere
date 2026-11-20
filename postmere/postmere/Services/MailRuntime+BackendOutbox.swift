@@ -188,6 +188,10 @@ extension MailRuntime {
             store.messages[messageIndex].workflow.scheduledSendAt = nil
             store.messages[messageIndex].workflow.needsReply = false
             if store.messages[messageIndex].workflow.followUpAt != nil { store.messages[messageIndex].workflow.followUpReferenceDate = .now }
+            let conversation = store.messages[messageIndex].conversationID
+            var updated = store.messages
+            MailReplyQueue.reconcile(&updated, conversations: [conversation])
+            store.messages = updated
             store.outgoingQueue.remove(at: queueIndex)
             store.reconcileSentDelivery(store.messages[messageIndex])
             store.lastAction = "Message sent"

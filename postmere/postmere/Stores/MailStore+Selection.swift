@@ -93,6 +93,7 @@ extension MailStore {
             updated[index].isUnread = false
         }
         guard let first = originals.first else { return false }
+        MailReplyQueue.reconcile(&updated, conversations: Set(originals.map(\.conversationID)))
         recordMoveUndo(originals)
         pendingMoveSelection = nil
         if !isSearchActive, let lead = selectedMessageID, originals.contains(where: { $0.id == lead }) {
@@ -119,6 +120,7 @@ extension MailStore {
             guard let old = before[updated[index].id] else { continue }
             updated[index].undoMove(to: old)
         }
+        MailReplyQueue.reconcile(&updated, conversations: Set(undo.messages.map(\.conversationID)))
         if undo.scope == mailboxViewKey.scope {
             isUpdatingSelection = true
             selectedMessageID = undo.lead

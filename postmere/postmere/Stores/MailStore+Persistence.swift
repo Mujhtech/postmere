@@ -43,6 +43,10 @@ extension MailStore {
     func loadPersistentState() {
         guard let persistence else { return }
         applyPersistentState(saveQueue.sync { Result { try persistence.load() } })
+        if replyIndexVersion < MailStateSnapshot.currentReplyIndexVersion {
+            MailReplyQueue.index(&messages, preservingLegacyFlags: replyIndexVersion == 0)
+            replyIndexVersion = MailStateSnapshot.currentReplyIndexVersion
+        }
     }
 
     func beginOpeningMailbox(_ persistence: MailPersistence) {
@@ -59,12 +63,18 @@ extension MailStore {
             self.schedulePersistence()
             self.isOpeningMailbox = false
             self.openingTask = nil
+            // Publish the cached inbox before the first on-device reply analysis.
+            // New sync pages classify themselves while this migration runs.
+            if self.replyIndexVersion < MailStateSnapshot.currentReplyIndexVersion {
+                Task { await self.indexSavedReplyRequests() }
+            }
         }
     }
 
     private func applyPersistentState(_ result: Result<MailStateSnapshot?, Error>) {
         do {
             guard let saved = try result.get() else { return }
+            replyIndexVersion = saved.replyIndexVersion
             messages = saved.messages
             savedViews = saved.savedViews
             inboxSplits = saved.inboxSplits.map { split in
@@ -146,7 +156,7 @@ extension MailStore {
     }
 
     private var mailboxSnapshot: MailStateSnapshot {
-        MailStateSnapshot(messages: messages, savedViews: savedViews,
+        var snapshot = MailStateSnapshot(messages: messages, savedViews: savedViews,
                 snippets: snippets, senderRules: senderRules, outgoingQueue: outgoingQueue,
                 activeDraft: isComposing ? activeDraftSnapshot : recoveredDraft,
                 senderScreeningEnabled: senderScreeningEnabled, inboxSplits: inboxSplits,
@@ -297,7 +307,18 @@ extension MailStore {
                 var current = self.messages[index]
                 if current.isUnread == message.isUnread { current.isUnread = old.isUnread }
                 if current.isStarred == message.isStarred { current.isStarred = old.isStarred }
-                if current.mailbox == message.mailbox { current.mailbox = old.mailbox; current.trashedFrom = old.trashedFrom }
+                if old.mailbox != message.mailbox, current.mailbox == message.mailbox {
+                    current.mailbox = old.mailbox
+                    current.trashedFrom = old.trashedFrom
+                    if old.workflow.screeningState != message.workflow.screeningState,
+                       current.workflow.screeningState == message.workflow.screeningState {
+                        current.workflow.screeningState = old.workflow.screeningState
+                    }
+                    if old.workflow.snoozedUntil != message.workflow.snoozedUntil,
+                       current.workflow.snoozedUntil == message.workflow.snoozedUntil {
+                        current.workflow.snoozedUntil = old.workflow.snoozedUntil
+                    }
+                }
                 self.suppressRemoteMutations = true
                 self.messages[index] = current
                 self.suppressRemoteMutations = false

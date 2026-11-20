@@ -96,6 +96,7 @@ nonisolated struct SidebarCounts: Sendable {
     @concurrent static func load(_ messages: [MailMessage], accounts: Set<String>, menuAccounts: Set<String>) async throws -> Self {
         var result = Self(accounts: accounts, menuAccounts: menuAccounts)
         var countedThreads: [Mailbox: Set<String>] = [:]
+        var inboxReplyThreads: [String: Int] = [:]
         let mailboxes = Mailbox.allCases
         for (index, message) in messages.enumerated() {
             try Task.checkCancellation()

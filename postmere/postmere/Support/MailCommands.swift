@@ -125,13 +125,13 @@ struct MailCommands: Commands {
                 .keyboardShortcut("u", modifiers: [.command, .shift])
                 .disabled(!canActOnMessage)
                 Divider()
-                Button(store?.selectedMessage?.workflow.needsReply == true ? "Mark Conversation Done" : "Needs Reply") {
-                    if let store, let message = store.selectedMessage { store.setNeedsReply(!message.workflow.needsReply, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }
-                }.keyboardShortcut("d", modifiers: [.command, .shift]).disabled(!canActOnMessage || store?.selectedMessage?.isDraft == true)
-                Button("Snooze…") { runtime.schedulePurpose = .snooze }
-                    .keyboardShortcut("s", modifiers: [.command, .shift]).disabled(!canActOnConversation || store?.selectedMessage?.isDraft == true)
-                Button("Follow-up Reminder…") { runtime.schedulePurpose = .followUp }.disabled(!canActOnConversation)
-                Button("Private Note…") { runtime.showsPrivateNote = true }.disabled(!canActOnConversation)
+                Button(store?.selectedMessage?.needsReply == true ? "Mark Conversation Done" : "Needs Reply") {
+                    if let store, let message = store.selectedMessage { store.setNeedsReply(!message.needsReply, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }
+                }.keyboardShortcut("d", modifiers: [.command, .shift]).disabled(!canActOnMessage || store?.selectedMessage?.allowsWorkflowActions != true)
+                Button("Snooze…") { runtime.openReaderPanel(.snooze) }
+                    .keyboardShortcut("s", modifiers: [.command, .shift]).disabled(!canActOnConversation || store?.selectedMessage?.allowsWorkflowActions != true)
+                Button("Follow-up Reminder…") { runtime.openReaderPanel(.followUp) }.disabled(!canActOnConversation || store?.selectedMessage?.mailbox == .junk)
+                Button("Private Note…") { runtime.openReaderPanel(.privateNote) }.disabled(!canActOnConversation)
                 Button("Save Inbox View…") { runtime.showsSavedViewEditor = true }.disabled(isComposerWindow == true)
                 Divider()
                 Button("Undo Send", action: sharedStore.undoLastSend).disabled(!sharedStore.canUndoSend)

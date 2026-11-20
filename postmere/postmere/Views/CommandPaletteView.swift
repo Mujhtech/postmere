@@ -37,8 +37,8 @@ struct CommandPaletteView: View {
             }
             result.append(Action(id: "read", title: message.isUnread ? "Mark as read" : "Mark as unread", symbol: "envelope", shortcut: "⇧⌘U", run: { store.setRead(message.isUnread, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }))
             result.append(Action(id: "star", title: message.isStarred ? "Remove star" : "Star message", symbol: "star", shortcut: "⇧⌘L", run: { store.setStarred(!message.isStarred, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }))
-            if !message.isDraft && message.mailbox != .outbox {
-                result.append(Action(id: "needsReply", title: message.workflow.needsReply ? "Mark conversation done" : "Add to Needs Reply", symbol: "arrowshape.turn.up.left", run: { store.setNeedsReply(!message.workflow.needsReply, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }))
+            if message.allowsWorkflowActions {
+                result.append(Action(id: "needsReply", title: message.needsReply ? "Mark conversation done" : "Add to Needs Reply", symbol: "arrowshape.turn.up.left", run: { store.setNeedsReply(!message.needsReply, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }))
                 if store.selectedMessageIDs.count <= 1 {
                     result.append(Action(id: "snooze", title: "Snooze conversation…", symbol: "moon.zzz", run: { runtime.openReaderPanel(.snooze) }))
                     result.append(Action(id: "followUp", title: "Set follow-up reminder…", symbol: "bell", run: { runtime.openReaderPanel(.followUp) }))

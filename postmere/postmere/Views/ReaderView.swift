@@ -402,27 +402,13 @@ struct ReaderView: View {
         if let item = store.outgoingQueue.first(where: { $0.id == message.id }) {
             OutgoingStatusView(store: store, item: item).padding(.bottom, 16)
         }
-        if message.workflow.screeningState == .pending {
-            VStack(alignment: .leading, spacing: 10) {
-                PostmereLabel("A new sender", symbol: "person.crop.circle.badge.questionmark", size: 16).font(.subheadline.weight(.medium))
-                Text("Choose where future messages from \(message.senderEmail) should go.").font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("Accept to Inbox") { store.acceptSender(of: message) }
-                    Menu("Route to…") {
-                        Button("Needs Reply") { store.acceptSender(of: message, route: .needsReply) }
-                        Button("Archive") { store.acceptSender(of: message, route: .archive) }
-                    }
-                    Button("Block Sender", role: .destructive) { store.blockSender(of: message) }
-                }.controlSize(.small)
-            }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                .background(PostmereTheme.subtleFill, in: RoundedRectangle(cornerRadius: PostmereTheme.cardRadius)).padding(.bottom, 16)
-        }
-        if message.workflow.needsReply {
-            HStack {
-                PostmereLabel("Needs reply", symbol: "arrowshape.turn.up.left", size: 14)
-                Spacer()
-                Button("Mark Done") { store.setNeedsReply(false, for: message.id) }
-            }.font(.caption).controlSize(.small).padding(.bottom, 12)
+        if let annotation = NeedsReplyAnnotation(selected: message, conversation: conversation) {
+            NeedsReplyAnnotationView(annotation: annotation, inThread: conversation.count > 1) {
+                revealMessageInThread(annotation.messageID)
+            } markDone: {
+                store.setNeedsReply(false, for: annotation.messageID)
+            }
+            .padding(.bottom, 16)
         }
         if message.mailbox != .junk, let date = message.workflow.snoozedUntil {
             HStack {

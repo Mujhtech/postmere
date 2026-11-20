@@ -204,7 +204,9 @@ final class MailStore {
 
     init(messages: [MailMessage]? = nil, persistenceURL: URL? = nil, openInBackground: Bool = false) {
         self.isPreview = messages != nil
-        self.messages = messages ?? []
+        var initial = messages ?? []
+        MailReplyQueue.index(&initial)
+        self.messages = initial
         persistence = persistenceURL.map(MailPersistence.init(fileURL:))
             ?? (messages == nil ? MailPersistence(fileURL: MailPersistence.defaultURL) : nil)
         if openInBackground, let persistence {
@@ -508,10 +510,11 @@ final class MailStore {
         guard let lastMove,
               let index = messages.firstIndex(where: { $0.id == lastMove.original.id }) else { return }
         var restored = messages[index]
-        restored.mailbox = lastMove.mailbox
-        restored.trashedFrom = lastMove.trashedFrom
-        restored.isUnread = lastMove.isUnread
-        messages[index] = restored
+        restored.undoMove(to: lastMove.original)
+        var updated = messages
+        updated[index] = restored
+        MailReplyQueue.reconcile(&updated, conversations: [restored.conversationID])
+        messages = updated
         resetSearchResults()
         searchOrigin = nil
         selectedMailbox = lastMove.selectedMailbox

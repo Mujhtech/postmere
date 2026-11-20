@@ -266,6 +266,7 @@ extension MailStore {
                     result.overrides[result.messages[index].id] = nil
                 }
             }
+            if !affected.isEmpty { MailReplyQueue.reconcile(&result.messages, conversations: affected) }
         }
         return result
     }
@@ -282,6 +283,8 @@ extension MailStore {
         var positions = MailMergePositions(combined)
         var replyThreads = Set<UUID>()
         for var message in incoming {
+            message.replyRequestCandidates = MailReplyIntent.candidates(in: message)
+            message.replyRequestText = nil
             if message.providerMessageID != nil { message.providerDeletedAt = nil }
             var matches = positions.matches(message)
             if message.backendMessageID != nil, let queuedID = message.postmereSendID,
@@ -394,7 +397,13 @@ extension MailStore {
                 if trackInsertions { insertedIDs.insert(message.id) }
             }
         }
-        return (combined.sorted { $0.sentAt > $1.sentAt }, overrides)
+        if !replyThreads.isEmpty { MailReplyQueue.reconcile(&combined, conversations: replyThreads) }
+        if needsSort { combined.sort { $0.sentAt > $1.sentAt } }
+        let insertions = insertedIDs.isEmpty ? [] : combined.indices.compactMap { index -> (UUID, Int)? in
+            let id = combined[index].id
+            return insertedIDs.contains(id) ? (id, index) : nil
+        }
+        return (combined, overrides, replacedIDs, messagesChanged, insertions)
     }
 
     private func installMerge(_ result: MergeResult, processDates: Bool) {

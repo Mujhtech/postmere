@@ -51,6 +51,7 @@ nonisolated struct MailStateSnapshot: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        replyIndexVersion = try values.decodeIfPresent(Int.self, forKey: .replyIndexVersion) ?? 0
         schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         messages = try values.decode([MailMessage].self, forKey: .messages)
         let repairJunk = try values.decodeIfPresent(Int.self, forKey: .junkMailboxVersion) == nil
@@ -95,7 +96,7 @@ nonisolated struct MailPersistence: Sendable {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .millisecondsSince1970
-        let state = try decoder.decode(MailStateSnapshot.self, from: Data(contentsOf: fileURL))
+        var state = try decoder.decode(MailStateSnapshot.self, from: Data(contentsOf: fileURL))
         guard state.schemaVersion == 1 else { throw MailStorageError.unsupportedVersion(state.schemaVersion) }
         let draftID = state.activeDraft?.editingMessageID
         let repair = MailSyncRepair.collapse(state.messages, preferring: Set([draftID].compactMap { $0 }))

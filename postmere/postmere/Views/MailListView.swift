@@ -360,7 +360,7 @@ struct MailListView: View {
         case .archive: return "Archived messages stay available without filling your inbox."
         case .junk: return "Messages your mail provider marks as junk appear here."
         case .trash: return "Messages you move to Trash will appear here."
-        case .needsReply: return "Mark a conversation as Needs Reply to keep it here until you answer."
+        case .needsReply: return "Requests from your inbox appear here until you reply or mark them done. You can also add a conversation yourself."
         case .snoozed: return "Snooze a conversation to bring it back at a better time."
         case .followUps: return "Set a reminder on a conversation you want to revisit."
         case .newSenders: return store.senderScreeningEnabled ? "New senders will wait here for your decision." : "Turn on sender screening in Settings to review unfamiliar senders."
@@ -404,7 +404,7 @@ struct MailListView: View {
         Button(message.isStarred ? "Remove Star" : "Star Message") { store.toggleStar(message.id) }
         if message.allowsWorkflowActions && message.mailbox != .trash {
             Divider()
-            Button(message.workflow.needsReply ? "Mark Done" : "Needs Reply") { store.setNeedsReply(!message.workflow.needsReply, for: message.id) }
+            Button(message.needsReply ? "Mark Done" : "Needs Reply") { store.setNeedsReply(!message.needsReply, for: message.id) }
             if message.workflow.snoozedUntil != nil {
                 Button("Return to Inbox") { store.unsnoozeMessage(message.id) }
             } else {
@@ -508,6 +508,7 @@ private struct MailRow: View {
     let verifiedSenderMark: MailVerifiedSenderMark?
     let conversationCount: Int
     var location: String?
+    var showsReplyRequest = false
     var showsSearchDate = false
     var outgoingItem: OutgoingMailItem?
     var isSelected = false
@@ -633,7 +634,7 @@ private struct MailRow: View {
                 PostmereLabel("New sender", symbol: "person.crop.circle.badge.questionmark", size: 11)
             } else if let date = message.workflow.followUpAt {
                 PostmereLabel("Follow up \(date.formatted(date: .abbreviated, time: .shortened))", symbol: "bell", size: 11)
-            } else if message.workflow.needsReply {
+            } else if message.needsReply && !showsReplyRequest {
                 PostmereLabel("Needs reply", symbol: "arrowshape.turn.up.left", size: 11)
             } else if !message.workflow.privateNote.isEmpty {
                 PostmereLabel("Private note", symbol: "note.text", size: 11)

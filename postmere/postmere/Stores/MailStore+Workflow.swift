@@ -21,6 +21,7 @@ extension MailStore {
 
     nonisolated func sameMailAccount(_ first: MailMessage, _ second: MailMessage) -> Bool {
         guard first.account == second.account else { return false }
+        if first.account.hasPrefix("remote:") { return true }
         guard let firstEmail = first.providerAccountEmail, let secondEmail = second.providerAccountEmail else { return true }
         return firstEmail.caseInsensitiveCompare(secondEmail) == .orderedSame
     }
@@ -85,7 +86,12 @@ extension MailStore {
     }
 
     func setNeedsReply(_ needsReply: Bool, for id: UUID) {
-        updateConversation(containing: id) { $0.workflow.needsReply = needsReply }
+        let decision = Date.now
+        updateConversation(containing: id) {
+            $0.workflow.needsReply = needsReply
+            $0.workflow.replyDecisionAt = max(decision, $0.sentAt)
+            $0.automaticReplyPending = nil
+        }
         lastAction = needsReply ? "Added to Needs Reply" : "Marked done"
     }
 
@@ -139,6 +145,7 @@ extension MailStore {
         for index in updated.indices where matchesRule(normalized, message: updated[index]) && !updated[index].isOutgoing && !updated[index].isDeletedOnProvider {
             applyRule(normalized, to: &updated[index])
         }
+        MailReplyQueue.reconcile(&updated)
         messages = updated
         reconcileSelection()
     }
