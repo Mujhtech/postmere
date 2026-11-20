@@ -93,7 +93,7 @@ nonisolated struct MailboxViewData: Sendable {
         var counts: [Thread: Counts] = [:]
         for message in messages {
             if Task.isCancelled { return [:] }
-            guard !message.isDraft, message.providerDeletedAt == nil, message.mailbox != .trash else { continue }
+            guard !message.isDraft, message.providerDeletedAt == nil, !message.mailbox.isJunkOrTrash else { continue }
             let thread = Thread(message)
             counts[thread, default: Counts()].total += 1
             if let email = message.legacyAccountAddress {
@@ -111,8 +111,8 @@ nonisolated struct MailboxViewData: Sendable {
                 continue
             }
             let thread = counts[Thread(message)] ?? Counts()
-            let count = message.providerAccountEmail.map { thread.withoutIdentity + thread.byEmail[$0.lowercased(), default: 0] } ?? thread.total
-            result[message.id] = count + (message.mailbox == .trash && message.providerDeletedAt == nil ? 1 : 0)
+            let count = message.legacyAccountAddress.map { thread.withoutIdentity + thread.byEmail[$0, default: 0] } ?? thread.total
+            result[message.id] = count + (message.mailbox.isJunkOrTrash && message.providerDeletedAt == nil ? 1 : 0)
         }
         return result
     }

@@ -90,6 +90,7 @@ nonisolated struct BackendMailMessage: Decodable, Sendable {
     let attachments: [BackendAttachment]
     let listUnsubscribe: [String]
     let listUnsubscribePost: [String]
+    var hasMailingListId: Bool? = nil
     var rfcMessageId: String? = nil
     var inReplyTo: String? = nil
     var references: [String]? = nil
@@ -135,12 +136,14 @@ extension BackendMailMessage {
     }
 
     fileprivate func makeLocalMessage(identity: RemoteAccountIdentity) -> MailMessage {
+        let folder = (Mailbox(rawValue: mailbox) ?? .archive)
+            .correctingLegacyJunk(labels: providerLabels, provider: identity.provider)
         var message = MailMessage(id: Self.localID(identity.localID + ":" + id.uuidString), sender: from.name?.isEmpty == false ? from.name! : from.email,
                     senderEmail: from.email, initials: String((from.name ?? from.email).prefix(2)).uppercased(),
                     subject: subject, preview: preview, paragraphs: [textBody],
                     dateLabel: sentAt.formatted(date: .abbreviated, time: .omitted),
                     timeLabel: sentAt.formatted(date: .omitted, time: .shortened),
-                    isUnread: !isRead, isStarred: isStarred, mailbox: Mailbox(rawValue: mailbox) ?? .archive,
+                    isUnread: !isRead, isStarred: isStarred, mailbox: folder,
                     account: identity.localID, tint: "8BA794", isOutgoing: mailbox == "sent" || from.email.caseInsensitiveCompare(identity.email) == .orderedSame,
                     toRecipients: to.map(\.email), ccRecipients: cc.map(\.email), bccRecipients: bcc.map(\.email),
                     attachments: attachments.map { $0.localAttachment(messageID: id, email: identity.email) },
@@ -155,6 +158,7 @@ extension BackendMailMessage {
         message.inReplyTo = inReplyTo
         message.references = references ?? []
         message.providerCategories = categories
+        message.hasMailingListID = hasMailingListId
         message.envelopeDetails = envelopeDetails
         return message
     }

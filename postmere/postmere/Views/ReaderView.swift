@@ -435,14 +435,14 @@ struct ReaderView: View {
                 Button("Mark Done") { store.setNeedsReply(false, for: message.id) }
             }.font(.caption).controlSize(.small).padding(.bottom, 12)
         }
-        if let date = message.workflow.snoozedUntil {
+        if message.mailbox != .junk, let date = message.workflow.snoozedUntil {
             HStack {
                 PostmereLabel("Snoozed until \(date.formatted(date: .abbreviated, time: .shortened))", symbol: "moon.zzz", size: 14)
                 Spacer()
                 Button("Return to Inbox") { store.unsnoozeMessage(message.id) }
             }.font(.caption).controlSize(.small).padding(.bottom, 12)
         }
-        if let date = message.workflow.followUpAt {
+        if message.mailbox != .junk, let date = message.workflow.followUpAt {
             HStack {
                 PostmereLabel("Follow up \(date.formatted(date: .abbreviated, time: .shortened))\(message.workflow.followUpOnlyIfNoReply ? " if no reply" : "")", symbol: "bell", size: 14)
                 Spacer()
@@ -596,7 +596,9 @@ struct ReaderView: View {
 
     private func senderLine(_ message: MailMessage, sender: String, presentation: HeaderPresentation) -> some View {
         let name = Text(sender).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-        let address = Text(message.senderEmail).font(.system(size: 12)).foregroundStyle(.secondary)
+        let pending = message.mailbox != .junk && message.workflow.screeningState == .pending
+        let address = Text(verbatim: message.senderEmail).font(.system(size: pending ? 13 : 12))
+            .foregroundStyle(pending ? Color.primary : Color.secondary)
             .lineLimit(1).truncationMode(.middle).help(message.senderEmail)
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             if presentation != .collapsed, !message.senderEmail.isEmpty,
@@ -997,7 +999,7 @@ struct ReaderView: View {
 
     private var returnsToInbox: Bool {
         guard let message = store.selectedMessage else { return false }
-        return message.mailbox == .archive || message.mailbox == .trash
+        return message.mailbox == .archive || message.mailbox.isJunkOrTrash
     }
 
     private func replyToSelectedMessage() {

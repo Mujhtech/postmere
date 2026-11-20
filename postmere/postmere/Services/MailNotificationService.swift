@@ -50,7 +50,7 @@ enum MailReminderPlanning {
     }
 
     private nonisolated static func isAvailable(_ message: MailMessage, connected: Bool) -> Bool {
-        connected && !message.isDraft && message.providerDeletedAt == nil && message.mailbox != .trash &&
+        connected && !message.isDraft && message.providerDeletedAt == nil && !message.mailbox.isJunkOrTrash &&
             message.mailbox != .outbox && message.workflow.screeningState == .accepted
     }
 
@@ -75,7 +75,7 @@ enum MailReminderPlanning {
             if let followup = available.first(where: { $0.workflow.followUpAt != nil }),
                let date = followup.workflow.followUpAt {
                 let reference = followup.workflow.followUpReferenceDate ?? followup.sentAt
-                let hasReply = conversation.contains { !$0.isOutgoing && !$0.isDraft && $0.mailbox != .outbox && $0.sentAt > reference }
+                let hasReply = conversation.contains { !$0.isOutgoing && !$0.isDraft && $0.mailbox != .outbox && $0.mailbox != .junk && $0.sentAt > reference }
                 if !followup.workflow.followUpOnlyIfNoReply || !hasReply {
                     result.append(MailReminderSource(kind: .followup, message: followup, originalDate: date))
                 }

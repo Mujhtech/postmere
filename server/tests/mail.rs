@@ -503,7 +503,7 @@ async fn mail_scope_oauth_idempotency_worker_and_tracking_without_live_network()
         StatusCode::UNAUTHORIZED
     );
 
-    let fixture = json!({"id":"provider-fixture","threadId":"thread-fixture","internalDate":"1730610000000","snippet":"Scoped message","labelIds":["INBOX"],"payload":{"mimeType":"multipart/mixed","headers":[{"name":"Subject","value":"Scope fixture"},{"name":"From","value":"pat@example.com"}],"parts":[{"partId":"0","mimeType":"text/plain","body":{"data":URL_SAFE_NO_PAD.encode("Private body")}},{"partId":"1","mimeType":"text/plain","filename":"note.txt","body":{"data":URL_SAFE_NO_PAD.encode("private attachment"),"size":18}}]}});
+    let fixture = json!({"id":"provider-fixture","threadId":"thread-fixture","internalDate":"1730610000000","snippet":"Scoped message","labelIds":["INBOX"],"payload":{"mimeType":"multipart/mixed","headers":[{"name":"Subject","value":"Scope fixture"},{"name":"From","value":"pat@example.test"}],"parts":[{"partId":"0","mimeType":"text/plain","body":{"data":URL_SAFE_NO_PAD.encode("Private body")}},{"partId":"1","mimeType":"text/plain","filename":"note.txt","body":{"data":URL_SAFE_NO_PAD.encode("private attachment"),"size":18}}]}});
     let message = provider::normalize_gmail(account, &fixture).unwrap();
     let mut tx = auth.begin(&pool).await.unwrap();
     sqlx::query("INSERT INTO mail_messages(id,workspace_id,user_id,account_id,provider_message_id,provider_thread_id,sent_at,normalized,search_text) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'Scope fixture Private body')").bind(message.id).bind(workspace).bind(user).bind(account).bind(&message.provider_message_id).bind(&message.provider_thread_id).bind(message.sent_at).bind(serde_json::to_value(&message).unwrap()).execute(&mut *tx).await.unwrap();
@@ -991,10 +991,15 @@ async fn mail_scope_oauth_idempotency_worker_and_tracking_without_live_network()
     second.id = Uuid::new_v4();
     second.provider_message_id = "provider-two".into();
     second.subject = "Second cached message".into();
+    second.mailbox = "archive".into();
+    second.provider_labels = vec!["SPAM".into()];
     let mut third = message.clone();
     third.id = Uuid::new_v4();
     third.provider_message_id = "provider-three".into();
     third.subject = "Third cached message".into();
+    third.mailbox = "trash".into();
+    third.provider_labels = vec!["TRASH".into(), "SPAM".into()];
+    let legacy_junk_id = second.id;
     let originals = vec![message.clone(), second, third];
     let initial_sync = FixtureSync::new(vec![SyncBatch {
         messages: originals.clone(),
@@ -1250,7 +1255,10 @@ async fn mail_scope_oauth_idempotency_worker_and_tracking_without_live_network()
     let no_deletion = FixtureSync::new(vec![SyncBatch {
         messages: vec![],
         deleted_ids: vec![],
-        checkpoint: SyncCheckpoint::default(),
+        checkpoint: SyncCheckpoint {
+            junk_label: Some("SPAM".into()),
+            ..Default::default()
+        },
         has_more: false,
     }]);
     let mut mail_events = sqlx::postgres::PgListener::connect_with(&pool)
@@ -1260,6 +1268,32 @@ async fn mail_scope_oauth_idempotency_worker_and_tracking_without_live_network()
     mail_sync::sync_account_with(&state, workspace, user, account, &no_deletion)
         .await
         .unwrap();
+    let corrected =
+        mail::cached_changes(&state, &auth, account, Some(&empty_cycle.next_cursor), 100)
+            .await
+            .unwrap();
+    assert_eq!(
+        corrected.messages.len(),
+        1,
+        "only the cached Spam label needed repair"
+    );
+    assert_eq!(corrected.messages[0].id, legacy_junk_id);
+    assert_eq!(corrected.messages[0].mailbox, "junk");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let notification = mail_events.recv().await.unwrap();
+            let event: Value = serde_json::from_str(notification.payload()).unwrap();
+            if event["kind"] == "mail"
+                && event["workspace_id"] == json!(workspace)
+                && event["user_id"] == json!(user)
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("an empty upstream batch must still invalidate clients after a cache repair");
+    drop(mail_events);
     assert!(
         mail::cached_message(&state, &auth, changed.id)
             .await

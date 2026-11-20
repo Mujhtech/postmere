@@ -541,20 +541,27 @@ async fn deep_search(
         request.limit.unwrap_or(25),
     )
     .await?;
-    classify_graph(&state, &session, &mut page.messages).await?;
+    classify_mailboxes(&state, &session, &mut page.messages, None).await?;
     persist_messages(&mut tx, &auth, &mut page.messages).await?;
     tx.commit().await?;
     Ok(Json(page))
 }
-pub(crate) async fn classify_graph(
+pub(crate) async fn classify_mailboxes(
     state: &AppState,
     session: &AccountSession,
     messages: &mut [Message],
-) -> Result<(), AppError> {
+    cached_junk_label: Option<&str>,
+) -> Result<Option<String>, AppError> {
     if session.account.provider != "microsoft" {
-        return Ok(());
+        return Ok(Some("SPAM".into()));
     }
-    let folders = provider::graph_folders(state, &session.credentials.access_token).await?;
+    let folders =
+        provider::graph_folders(state, &session.credentials.access_token, cached_junk_label)
+            .await?;
+    Ok(apply_graph_folders(messages, folders))
+}
+
+fn apply_graph_folders(messages: &mut [Message], folders: Vec<(String, String)>) -> Option<String> {
     for message in messages {
         if let Some((_, mailbox)) = folders
             .iter()
@@ -563,7 +570,9 @@ pub(crate) async fn classify_graph(
             message.mailbox = mailbox.clone()
         }
     }
-    Ok(())
+    folders
+        .into_iter()
+        .find_map(|(id, mailbox)| (mailbox == "junk").then_some(id))
 }
 
 async fn persist_messages(
@@ -1027,7 +1036,7 @@ impl MessageMutationTransport for HttpMessageMutation {
                 new_id.as_deref().unwrap_or(&old.provider_message_id),
             )
             .await?;
-            classify_graph(state, session, std::slice::from_mut(&mut updated)).await?;
+            classify_mailboxes(state, session, std::slice::from_mut(&mut updated), None).await?;
             Ok(updated)
         })
     }
@@ -1634,4 +1643,37 @@ async fn finish_delivery(
         .await?;
     tx.commit().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+
+    #[test]
+    fn graph_junk_uses_the_owning_folder_id_preserving_other_mailboxes() {
+        let account = Uuid::new_v4();
+        let mut messages = ["AGkJunk", "AGkInbox", "AGkTrash", "agkjunk", "AGkOther"].map(|id| {
+            provider::normalize_graph(
+                account,
+                &serde_json::json!({
+                    "id": id, "parentFolderId": id, "receivedDateTime": "2026-11-19T12:00:00Z",
+                    "categories": ["Junk"]
+                }),
+            )
+            .unwrap()
+        });
+        let junk_id = apply_graph_folders(
+            &mut messages,
+            vec![
+                ("AGkJunk".into(), "junk".into()),
+                ("AGkInbox".into(), "inbox".into()),
+                ("AGkTrash".into(), "trash".into()),
+            ],
+        );
+        assert_eq!(junk_id.as_deref(), Some("AGkJunk"));
+        assert_eq!(
+            messages.map(|msg| msg.mailbox),
+            ["junk", "inbox", "trash", "archive", "archive"]
+        );
+    }
 }

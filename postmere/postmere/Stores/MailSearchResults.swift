@@ -13,10 +13,10 @@ nonisolated extension MailMessage {
     var searchConversationKey: String { "\(account)|\(legacyAccountAddress ?? "")|\(conversationID.uuidString)" }
 
     func belongs(to mailbox: Mailbox) -> Bool {
-        let available = !isDraft && self.mailbox != .trash && self.mailbox != .outbox
+        let available = !isDraft && !self.mailbox.isJunkOrTrash && self.mailbox != .outbox
         switch mailbox {
-        case .starred: return isStarred && self.mailbox != .trash
-        case .needsReply: return available && workflow.needsReply && workflow.screeningState == .accepted && workflow.snoozedUntil == nil
+        case .starred: return isStarred && !self.mailbox.isJunkOrTrash
+        case .needsReply: return available && needsReply && workflow.screeningState == .accepted && workflow.snoozedUntil == nil
         case .snoozed: return available && workflow.snoozedUntil != nil
         case .followUps: return available && workflow.followUpAt != nil
         case .newSenders: return available && workflow.screeningState == .pending

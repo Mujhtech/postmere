@@ -86,7 +86,13 @@ impl SyncTransport for HttpSync {
                     }
                 }
             }
-            mail::classify_graph(state, session, &mut batch.messages).await?;
+            batch.checkpoint.junk_label = mail::classify_mailboxes(
+                state,
+                session,
+                &mut batch.messages,
+                batch.checkpoint.junk_label.as_deref(),
+            )
+            .await?;
             Ok(batch)
         })
     }
@@ -349,6 +355,24 @@ pub async fn sync_account_with(
         return Err(AppError::forbidden());
     }
     cache_write_lock(&mut tx, workspace, user, account).await?;
+    // Reclassify rows from older imports without re-fetching message bodies.
+    // Advancing updated_at delivers the correction through ordinary cache cursors.
+    if let Some(label) = &batch.checkpoint.junk_label
+        && Some(label) != previous_junk_label.as_ref()
+    {
+        sqlx::query(
+            "UPDATE mail_messages SET normalized=jsonb_set(normalized,'{mailbox}','\"junk\"'),
+                updated_at=clock_timestamp()
+             WHERE account_id=$1 AND deleted_at IS NULL AND normalized->>'mailbox'<>'junk'
+                AND (normalized->'provider_labels') ? $2
+                AND ($3 <> 'gmail' OR NOT ((normalized->'provider_labels') ? 'TRASH'))",
+        )
+        .bind(account)
+        .bind(label)
+        .bind(&session.account.provider)
+        .execute(&mut *tx)
+        .await?;
+    }
     for message in &mut batch.messages {
         if message.account_id != account {
             return Err(AppError::internal("provider_account_mismatch"));

@@ -1,5 +1,17 @@
 import Foundation
 
+extension MailMessage {
+    mutating func undoMove(to original: MailMessage) {
+        if mailbox == .inbox && original.mailbox == .junk {
+            if workflow.screeningState == .accepted { workflow.screeningState = original.workflow.screeningState }
+            if workflow.snoozedUntil == nil { workflow.snoozedUntil = original.workflow.snoozedUntil }
+        }
+        mailbox = original.mailbox
+        trashedFrom = original.trashedFrom
+        isUnread = original.isUnread
+    }
+}
+
 extension MailStore {
     /// A menu-bar or notification link can target a message outside the current list.
     @discardableResult
@@ -74,6 +86,10 @@ extension MailStore {
             originals.append(original)
             updated[index].trashedFrom = destination == .trash ? original.mailbox : nil
             updated[index].mailbox = destination
+            if original.mailbox == .junk && destination == .inbox {
+                updated[index].workflow.screeningState = .accepted
+                updated[index].workflow.snoozedUntil = nil
+            }
             updated[index].isUnread = false
         }
         guard let first = originals.first else { return false }

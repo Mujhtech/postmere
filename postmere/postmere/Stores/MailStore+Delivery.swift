@@ -129,7 +129,7 @@ extension MailStore {
         var dueConversations: Set<String> = []
         for index in updated.indices {
             guard updated[index].workflow.snoozedUntil != nil || updated[index].workflow.followUpAt != nil else { continue }
-            guard isAccountVisible(updated[index]), !updated[index].isDeletedOnProvider else { continue }
+            guard accounts.contains(updated[index].account), !updated[index].isDeletedOnProvider, updated[index].mailbox != .junk else { continue }
             if let wake = updated[index].workflow.snoozedUntil, wake <= now {
                 let original = updated[index]
                 if !original.isDraft && original.mailbox != .trash && original.mailbox != .outbox,
@@ -148,7 +148,7 @@ extension MailStore {
                let reference = message.workflow.followUpReferenceDate,
                messages.contains(where: {
                    $0.conversationID == message.conversationID && sameMailAccount($0, message)
-                   && !$0.isOutgoing && !$0.isDraft && $0.sentAt > reference
+                   && !$0.isOutgoing && !$0.isDraft && $0.mailbox != .junk && $0.sentAt > reference
                }) {
                 updated[index].workflow.followUpAt = nil
                 updated[index].workflow.followUpReferenceDate = nil
@@ -377,11 +377,12 @@ extension MailStore {
                 if let context = combined.first(where: {
                     (($0.providerThreadID != nil && $0.providerThreadID == message.providerThreadID)
                         || $0.conversationID == message.conversationID) && sameMailAccount($0, message)
+                        && ($0.mailbox == .junk) == (message.mailbox == .junk)
                 }) {
                     message.conversationID = context.conversationID
                     message.workflow = context.workflow
                 }
-                if !message.isOutgoing {
+                if !message.isOutgoing && message.mailbox != .junk {
                     if let rule = inputs.rules.first(where: { matchesRule($0, message: message) }) { applyRule(rule, to: &message) }
                     else if inputs.screening { message.workflow.screeningState = .pending }
                 }

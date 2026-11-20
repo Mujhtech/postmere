@@ -137,7 +137,7 @@ impl LabelTransport for HttpLabels {
         provider::set_message_label(state, kind, token, message, label, applied).await?;
         let mut updated =
             provider::fetch_message(state, kind, session.account.id, token, message).await?;
-        mail::classify_graph(state, session, std::slice::from_mut(&mut updated)).await?;
+        mail::classify_mailboxes(state, session, std::slice::from_mut(&mut updated), None).await?;
         Ok(updated)
     }
 }

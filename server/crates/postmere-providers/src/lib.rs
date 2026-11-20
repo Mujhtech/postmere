@@ -725,6 +725,56 @@ pub async fn fetch_attachment(
     }
 }
 
+fn gmail_label_mutation(mutation: &Mutation) -> Value {
+    let mut add = vec![];
+    let mut remove = vec![];
+    if let Some(read) = mutation.is_read {
+        if read {
+            remove.push("UNREAD")
+        } else {
+            add.push("UNREAD")
+        }
+    }
+    if let Some(star) = mutation.is_starred {
+        if star {
+            add.push("STARRED")
+        } else {
+            remove.push("STARRED")
+        }
+    }
+    if let Some(mailbox) = &mutation.mailbox {
+        match mailbox.as_str() {
+            "inbox" => {
+                add.push("INBOX");
+                remove.extend(["TRASH", "SPAM"]);
+            }
+            "archive" => {
+                remove.extend(["INBOX", "TRASH", "SPAM"]);
+            }
+            "trash" => {
+                add.push("TRASH");
+                remove.push("INBOX");
+            }
+            "junk" => {
+                add.push("SPAM");
+                remove.extend(["INBOX", "TRASH"]);
+            }
+            _ => {}
+        }
+    }
+    json!({"addLabelIds":add,"removeLabelIds":remove})
+}
+
+fn graph_move_destination(mailbox: &str) -> Result<&'static str, ProviderError> {
+    match mailbox {
+        "inbox" => Ok("inbox"),
+        "archive" => Ok("archive"),
+        "trash" => Ok("deleteditems"),
+        "junk" => Ok("junkemail"),
+        _ => Err(ProviderError::Rejected),
+    }
+}
+
 pub async fn mutate(
     state: &AppState,
     provider: Provider,
@@ -732,50 +782,18 @@ pub async fn mutate(
     id: &str,
     mutation: &Mutation,
 ) -> Result<Option<String>, ProviderError> {
-    if let Some(mailbox) = &mutation.mailbox {
-        if !["inbox", "archive", "trash"].contains(&mailbox.as_str()) {
-            return Err(ProviderError::Rejected);
-        }
-    }
+    let destination = mutation
+        .mailbox
+        .as_deref()
+        .map(graph_move_destination)
+        .transpose()?;
     if provider == Provider::Gmail {
-        let mut add = vec![];
-        let mut remove = vec![];
-        if let Some(read) = Some(mutation.is_read).flatten() {
-            if read {
-                remove.push("UNREAD")
-            } else {
-                add.push("UNREAD")
-            }
-        }
-        if let Some(star) = Some(mutation.is_starred).flatten() {
-            if star {
-                add.push("STARRED")
-            } else {
-                remove.push("STARRED")
-            }
-        }
-        if let Some(mailbox) = &mutation.mailbox {
-            match mailbox.as_str() {
-                "inbox" => {
-                    add.push("INBOX");
-                    remove.push("TRASH");
-                }
-                "archive" => {
-                    remove.extend(["INBOX", "TRASH"]);
-                }
-                "trash" => {
-                    add.push("TRASH");
-                    remove.push("INBOX");
-                }
-                _ => {}
-            }
-        }
         request_json(
             state
                 .http
                 .post(message_url(provider, id, Some("modify"))?)
                 .bearer_auth(token)
-                .json(&json!({"addLabelIds":add,"removeLabelIds":remove})),
+                .json(&gmail_label_mutation(mutation)),
         )
         .await?;
         Ok(None)
@@ -800,12 +818,7 @@ pub async fn mutate(
             )
             .await?;
         }
-        if let Some(mailbox) = &mutation.mailbox {
-            let destination = match mailbox.as_str() {
-                "inbox" => "inbox",
-                "archive" => "archive",
-                _ => "deleteditems",
-            };
+        if let Some(destination) = destination {
             let value = request_json(
                 state
                     .http
@@ -1106,6 +1119,8 @@ pub fn normalize_gmail(account: Uuid, value: &Value) -> Result<Message, Provider
     let has = |label: &str| labels.iter().any(|s| s == label);
     let mailbox = if has("TRASH") {
         "trash"
+    } else if has("SPAM") {
+        "junk"
     } else if has("DRAFT") {
         "drafts"
     } else if has("SENT") {
@@ -1433,6 +1448,7 @@ pub fn normalize_graph(account: Uuid, value: &Value) -> Result<Message, Provider
 pub async fn graph_folders(
     state: &AppState,
     token: &str,
+    cached_junk_id: Option<&str>,
 ) -> Result<Vec<(String, String)>, ProviderError> {
     let mut result = vec![];
     for (name, mailbox) in [
@@ -1441,14 +1457,25 @@ pub async fn graph_folders(
         ("drafts", "drafts"),
         ("deleteditems", "trash"),
         ("archive", "archive"),
+        ("junkemail", "junk"),
     ] {
-        let value = request_json(
+        if mailbox == "junk"
+            && let Some(id) = cached_junk_id
+        {
+            result.push((id.to_owned(), mailbox.to_owned()));
+            continue;
+        }
+        let response = request_json(
             state
                 .http
                 .get(format!("{GRAPH_API}mailFolders/{name}?$select=id"))
                 .bearer_auth(token),
         )
-        .await?;
+        .await;
+        let value = match response {
+            Err(ProviderError::NotFound) if mailbox == "junk" => continue,
+            other => other?,
+        };
         if let Some(id) = value.get("id").and_then(Value::as_str) {
             result.push((id.into(), mailbox.into()))
         }
@@ -1572,6 +1599,10 @@ pub struct SyncCheckpoint {
     pub cursor: Option<String>,
     pub history_id: Option<String>,
     pub initial_history_id: Option<String>,
+    /// Provider label used to repair pre-Junk cache entries. Graph folder IDs
+    /// are stable within an account, so later syncs can reuse the lookup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub junk_label: Option<String>,
     /// A recent upstream throttle keeps subsequent batches small during recovery.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gmail_recovering_until: Option<DateTime<Utc>>,
@@ -1991,6 +2022,77 @@ mod tests {
             normalize_gmail(Uuid::new_v4(), &fixture).unwrap().id,
             "provider IDs must be isolated by account"
         );
+    }
+    #[test]
+    fn gmail_classifies_junk_from_system_labels_and_keeps_trash_precedence() {
+        let account = Uuid::new_v4();
+        for (labels, mailbox) in [
+            (vec!["SPAM", "UNREAD"], "junk"),
+            (vec!["INBOX", "SPAM"], "junk"),
+            (vec!["TRASH", "SPAM"], "trash"),
+            (vec!["INBOX"], "inbox"),
+            (vec!["Label_123"], "archive"),
+            (vec!["SENT"], "sent"),
+            (vec!["DRAFT"], "drafts"),
+        ] {
+            let input = json!({"id":"fixture","internalDate":"1730610000000",
+                "payload":{}, "labelIds":labels});
+            let message = normalize_gmail(account, &input).unwrap();
+            assert_eq!(message.mailbox, mailbox);
+            assert_eq!(message.provider_labels, labels);
+        }
+    }
+    #[test]
+    fn move_destinations_restore_junk_and_clear_gmail_spam_when_leaving() {
+        assert_eq!(graph_move_destination("junk"), Ok("junkemail"));
+        assert_eq!(graph_move_destination("trash"), Ok("deleteditems"));
+        assert_eq!(
+            graph_move_destination("drafts"),
+            Err(ProviderError::Rejected)
+        );
+        let account = Uuid::new_v4();
+        let mut labels = vec![json!("SPAM"), json!("UNREAD")];
+        for destination in ["inbox", "junk", "archive", "junk", "trash", "junk"] {
+            let edit = gmail_label_mutation(&Mutation {
+                is_read: None,
+                is_starred: None,
+                mailbox: Some(destination.to_owned()),
+            });
+            labels.retain(|label| !edit["removeLabelIds"].as_array().unwrap().contains(label));
+            for label in edit["addLabelIds"].as_array().unwrap() {
+                if !labels.contains(label) {
+                    labels.push(label.clone());
+                }
+            }
+            let input = json!({"id":"fixture", "internalDate":"1730610000000",
+                "payload":{}, "labelIds":labels});
+            let message = normalize_gmail(account, &input).unwrap();
+            assert_eq!(message.mailbox, destination);
+            assert!(!message.is_read);
+        }
+    }
+    #[test]
+    fn gmail_keeps_unnamed_calendar_alternatives_and_external_calendar_parts() {
+        let encoded = URL_SAFE_NO_PAD.encode("BEGIN:VCALENDAR\r\nEND:VCALENDAR");
+        let input = json!({"id":"meeting","internalDate":"1730610000000","payload":{
+        "mimeType":"multipart/alternative","parts":[
+            {"partId":"0","mimeType":"text/plain","body":{"data":URL_SAFE_NO_PAD.encode("Join the meeting")}},
+            {"partId":"1","mimeType":"text/calendar; method=REQUEST","body":{"data":encoded}},
+            {"partId":"2","mimeType":"text/calendar","body":{"attachmentId":"calendar-blob","size":100}}
+        ]}});
+        let message = normalize_gmail(Uuid::new_v4(), &input).unwrap();
+        assert_eq!(message.text_body, "Join the meeting");
+        assert_eq!(message.attachments.len(), 2);
+        assert_eq!(message.attachments[0].filename, "Invitation.ics");
+        assert_eq!(
+            message.attachments[0].inline_data_base64.as_ref(),
+            Some(&encoded)
+        );
+        assert_eq!(
+            message.attachments[1].provider_attachment_id.as_deref(),
+            Some("calendar-blob")
+        );
+        assert_ne!(message.attachments[0].id, message.attachments[1].id);
     }
     #[test]
     fn first_delivery_trace_reports_supplied_values_without_inferring_transport() {

@@ -323,7 +323,7 @@ final class MailStore {
     func conversationMessages(for message: MailMessage) -> [MailMessage] {
         messages.filter {
             $0.conversationID == message.conversationID && sameMailAccount($0, message)
-                && !$0.isDraft && !$0.isDeletedOnProvider && ($0.mailbox != .trash || $0.id == message.id)
+                && !$0.isDraft && !$0.isDeletedOnProvider && (!$0.mailbox.isJunkOrTrash || $0.id == message.id)
         }
         .sorted {
             if $0.sentAt != $1.sentAt { return $0.sentAt < $1.sentAt }
@@ -718,7 +718,8 @@ final class MailStore {
     }
 
     func canMoveMessage(_ message: MailMessage, to mailbox: Mailbox) -> Bool {
-        [.inbox, .archive, .trash].contains(mailbox) && message.mailbox != mailbox
+        ([.inbox, .archive, .trash].contains(mailbox) || (mailbox == .junk && !message.isFromAccountOwner))
+            && message.mailbox != mailbox
             && message.mailbox != .outbox && (!message.isDraft || mailbox == .trash)
     }
 

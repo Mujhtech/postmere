@@ -202,6 +202,45 @@ struct MailListView: View {
                                joinsBelow: selected && index + 1 < messages.endIndex && store.selectedMessageIDs.contains(messages[index + 1].id))
                 .tag(message.id)
                 .listRowInsets(EdgeInsets(top: 11, leading: 10, bottom: 11, trailing: 10))
+                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                    if message.mailbox == .drafts {
+                        Button("Edit Draft", systemImage: "square.and.pencil") { store.beginEditingDraft(message) }
+                            .tint(accent.accent)
+                    } else if message.mailbox != .outbox && !message.isDraft {
+                        Button(message.isUnread ? "Mark as Read" : "Mark as Unread",
+                               systemImage: message.isUnread ? "envelope.open" : "envelope.badge") {
+                            store.setRead(message.isUnread, for: [message.id])
+                        }
+                        .tint(.blue)
+                    }
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    trailingSwipeAction(for: message)
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func trailingSwipeAction(for message: MailMessage) -> some View {
+        switch message.mailbox {
+        case .outbox:
+            EmptyView()
+        case .trash:
+            Button("Restore to \(store.restoreDestination(for: message).title)", systemImage: "arrow.uturn.backward") {
+                store.restoreMessage(message.id)
+            }
+            .tint(accent.accent)
+        case .drafts:
+            Button("Move to Trash", systemImage: "trash", role: .destructive) {
+                store.moveMessage(message.id, to: .trash)
+            }
+        default:
+            let returnToInbox = message.mailbox == .archive || message.mailbox == .junk
+            Button(returnToInbox ? "Move to Inbox" : "Archive",
+                   systemImage: returnToInbox ? "tray.and.arrow.down" : "archivebox") {
+                store.moveMessage(message.id, to: returnToInbox ? .inbox : .archive)
+            }
+            .tint(accent.accent)
         }
     }
 
@@ -286,6 +325,7 @@ struct MailListView: View {
         case .drafts: return "No drafts"
         case .sent: return "No sent messages"
         case .archive: return "No archived messages"
+        case .junk: return "Junk is empty"
         case .trash: return "Trash is empty"
         case .needsReply: return "Nothing needs a reply"
         case .snoozed: return "No snoozed messages"
@@ -306,6 +346,7 @@ struct MailListView: View {
         case .drafts: return "Start a message and save it to finish later."
         case .sent: return "Messages you send will appear here."
         case .archive: return "Archived messages stay available without filling your inbox."
+        case .junk: return "Messages your mail provider marks as junk appear here."
         case .trash: return "Messages you move to Trash will appear here."
         case .needsReply: return "Mark a conversation as Needs Reply to keep it here until you answer."
         case .snoozed: return "Snooze a conversation to bring it back at a better time."
@@ -417,7 +458,9 @@ struct MailListView: View {
         Button("Remove Stars") { store.setStarred(false, for: ids) }
         Divider()
         Button("Needs Reply") { store.setNeedsReply(true, for: ids) }
+            .disabled(store.selectedMailbox == .junk && !searchesAllMailboxes)
         Button("Mark Done") { store.setNeedsReply(false, for: ids) }
+            .disabled(store.selectedMailbox == .junk && !searchesAllMailboxes)
     }
 
     private func handleListKey(_ press: KeyPress) -> KeyPress.Result {

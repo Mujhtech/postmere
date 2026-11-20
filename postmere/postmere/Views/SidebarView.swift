@@ -90,8 +90,8 @@ struct SidebarView: View {
                     }
                 }
 
-                Section("Mailboxes") {
-                    ForEach([Mailbox.drafts, .outbox, .sent, .archive, .trash]) { mailbox in
+                Section {
+                    ForEach([Mailbox.drafts, .outbox, .sent, .archive, .junk, .trash]) { mailbox in
                         mailboxRow(mailbox, count: current?.mailboxes[mailbox, default: 0])
                     }
                 } header: { Text("Mailboxes").foregroundStyle(sidebarSecondary) }

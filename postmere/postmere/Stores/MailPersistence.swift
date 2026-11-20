@@ -1,6 +1,9 @@
 import Foundation
 
 nonisolated struct MailStateSnapshot: Codable, Sendable {
+    private var junkMailboxVersion = 1
+    static let currentReplyIndexVersion = 2
+    var replyIndexVersion = Self.currentReplyIndexVersion
     var schemaVersion = 1
     var messages: [MailMessage]
     var savedViews: [SavedInboxView]
@@ -49,7 +52,13 @@ nonisolated struct MailStateSnapshot: Codable, Sendable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         messages = try values.decode([MailMessage].self, forKey: .messages)
-        for index in messages.indices { messages[index].restoreReceivedText() }
+        let repairJunk = try values.decodeIfPresent(Int.self, forKey: .junkMailboxVersion) == nil
+        for index in messages.indices {
+            messages[index].restoreReceivedText()
+            if repairJunk, messages[index].mailbox == .archive {
+                messages[index].mailbox = Mailbox.archive.correctingLegacyJunk(labels: messages[index].providerLabelIDs)
+            }
+        }
         savedViews = try values.decodeIfPresent([SavedInboxView].self, forKey: .savedViews) ?? []
         snippets = try values.decodeIfPresent([MailSnippet].self, forKey: .snippets) ?? []
         senderRules = try values.decodeIfPresent([SenderRule].self, forKey: .senderRules) ?? []

@@ -94,11 +94,21 @@ enum MailSearchField: String, Codable, CaseIterable, Identifiable {
 }
 
 nonisolated enum Mailbox: String, Codable, CaseIterable, Identifiable {
-    case inbox, starred, sent, drafts, archive, trash
+    case inbox, starred, sent, drafts, archive, junk, trash
     case needsReply, snoozed, followUps, newSenders, outbox
 
     var id: String { rawValue }
     var isConversationQueue: Bool { [.needsReply, .snoozed, .followUps, .newSenders].contains(self) }
+    var isJunkOrTrash: Bool { self == .junk || self == .trash }
+
+    /// Older sync responses placed unrecognized provider folders in Archive.
+    /// Graph's opaque folder IDs must be resolved by the account's sync worker.
+    func correctingLegacyJunk(labels: [String], provider: String? = nil) -> Self {
+        guard self == .archive else { return self }
+        if provider != "microsoft", labels.contains("SPAM") { return .junk }
+        if provider != "gmail", labels == ["junkemail"] { return .junk }
+        return self
+    }
 
     var title: String {
         switch self {
@@ -107,6 +117,7 @@ nonisolated enum Mailbox: String, Codable, CaseIterable, Identifiable {
         case .sent: "Sent"
         case .drafts: "Drafts"
         case .archive: "Archive"
+        case .junk: "Junk"
         case .trash: "Trash"
         case .needsReply: "Needs Reply"
         case .snoozed: "Snoozed"
@@ -123,6 +134,7 @@ nonisolated enum Mailbox: String, Codable, CaseIterable, Identifiable {
         case .sent: "paperplane"
         case .drafts: "doc"
         case .archive: "archivebox"
+        case .junk: "exclamationmark.shield"
         case .trash: "trash"
         case .needsReply: "arrowshape.turn.up.left"
         case .snoozed: "moon.zzz"
@@ -280,6 +292,24 @@ struct MailMessage: Codable, nonisolated Equatable, Identifiable {
     var bccRecipients: [String]
     var attachments: [MailAttachment]
     var workflow: MailWorkflowState
+    var replyRequestText: String?
+    var replyRequestCandidates: [String]?
+    var automaticReplyPending: Bool?
+
+    nonisolated var isFromAccountOwner: Bool {
+        isOutgoing || mailbox == .sent || (
+            providerAccountEmail?.isEmpty == false &&
+            providerAccountEmail?.caseInsensitiveCompare(senderEmail) == .orderedSame
+        )
+    }
+
+    nonisolated var allowsWorkflowActions: Bool { !isDraft && mailbox != .junk && mailbox != .outbox }
+
+    nonisolated var needsReply: Bool {
+        guard mailbox != .junk else { return false }
+        return workflow.needsReply || (automaticReplyPending == true && mailbox == .inbox
+            && workflow.screeningState == .accepted && !isDeletedOnProvider)
+    }
     var providerMessageID: String?
     var providerAccountEmail: String?
     var providerThreadID: String?
@@ -294,6 +324,7 @@ struct MailMessage: Codable, nonisolated Equatable, Identifiable {
     var providerDeletedAt: Date?
     // Optional so mailbox snapshots created before unsubscribe support still decode.
     var unsubscribeHeaders: MailUnsubscribeHeaders?
+    var hasMailingListID: Bool?
     var backendMessageID: UUID?
     var backendOutboxID: UUID?
     var trackOpens: Bool?

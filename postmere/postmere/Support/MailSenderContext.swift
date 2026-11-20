@@ -51,7 +51,7 @@ struct MailSenderContext {
         let email = MailContactIdentity.email(email)
         let related = messages.filter { message in
             guard MailContactIdentity.accountKey(for: message) == accountKey,
-                  !message.isDraft, message.mailbox != .outbox, message.mailbox != .trash, !message.isDeletedOnProvider else { return false }
+                  !message.isDraft, message.mailbox != .outbox, !message.mailbox.isJunkOrTrash, !message.isDeletedOnProvider else { return false }
             let participants = [message.senderEmail] + message.toRecipients + message.ccRecipients + (message.isOutgoing ? message.bccRecipients : [])
             return participants.contains { MailContactIdentity.email($0) == email }
         }.sorted { $0.sentAt > $1.sentAt }
@@ -91,7 +91,7 @@ enum MailRecipientSuggestions {
         var candidates: [String: Candidate] = [:]
         for message in messages {
             guard MailContactIdentity.accountKey(for: message) == accountKey, !message.isDraft,
-                  message.mailbox != .outbox, message.mailbox != .trash, !message.isDeletedOnProvider,
+                  message.mailbox != .outbox, !message.mailbox.isJunkOrTrash, !message.isDeletedOnProvider,
                   message.isOutgoing || message.workflow.screeningState == .accepted else { continue }
             var participants: [(String, String)] = [(message.senderEmail, message.sender)]
             participants += (message.toRecipients + message.ccRecipients + (message.isOutgoing ? message.bccRecipients : [])).map { ($0, "") }

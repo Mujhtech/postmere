@@ -239,6 +239,232 @@ import Foundation
     try check(resumedQueue.messages.count == 1 && resumedQueue.messages[0].backendMessageID == messageID
               && resumedQueue.messages[0].rfcMessageID == earlySent.rfcMessageId
               && resumedQueue.backendSyncCursors[first.localID] == "early-sent", "early provider identifiers survive restart together with the advanced cursor")
+
+    var queueSnapshot = try MailPersistence(fileURL: queueFile).load()!
+    queueSnapshot.messages[0].backendMessageID = nil
+    queueSnapshot.messages[0].providerMessageID = nil
+    let pendingDelivery = queueSnapshot.messages[0]
+    queueSnapshot.messages.insert(earlySent.localMessage(identity: first), at: 0)
+    let legacyQueue = MailPersistence(fileURL: directory.appendingPathComponent("duplicate-queued-delivery.json"))
+    try legacyQueue.save(queueSnapshot)
+    let repairedQueue = try legacyQueue.load()!
+    try check(repairedQueue.outgoingQueue.map(\.id) == [queuedID] && repairedQueue.messages.map(\.id) == [queuedID]
+              && repairedQueue.messages[0].mailbox == .outbox && repairedQueue.messages[0].backendMessageID == messageID
+              && repairedQueue.messages[0].paragraphs == queueStore.messages[0].paragraphs,
+              "a saved Sent copy cannot replace the original queue ID or the pending outgoing body during repair")
+
+    let receiptFile = directory.appendingPathComponent("late-send-receipt.json")
+    let receiptStore = MailStore(messages: [pendingDelivery], persistenceURL: receiptFile)
+    var missingHeader = earlySent
+    missingHeader.rfcMessageId = nil
+    let sentPage = BackendMailPage(messages: [missingHeader], nextCursor: "sent-before-receipt", hasMore: false)
+    try check(await receiptStore.applyBackendPage(sentPage, identity: first) && receiptStore.messages.count == 2,
+              "a Sent delivery without the outgoing header waits for a matching receipt")
+    receiptStore.selectMailbox(.sent)
+    await receiptStore.loadMailboxView()
+    let selectedSentID = missingHeader.localMessage(identity: first).id
+    receiptStore.setSelection([selectedSentID], in: receiptStore.mailboxViewKey.scope)
+    try check(receiptStore.selectedMessageID == selectedSentID, "the provider copy can be selected before its send receipt arrives")
+    guard let pendingIndex = receiptStore.messages.firstIndex(where: { $0.id == queuedID }) else {
+        throw RegressionFailure.failed("queued message missing before send receipt")
+    }
+    receiptStore.messages[pendingIndex].mailbox = .sent
+    receiptStore.messages[pendingIndex].providerMessageID = missingHeader.providerMessageId
+    receiptStore.reconcileSentDelivery(receiptStore.messages[pendingIndex])
+    try check(receiptStore.messages.map(\.id) == [queuedID] && receiptStore.selectedMessageIDs == [queuedID]
+              && receiptStore.messages[0].backendMessageID == messageID
+              && receiptStore.messages[0].mailbox == .sent && receiptStore.flushPersistence()
+              && (try MailPersistence(fileURL: receiptFile).load())?.messages.map(\.id) == [queuedID],
+              "a late send receipt unifies the earlier Sent delivery and persists one row under its original outgoing ID")
+}
+
+@MainActor private func checkJunkMailbox(_ source: MailMessage, directory: URL) async throws {
+    func check(_ condition: Bool, _ description: String) throws { try PostmereBackendRegression.check(condition, description) }
+    try check(Mailbox.archive.correctingLegacyJunk(labels: ["SPAM", "UNREAD"], provider: "gmail") == .junk
+              && Mailbox.trash.correctingLegacyJunk(labels: ["SPAM"], provider: "gmail") == .trash
+              && Mailbox.archive.correctingLegacyJunk(labels: ["opaque-id"], provider: "microsoft") == .archive,
+              "legacy Gmail junk is recoverable without guessing opaque Outlook folders or reviving trash")
+    var cached = source
+    cached.mailbox = .archive
+    cached.providerLabelIDs = ["SPAM"]
+    cached.isStarred = true
+    cached.workflow.needsReply = true
+    cached.workflow.screeningState = .pending
+    cached.workflow.snoozedUntil = Date(timeIntervalSince1970: 4_100_000_000)
+    cached.workflow.followUpAt = .now
+    let url = directory.appendingPathComponent("cached-junk.json")
+    let store = MailStore(messages: [cached], persistenceURL: url)
+    try check(store.flushPersistence(), "legacy junk fixture is stored")
+    var legacy = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
+    legacy.removeValue(forKey: "junkMailboxVersion")
+    try JSONSerialization.data(withJSONObject: legacy).write(to: url, options: .atomic)
+    let reopened = MailStore(messages: [], persistenceURL: url)
+    reopened.remoteMutation = { _, _ in }
+    guard let repaired = reopened.messages.first else {
+        try check(false, "the existing message survives reopening")
+        return
+    }
+    try check(repaired.id == cached.id && repaired.isUnread && repaired.belongs(to: .junk)
+              && ![Mailbox.inbox, .archive, .starred, .needsReply, .followUps, .newSenders].contains(where: repaired.belongs(to:)),
+              "cached junk retains identity and read state and is visible only in its provider mailbox")
+    reopened.acceptSender(of: repaired)
+    try check(reopened.messages.first?.mailbox == .junk && reopened.notificationSchedules.isEmpty,
+              "sender rules and reminders leave provider junk alone")
+    reopened.selectMailbox(.junk)
+    try check(reopened.filteredMessages.map(\.id) == [cached.id], "the Junk mailbox opens the repaired message")
+    try check(reopened.moveMessage(cached.id, to: .trash), "junk moves to trash")
+    var fromProvider = cached
+    fromProvider.mailbox = .trash
+    fromProvider.trashedFrom = nil
+    reopened.mergeIncoming([fromProvider])
+    try check(reopened.restoreMessage(cached.id) && reopened.messages.first?.mailbox == .junk,
+              "restoring trashed junk returns it to its source folder after provider sync")
+    try check(reopened.moveMessage(cached.id, to: .archive) && reopened.flushPersistence(),
+              "explicitly archiving a junk message is supported")
+    try check(MailStore(messages: [], persistenceURL: url).messages.first?.mailbox == .archive,
+              "a later launch preserves an explicit archive while cached provider labels catch up")
+    reopened.undoLastMove()
+    try check(reopened.messages.first?.mailbox == .junk, "undo restores the original junk folder")
+    try check(reopened.moveMessage(cached.id, to: .inbox) && reopened.messages.first?.belongs(to: .inbox) == true,
+              "moving junk to Inbox makes even previously screened or snoozed mail immediately visible")
+    reopened.undoLastMove()
+    try check(reopened.messages.first?.workflow.screeningState == repaired.workflow.screeningState
+              && reopened.messages.first?.workflow.snoozedUntil == repaired.workflow.snoozedUntil,
+              "undoing the inbox move restores prior screening and snooze metadata")
+    let rejected = MailStore(messages: [repaired], persistenceURL: directory.appendingPathComponent("rejected-junk-move.json"))
+    rejected.remoteMutation = { _, _ in throw URLError(.cannotConnectToHost) }
+    _ = rejected.moveMessage(cached.id, to: .inbox)
+    await rejected.remoteMutationTasks[cached.id]?.value
+    try check(rejected.operationError != nil && rejected.messages.first?.mailbox == .junk
+              && rejected.messages.first?.workflow.screeningState == repaired.workflow.screeningState
+              && rejected.messages.first?.workflow.snoozedUntil == repaired.workflow.snoozedUntil,
+              "a rejected provider move restores the Junk mailbox and its local workflow state")
+}
+
+@MainActor private func checkIdleWorkflowDates(_ original: MailMessage, identity: RemoteAccountIdentity,
+                                                other: RemoteAccountIdentity) async throws {
+    let now = Date()
+    var snoozed = original
+    snoozed.mailbox = .archive
+    snoozed.workflow.snoozedUntil = now.addingTimeInterval(60)
+    var hidden = snoozed
+    hidden.id = UUID()
+    hidden.account = other.localID
+    hidden.workflow.snoozedUntil = now.addingTimeInterval(10)
+    var rows = (0..<4_000).map { offset in
+        var row = original
+        row.id = UUID()
+        row.conversationID = row.id
+        row.providerMessageID = "fixture-\(offset)"
+        row.backendMessageID = row.id
+        return row
+    }
+    rows += [snoozed, hidden]
+    RemoteAccountRegistry.accounts = [identity]
+    defer { RemoteAccountRegistry.accounts = [identity, other] }
+    let store = MailStore(messages: rows)
+    var woken: [UUID] = []
+    store.onSnoozeDue = { message, _ in woken.append(message.id) }
+    store.processWorkflowDates(now: now)
+    let revision = store.mailboxDataRevision
+    for _ in 0..<120 { await store.processDueWork(now: now.addingTimeInterval(30)) }
+    try PostmereBackendRegression.check(store.mailboxDataRevision == revision && woken.isEmpty
+                                        && store.workflowDateScan?.nextWake == snoozed.workflow.snoozedUntil,
+                                        "120 idle ticks in a 4,002-message mailbox preserve its revision and next visible snooze")
+    RemoteAccountRegistry.accounts = [identity, other]
+    store.processWorkflowDates(now: now.addingTimeInterval(30))
+    store.processWorkflowDates(now: now.addingTimeInterval(60))
+    store.processWorkflowDates(now: now.addingTimeInterval(61))
+    try PostmereBackendRegression.check(woken == [hidden.id, snoozed.id] && store.workflowDateScan?.nextWake == nil,
+                                        "connecting an account and reaching a deadline each wake its snooze exactly once")
+}
+
+@MainActor private func checkDuplicateDeliveries(_ payload: BackendMailMessage, identity: RemoteAccountIdentity,
+                                                  other: RemoteAccountIdentity, directory: URL) async throws {
+    func check(_ condition: Bool, _ description: String) throws {
+        try PostmereBackendRegression.check(condition, description)
+    }
+    var delivery = payload
+    delivery.rfcMessageId = "<shared-header@example.com>"
+    let current = delivery.localMessage(identity: identity)
+    var previous = current
+    previous.providerAccountEmail = "former-address@example.com"
+    previous.workflow.privateNote = "Keep this note"
+    let otherAccountCopy = delivery.localMessage(identity: other)
+    var sibling = current
+    sibling.id = UUID()
+    sibling.backendMessageID = UUID()
+    sibling.providerMessageID = "second-message-in-the-thread"
+    let file = directory.appendingPathComponent("duplicate-deliveries.json")
+    let store = MailStore(messages: [previous, sibling, otherAccountCopy], persistenceURL: file)
+
+    let page = BackendMailPage(messages: [delivery, delivery], nextCursor: "replayed-page", hasMore: false)
+    let sync = Task { await store.applyBackendPage(page, identity: identity) }
+    let read = store.beginProviderPage(for: identity.localID)
+    let fetched = await store.mergeReceivedPage([current], read: read, isCurrent: { true })
+    store.endProviderPage(read)
+    let synced = await sync.value
+    let copies = store.messages.filter { $0.account == identity.localID && $0.backendMessageID == delivery.id }
+    try check(synced && fetched && copies.map(\.id) == [current.id] &&
+              copies.first?.providerAccountEmail == identity.email,
+              "overlapping fetches and a replayed page keep one row when a connected account changes address")
+    try check(store.messages.count == 3 && Set(store.messages.map(\.id)) == [current.id, sibling.id, otherAccountCopy.id] &&
+              store.messages.first { $0.id == sibling.id }?.backendMessageID == sibling.backendMessageID,
+              "distinct provider messages with a shared RFC header and matching IDs across accounts stay separate")
+    try check(store.messages.first { $0.id == current.id }?.workflow.privateNote == previous.workflow.privateNote,
+              "updating a repeated delivery preserves its local workflow")
+    await store.loadMailboxView()
+    store.setSelection([current.id], in: store.mailboxViewKey.scope)
+    try check(store.selectedMessages.map(\.id) == [current.id] && store.selectedMessageIDs == [current.id],
+              "selecting the synced message resolves one visible mailbox row")
+
+    let persistence = MailPersistence(fileURL: file)
+    var snapshot = try persistence.load()!
+    // Recreate an affected on-disk snapshot directly, bypassing any sanitization on save.
+    var alias = current
+    alias.id = UUID()
+    alias.backendMessageID = nil
+    let attachment = MailAttachment(name: "receipt.pdf", detail: "PDF", providerAttachmentID: "remote-pdf")
+    var downloaded = attachment
+    downloaded.localURL = directory.appendingPathComponent(attachment.name)
+    previous.attachments = [attachment]
+    alias.attachments = [downloaded]
+    var backendOnly = previous
+    backendOnly.providerMessageID = nil
+    let bridge = MailStore(messages: [backendOnly, alias], persistenceURL: directory.appendingPathComponent("live-bridge.json"))
+    await bridge.loadMailboxView()
+    bridge.setSelection([alias.id], in: bridge.mailboxViewKey.scope)
+    try check(await bridge.applyBackendPage(page, identity: identity) && bridge.messages.map(\.id) == [alias.id]
+              && bridge.selectedMessageIDs == [alias.id] && bridge.messages[0].workflow.privateNote == previous.workflow.privateNote
+              && bridge.messages[0].attachments.contains { $0.localURL == downloaded.localURL },
+              "a sync linking partial backend and provider copies preserves the selected row, note, and download")
+    snapshot.messages = [previous, current, alias, sibling, otherAccountCopy]
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .millisecondsSince1970
+    let legacyFile = directory.appendingPathComponent("legacy-duplicate-deliveries.json")
+    try encoder.encode(snapshot).write(to: legacyFile, options: .atomic)
+    let relaunched = MailStore(messages: [], persistenceURL: legacyFile, openInBackground: true)
+    await relaunched.openingTask?.value
+    let repaired = relaunched.messages.first { $0.account == identity.localID && $0.backendMessageID == payload.id }
+    try check(relaunched.persistenceError == nil && relaunched.messages.count == 3 &&
+              repaired?.workflow.privateNote == previous.workflow.privateNote &&
+              repaired?.attachments.contains { $0.localURL == downloaded.localURL } == true,
+              "opening a snapshot repairs duplicate and aliased rows and retains private notes and downloads")
+    try check(relaunched.backendSyncCursors[identity.localID] == page.nextCursor && relaunched.flushPersistence(),
+              "a repaired mailbox retains its sync cursor and accepts saves")
+    let secondOpen = MailStore(messages: [], persistenceURL: legacyFile)
+    try check(secondOpen.persistenceError == nil && secondOpen.messages.count == 3,
+              "the repaired mailbox stays deduplicated on a second launch")
+    var collision = otherAccountCopy
+    collision.id = current.id
+    snapshot.messages = [current, collision]
+    let invalidFile = directory.appendingPathComponent("cross-account-id-collision.json")
+    let invalidData = try encoder.encode(snapshot)
+    try invalidData.write(to: invalidFile)
+    let invalid = MailStore(messages: [], persistenceURL: invalidFile)
+    let afterOpen = try Data(contentsOf: invalidFile)
+    try check(invalid.persistenceError != nil && afterOpen == invalidData,
+              "unrelated rows with a colliding local UUID never merge across accounts or overwrite the snapshot")
 }
 
 @MainActor private func checkTrackingPixelRules() throws {

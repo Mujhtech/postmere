@@ -22,7 +22,7 @@ struct AttachmentLibraryView: View {
     private var entries: [Entry] {
         var seen: Set<UUID> = []
         let query = self.query
-        return store.messages.filter { store.isAccountVisible($0) && $0.mailbox != .trash && (account == nil || $0.account == account) }
+        return store.messages.filter { store.isAccountVisible($0) && !$0.mailbox.isJunkOrTrash && (account == nil || $0.account == account) }
             .flatMap { message in message.attachments.map { Entry(attachment: $0, message: message) } }
             .filter { entry in
                 (query.isEmpty || [entry.attachment.name, entry.message.sender, entry.message.subject].contains { $0.localizedStandardContains(query) })

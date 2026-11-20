@@ -76,7 +76,8 @@ extension MailStore {
     func updateConversation(containing id: UUID, _ update: (inout MailMessage) -> Void) {
         guard let selected = messages.first(where: { $0.id == id }) else { return }
         var updated = messages
-        for index in updated.indices where updated[index].conversationID == selected.conversationID && sameMailAccount(updated[index], selected) {
+        for index in updated.indices where updated[index].conversationID == selected.conversationID
+            && sameMailAccount(updated[index], selected) && (updated[index].mailbox == .junk) == (selected.mailbox == .junk) {
             update(&updated[index])
         }
         messages = updated
@@ -168,6 +169,7 @@ extension MailStore {
     }
 
     nonisolated func applyRule(_ rule: SenderRule, to message: inout MailMessage) {
+        guard message.mailbox != .junk else { return }
         message.workflow.screeningState = rule.route == .blocked ? .blocked : .accepted
         // Routing never revives mail that was explicitly trashed, except an accepted screened sender.
         guard message.mailbox != .trash || message.workflow.screeningState == .blocked else { return }
@@ -183,7 +185,7 @@ extension MailStore {
 
     var notificationSchedules: [MailNotificationSchedule] {
         var result: [String: MailNotificationSchedule] = [:]
-        for message in messages where isAccountVisible(message) && !message.isDraft && message.mailbox != .trash && message.mailbox != .outbox {
+        for message in messages where isAccountVisible(message) && !message.isDraft && !message.mailbox.isJunkOrTrash && message.mailbox != .outbox {
             if let date = message.workflow.snoozedUntil {
                 let item = MailNotificationSchedule(conversationID: message.conversationID, messageID: message.id, title: message.subject, date: date, kind: .snooze)
                 result[item.id] = item
