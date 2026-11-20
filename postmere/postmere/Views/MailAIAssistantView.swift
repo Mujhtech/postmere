@@ -9,6 +9,7 @@ struct MailAIAssistantView: View {
     var draftText = ""
     var onApplyText: ((String) -> Void)?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismissReaderPanel) private var dismissReaderPanel
     @State private var settings: MailAISettings?
     @State private var result: MailAIResult?
     @State private var error: String?
@@ -24,8 +25,10 @@ struct MailAIAssistantView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PostmereSheetHeader(mode.title)
-            Divider()
+            if dismissReaderPanel == nil {
+                PostmereSheetHeader(mode.title)
+                Divider()
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if !runtime.backend.isConnected {
@@ -43,7 +46,7 @@ struct MailAIAssistantView: View {
                     }
                     if busy { ProgressView("Working…").controlSize(.small) }
                     if let error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
-                }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+                }.padding(dismissReaderPanel == nil ? 22 : 16).frame(maxWidth: .infinity, alignment: .leading)
             }
             if let result, mode == .draft {
                 Divider()
@@ -63,6 +66,10 @@ struct MailAIAssistantView: View {
                 selectedAccountID = runtime.store.selectedAccount.flatMap(MailAccount.init(rawValue:))?.remote?.accountID
                 if !draftText.isEmpty { instruction = "clarify" }
             }
+    }
+
+    private func close() {
+        if let dismissReaderPanel { dismissReaderPanel() } else { dismiss() }
     }
 
     @ViewBuilder private var inputs: some View {

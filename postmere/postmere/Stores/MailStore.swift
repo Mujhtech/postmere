@@ -177,10 +177,7 @@ final class MailStore {
     }
 
     private struct MoveSnapshot {
-        let messageID: UUID
-        let mailbox: Mailbox
-        let trashedFrom: Mailbox?
-        let isUnread: Bool
+        let original: MailMessage
         let selectedMailbox: Mailbox
         let selectedAccount: String?
         let selectedMessageID: UUID?
@@ -509,7 +506,7 @@ final class MailStore {
         pendingMoveSelection = nil
         if undoBatchMove() { lastMove = nil; return }
         guard let lastMove,
-              let index = messages.firstIndex(where: { $0.id == lastMove.messageID }) else { return }
+              let index = messages.firstIndex(where: { $0.id == lastMove.original.id }) else { return }
         var restored = messages[index]
         restored.mailbox = lastMove.mailbox
         restored.trashedFrom = lastMove.trashedFrom
@@ -755,10 +752,7 @@ final class MailStore {
         }
         batchMoveUndo = nil
         lastMove = MoveSnapshot(
-            messageID: original.id,
-            mailbox: original.mailbox,
-            trashedFrom: original.trashedFrom,
-            isUnread: original.isUnread,
+            original: original,
             selectedMailbox: selectedMailbox,
             selectedAccount: selectedAccount,
             selectedMessageID: selectedMessageID,

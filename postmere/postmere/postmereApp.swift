@@ -29,6 +29,7 @@ struct postmereApp: App {
         }
         .handlesExternalEvents(matching: ["mailto:"])
         .defaultSize(width: 1280, height: 820)
+        .windowResizability(.contentMinSize)
         .windowToolbarStyle(.unified)
         .commands { MailCommands(store: store, runtime: runtime) }
 

@@ -35,14 +35,13 @@ final class MailRuntime {
     var activeSharedReplyScope: String?
     private var lastSharedPresenceRefresh = Date.distantPast
     private var isRefreshingSharedPresence = false
-    var schedulePurpose: MailSchedulePurpose? {
-        didSet { if schedulePurpose != nil { scheduleTarget = store.selectedMessage } }
+    var readerPanel: ReaderPanelRequest?
+
+    func openReaderPanel(_ action: ReaderPanelAction) {
+        guard store.selectedMessageIDs.count <= 1, let message = store.selectedMessage else { return }
+        if readerPanel?.messageID == message.id, readerPanel?.action == action { return }
+        readerPanel = ReaderPanelRequest(messageID: message.id, action: action)
     }
-    private(set) var scheduleTarget: MailMessage?
-    var showsPrivateNote = false {
-        didSet { if showsPrivateNote { privateNoteTarget = store.selectedMessage } }
-    }
-    private(set) var privateNoteTarget: MailMessage?
     @ObservationIgnored var pendingPaletteAction: (() -> Void)?
     @ObservationIgnored var openMailWindow: (() -> Void)?
     private var lastAccessibleWorkspaceScope: String?
@@ -150,10 +149,7 @@ final class MailRuntime {
         showsCalendar = false
         showsAIQuestion = false
         showsWorkspace = false
-        schedulePurpose = nil
-        scheduleTarget = nil
-        showsPrivateNote = false
-        privateNoteTarget = nil
+        readerPanel = nil
         activeSharedReplyID = nil
         activeSharedReplyScope = nil
         openMailWindow = nil

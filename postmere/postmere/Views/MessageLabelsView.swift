@@ -1,25 +1,21 @@
 import SwiftUI
 
 struct MessageLabelButton: View {
-    @Environment(MailRuntime.self) private var runtime
     let message: MailMessage?
-    @State private var presented = false
+    var isSelected = false
+    let action: () -> Void
+    @Environment(\.postmereAccent) private var palette
 
     var body: some View {
-        Button { presented = true } label: {
+        Button(action: action) {
             PostmereLabel("Label", symbol: "tag", size: 17)
                 .labelStyle(.iconOnly)
-                .foregroundStyle(PostmereTheme.icon)
+                .foregroundStyle(isSelected ? palette.accentInk : PostmereTheme.icon)
         }
         .help("Edit labels or categories for this message")
         .accessibilityLabel("Label message")
+        .accessibilityValue(isSelected ? "Shown" : "Hidden")
         .disabled(message?.mailAccount.isConnected != true)
-        .onChange(of: message?.mailAccount.isConnected == true ? message?.id : nil) { presented = false }
-        .popover(isPresented: $presented) {
-            if let message {
-                MessageLabelsView(runtime: runtime, message: message).id(message.id)
-            }
-        }
     }
 }
 
@@ -68,30 +64,25 @@ struct MessageLabelsView: View {
         let matches = filtered?.query == query ? filtered : nil
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(outlook ? "Outlook categories" : "Gmail labels").font(.headline)
-                Spacer()
+                TextField(outlook ? "Find or create a category" : "Find or create a label", text: $search)
+                    .textFieldStyle(.roundedBorder)
                 if busy, selection != nil { ProgressView().controlSize(.small).accessibilityLabel("Updating labels") }
             }
-            TextField(outlook ? "Find or create a category" : "Find or create a label", text: $search)
-                .textFieldStyle(.roundedBorder)
             if let selection {
                 let labels = name.isEmpty ? selection.labels : matches?.labels ?? []
                 if !labels.isEmpty {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 8) {
-                            ForEach(labels) { label in
-                                Toggle(label.name, isOn: Binding(get: {
-                                    if let pendingChange, pendingChange.id == label.id { return pendingChange.applied }
-                                    return selection.appliedLabelIds.contains(label.id)
-                                },
-                                    set: { applied in Task { await update(label: label, applied: applied) } }))
-                                    .toggleStyle(.checkbox)
-                            }
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(labels) { label in
+                            Toggle(label.name, isOn: Binding(get: {
+                                if let pendingChange, pendingChange.id == label.id { return pendingChange.applied }
+                                return selection.appliedLabelIds.contains(label.id)
+                            },
+                                set: { applied in Task { await update(label: label, applied: applied) } }))
+                                .toggleStyle(.checkbox)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(2)
                     }
-                    .frame(height: min(CGFloat(labels.count) * 26, 232))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(2)
                     .disabled(busy || !confirmed)
                 } else if name.isEmpty {
                     Text(outlook ? "Enter a name to create your first category." : "Enter a name to create your first label.")
@@ -112,8 +103,6 @@ struct MessageLabelsView: View {
                 else { Button("Refresh") { refreshRevision += 1 }.disabled(busy) }
             }
         }
-        .padding(16)
-        .frame(width: 304)
         .task(id: refreshRevision) { await refresh() }
         .task(id: query) {
             guard !query.name.isEmpty, let selection else { filtered = nil; return }

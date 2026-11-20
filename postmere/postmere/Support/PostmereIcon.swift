@@ -201,6 +201,25 @@ enum PostmereSymbols {
             d.line([16, 5, 19, 8])
         case "sidebar.left":
             d.rect(3, 4, 18, 16, radius: 2.5); d.line([9, 4, 9, 20]); d.line([5.5, 8, 6.5, 8]); d.line([5.5, 12, 6.5, 12])
+        case "sidebar.right":
+            d.rect(3, 4, 18, 16, radius: 2.5); d.line([15, 4, 15, 20]); d.line([17.5, 8, 18.5, 8]); d.line([17.5, 12, 18.5, 12])
+        case "person.crop.rectangle":
+            d.rect(3, 4, 18, 16, radius: 2.5); d.circle(8.5, 9, 2.1)
+            d.curve(from: [5, 17], to: [12, 17], c1: [5, 11.5], c2: [12, 11.5])
+            d.line([15, 8, 18, 8]); d.line([15, 12, 18, 12]); d.line([15, 16, 17, 16])
+        case "arrow.up.right":
+            d.line([5, 19, 19, 5]); d.line([8, 5, 19, 5, 19, 16])
+        case "link":
+            d.line([8, 16, 16, 8])
+            d.curve(from: [10, 7], to: [19, 5], c1: [14, 0], c2: [18, 2])
+            d.curve(from: [19, 5], to: [17, 14], c1: [22, 8], c2: [22, 11])
+            d.curve(from: [14, 17], to: [5, 19], c1: [10, 24], c2: [6, 22])
+            d.curve(from: [5, 19], to: [7, 10], c1: [2, 16], c2: [2, 13])
+        case "at":
+            d.circle(11, 12, 3.5); d.line([14.5, 8.5, 14.5, 15])
+            d.curve(from: [14.5, 15], to: [21, 12], c1: [17, 19], c2: [21, 17])
+            d.curve(from: [21, 12], to: [3, 12], c1: [21, 0], c2: [3, 0])
+            d.curve(from: [3, 12], to: [15, 21], c1: [3, 19], c2: [8, 23])
         case "magnifyingglass":
             d.circle(10.5, 10.5, 6.5); d.line([15.5, 15.5, 21, 21])
         case "line.3.horizontal.decrease.circle", "line.3.horizontal.decrease.circle.fill":

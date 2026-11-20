@@ -349,7 +349,7 @@ struct MailListView: View {
         Divider()
         Button(message.isUnread ? "Mark as Read" : "Mark as Unread") { store.toggleRead(message.id) }
         Button(message.isStarred ? "Remove Star" : "Star Message") { store.toggleStar(message.id) }
-        if !message.isDraft && message.mailbox != .trash {
+        if message.allowsWorkflowActions && message.mailbox != .trash {
             Divider()
             Button(message.workflow.needsReply ? "Mark Done" : "Needs Reply") { store.setNeedsReply(!message.workflow.needsReply, for: message.id) }
             if message.workflow.snoozedUntil != nil {

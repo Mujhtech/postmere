@@ -16,8 +16,6 @@ struct MailScheduleSheet: View {
     let purpose: MailSchedulePurpose
     let onSave: (Date, Bool) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var date = Date.now.addingTimeInterval(3600)
-    @State private var onlyIfNoReply = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -79,12 +77,28 @@ struct MailScheduleEditor: View {
             }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Set") { onSave(date, onlyIfNoReply); dismiss() }
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(usesDialogShortcuts ? .cancelAction : nil)
+                Button("Set") {
+                    guard date > .now else { return }
+                    onSave(date, onlyIfNoReply)
+                }
                     .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction).disabled(date <= .now)
+                    .keyboardShortcut(usesDialogShortcuts ? .defaultAction : nil)
+                    .disabled(date <= .now)
             }
-        }.padding(24).frame(width: 430)
+        }
+    }
+
+    private var datePicker: some View {
+        DatePicker("Date and time", selection: $date, in: Date.now..., displayedComponents: [.date, .hourAndMinute])
+            .labelsHidden()
+    }
+
+    @ViewBuilder private var presets: some View {
+        Button("In one hour") { date = .now.addingTimeInterval(3600) }
+        Button("Tomorrow") { date = tomorrow }
+        Button("Next week") { date = Calendar.current.date(byAdding: .day, value: 6, to: tomorrow) ?? tomorrow }
     }
 
     private var tomorrow: Date {
@@ -94,10 +108,9 @@ struct MailScheduleEditor: View {
 }
 
 struct PrivateNoteSheet: View {
-    @Bindable var store: MailStore
+    let store: MailStore
     let message: MailMessage
     @Environment(\.dismiss) private var dismiss
-    @State private var note = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -138,17 +151,25 @@ struct PrivateNoteEditor: View {
         VStack(alignment: .leading, spacing: 14) {
             TextEditor(text: text).font(.system(size: 13))
                 .scrollContentBackground(.hidden)
-                .frame(height: 180).accessibilityLabel("Private note")
+                .frame(minHeight: dismissReaderPanel == nil ? 180 : 36, idealHeight: 180,
+                       maxHeight: dismissReaderPanel == nil ? 180 : 240)
+                .accessibilityLabel("Private note")
                 .padding(8)
-                .background(PostmereTheme.subtleFill, in: RoundedRectangle(cornerRadius: PostmereTheme.cardRadius))
+                .background(inset, in: RoundedRectangle(cornerRadius: PostmereTheme.cardRadius))
                 .overlay { RoundedRectangle(cornerRadius: PostmereTheme.cardRadius).strokeBorder(PostmereTheme.rule) }
             Text("Only stored on this Mac. Never included in an email.").font(.caption).foregroundStyle(.secondary)
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save") { store.setPrivateNote(note, for: message.id); dismiss() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(usesDialogShortcuts ? .cancelAction : nil)
+                Button("Save") {
+                    store.setPrivateNote(text.wrappedValue, for: message.id)
+                    onSave()
+                }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(usesDialogShortcuts ? .defaultAction : nil)
             }
-        }.padding(24).frame(width: 460).onAppear { note = message.workflow.privateNote }
+        }
     }
 }
 
@@ -196,6 +217,7 @@ struct SavedInboxViewEditor: View {
 }
 
 struct OutgoingStatusView: View {
+    @Environment(\.mailboxInset) private var inset
     @Bindable var store: MailStore
     let item: OutgoingMailItem
     var body: some View {
@@ -220,7 +242,7 @@ struct OutgoingStatusView: View {
                 if item.status != .delivering && item.serverState != "uncertain" { Button("Cancel Send and Edit") { store.cancelQueuedSend(item.id) } }
             }.controlSize(.small)
         }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            .background(PostmereTheme.subtleFill, in: RoundedRectangle(cornerRadius: PostmereTheme.cardRadius))
+            .background(inset, in: RoundedRectangle(cornerRadius: PostmereTheme.cardRadius))
             .overlay { RoundedRectangle(cornerRadius: PostmereTheme.cardRadius).strokeBorder(PostmereTheme.rule) }
     }
 }

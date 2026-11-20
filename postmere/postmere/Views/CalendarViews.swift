@@ -87,6 +87,8 @@ struct CalendarIntegrationSettingsView: View {
 }
 
 struct CalendarEventDraftView: View {
+    @Environment(\.mailboxInset) private var inset
+    @Environment(\.dismissReaderPanel) private var dismissReaderPanel
     private let service: MailCalendarService
     private let onSaved: ((String) -> Void)?
     @Environment(\.dismiss) private var dismiss
@@ -112,7 +114,7 @@ struct CalendarEventDraftView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Review Event").font(PostmereTheme.sheetTitle)
+            if dismissReaderPanel == nil { Text("Review Event").font(PostmereTheme.sheetTitle) }
             TextField("Event title", text: $draft.title).textFieldStyle(.roundedBorder)
             Toggle("All day", isOn: $draft.isAllDay).toggleStyle(.checkbox)
             if draft.isAllDay {
@@ -141,7 +143,7 @@ struct CalendarEventDraftView: View {
                 Text("Notes").font(.caption).foregroundStyle(.secondary)
                 TextEditor(text: $draft.notes).font(.system(size: 12)).scrollContentBackground(.hidden)
                     .frame(height: 90).padding(6)
-                    .background(PostmereTheme.subtleFill, in: .rect(cornerRadius: 6))
+                    .background(inset, in: .rect(cornerRadius: 6))
                     .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(PostmereTheme.rule) }
             }
             Text("Adds a local calendar event. It does not send invitations or reply to an organizer.")
@@ -149,18 +151,20 @@ struct CalendarEventDraftView: View {
             if let error = saveError ?? validationError { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(isSaving)
+                Button("Cancel", action: close)
+                    .keyboardShortcut(dismissReaderPanel == nil ? .cancelAction : nil).disabled(isSaving)
                 Button("Add Event") {
                     isSaving = true
                     Task {
                         do {
                             let id = try await service.saveReviewedEvent(draft)
                             onSaved?(id)
-                            dismiss()
+                            close()
                         } catch { saveError = error.localizedDescription }
                         isSaving = false
                     }
-                }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(isSaving || validationError != nil)
+                }.buttonStyle(.borderedProminent)
+                    .keyboardShortcut(dismissReaderPanel == nil ? .defaultAction : nil).disabled(isSaving || validationError != nil)
             }
         }
         .padding(dismissReaderPanel == nil ? 24 : 16).frame(width: dismissReaderPanel == nil ? 570 : nil)
@@ -172,6 +176,10 @@ struct CalendarEventDraftView: View {
                 draft.end = calendar.date(byAdding: .day, value: 1, to: draft.start) ?? draft.start.addingTimeInterval(86_400)
             }
         }
+    }
+
+    private func close() {
+        if let dismissReaderPanel { dismissReaderPanel() } else { dismiss() }
     }
 }
 

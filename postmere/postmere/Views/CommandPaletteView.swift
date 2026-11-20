@@ -40,9 +40,9 @@ struct CommandPaletteView: View {
             if !message.isDraft && message.mailbox != .outbox {
                 result.append(Action(id: "needsReply", title: message.workflow.needsReply ? "Mark conversation done" : "Add to Needs Reply", symbol: "arrowshape.turn.up.left", run: { store.setNeedsReply(!message.workflow.needsReply, for: store.selectedMessageIDs.isEmpty ? [message.id] : store.selectedMessageIDs) }))
                 if store.selectedMessageIDs.count <= 1 {
-                    result.append(Action(id: "snooze", title: "Snooze conversation…", symbol: "moon.zzz", run: { runtime.schedulePurpose = .snooze }))
-                    result.append(Action(id: "followUp", title: "Set follow-up reminder…", symbol: "bell", run: { runtime.schedulePurpose = .followUp }))
-                    result.append(Action(id: "note", title: "Edit private note…", symbol: "note.text", run: { runtime.showsPrivateNote = true }))
+                    result.append(Action(id: "snooze", title: "Snooze conversation…", symbol: "moon.zzz", run: { runtime.openReaderPanel(.snooze) }))
+                    result.append(Action(id: "followUp", title: "Set follow-up reminder…", symbol: "bell", run: { runtime.openReaderPanel(.followUp) }))
+                    result.append(Action(id: "note", title: "Edit private note…", symbol: "note.text", run: { runtime.openReaderPanel(.privateNote) }))
                 }
             }
         }

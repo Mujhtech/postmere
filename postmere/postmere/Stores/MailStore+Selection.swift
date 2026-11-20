@@ -88,9 +88,7 @@ extension MailStore {
         var updated = messages
         for index in updated.indices {
             guard let old = before[updated[index].id] else { continue }
-            updated[index].mailbox = old.mailbox
-            updated[index].trashedFrom = old.trashedFrom
-            updated[index].isUnread = old.isUnread
+            updated[index].undoMove(to: old)
         }
         if undo.scope == mailboxViewKey.scope {
             isUpdatingSelection = true
@@ -125,7 +123,7 @@ extension MailStore {
 
     func setNeedsReply(_ needsReply: Bool, for ids: Set<UUID>) {
         persistenceSuspended += 1
-        let selected = messages.filter { ids.contains($0.id) && !$0.isDraft && $0.mailbox != .outbox }
+        let selected = messages.filter { ids.contains($0.id) && $0.allowsWorkflowActions }
         var handled: Set<String> = []
         for message in selected where handled.insert(conversationKey(for: message)).inserted {
             setNeedsReply(needsReply, for: message.id)

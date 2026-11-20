@@ -28,6 +28,7 @@ struct MessageDetailsDisclosure: View {
 struct MessageEnvelopeDetailsView: View {
     let message: MailMessage
     @Environment(MailRuntime.self) private var runtime
+    @Environment(\.dismissReaderPanel) private var dismissReaderPanel
     @State private var fetchedDetails: MailEnvelopeDetails?
     @State private var retryCount = 0
     @State private var loadFailed = false
