@@ -37,6 +37,7 @@ struct MailParticipantAvatar: View {
             }
             .padding(18)
             .frame(width: 252)
+            .mailPanelSurface()
         }
     }
 

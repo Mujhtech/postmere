@@ -92,7 +92,9 @@ struct MessageEnvelopeDetailsView: View {
             .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { contentHeight = $0 }
         }
         .scrollBounceBehavior(.basedOnSize)
-        .frame(width: 410, height: min(contentHeight, 416))
+        .frame(width: dismissReaderPanel == nil ? 410 : nil,
+               height: dismissReaderPanel == nil ? min(contentHeight, 416) : nil)
+        .mailPanelSurface(isPresented: dismissReaderPanel == nil)
         .accessibilityLabel("Message details")
         .task(id: canFetch ? retryCount : nil) { await loadCachedEnvelope() }
     }

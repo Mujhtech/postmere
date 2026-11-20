@@ -36,11 +36,13 @@ struct CalendarHomeView: View {
             }
         }
         .frame(width: 680, height: 590)
+        .mailPanelSurface()
         .sheet(item: $eventDraft) { CalendarEventDraftView(draft: $0) }
     }
 }
 
 struct BookingLinksView: View {
+    @Environment(\.mailboxInset) private var inset
     @Environment(\.postmereAccent) private var palette
     let session: BackendSession
     var onInsert: ((String) -> Void)?
@@ -85,7 +87,7 @@ struct BookingLinksView: View {
                                     Button("Disable", role: .destructive) { disabling = link }
                                 }.controlSize(.small)
                             }
-                        }.padding(16).background(PostmereTheme.subtleFill, in: .rect(cornerRadius: PostmereTheme.cardRadius))
+                        }.padding(16).background(inset, in: .rect(cornerRadius: PostmereTheme.cardRadius))
                     }
                     if !bookings.isEmpty {
                         Text("Bookings").font(.headline).padding(.top, 8)
@@ -278,6 +280,7 @@ private struct CreateBookingLinkView: View {
                     .buttonStyle(.borderedProminent).disabled(!canCreate)
             }
         }.padding(24).frame(width: 600)
+            .mailPanelSurface()
             .onAppear { accountID = accounts.first?.id }
             .task(id: accountID) { await loadCalendars() }
             .onChange(of: targetCalendar) { previous, value in
@@ -471,6 +474,7 @@ private struct SharedCalendarSelectionView: View {
                 Button("Save Shared Calendars") { Task { await save() } }.buttonStyle(.borderedProminent).disabled(busy || selected.isEmpty || calendars.isEmpty)
             }
         }.padding(24).frame(width: 480)
+            .mailPanelSurface()
             .task { await load() }
     }
     private func load() async {

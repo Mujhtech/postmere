@@ -67,6 +67,7 @@ struct ProviderSearchView: View {
                     .disabled(busy || query.trimmingCharacters(in: .whitespacesAndNewlines) != searchedQuery).padding(14)
             }
         }.frame(width: 620, height: 610)
+            .mailPanelSurface()
             .onAppear {
                 query = runtime.store.searchText
                 accountID = runtime.store.selectedAccount.flatMap { MailAccount(rawValue: $0) }?.remote?.accountID

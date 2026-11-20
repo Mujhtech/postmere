@@ -2,6 +2,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ComposerView: View {
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.mailboxTheme) private var theme
+    @Environment(\.mailboxInset) private var inset
     @Environment(\.postmereAccent) private var palette
     @Bindable var store: MailStore
     @Environment(\.dismissWindow) private var dismissWindow
@@ -24,6 +27,14 @@ struct ComposerView: View {
 
     private enum Field: Hashable { case recipient, cc, bcc, subject }
 
+    private var canvas: Color {
+        theme == .native ? PostmereTheme.paper : theme.colors(for: scheme).canvas
+    }
+
+    private var barStyle: AnyShapeStyle {
+        theme == .native ? AnyShapeStyle(.bar) : AnyShapeStyle(inset)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if let error = store.persistenceError {
@@ -33,7 +44,7 @@ struct ComposerView: View {
                     }.font(.caption)
                     Spacer()
                     Button("Retry", action: store.retryPersistence).controlSize(.small)
-                }.padding(12).background(.bar)
+                }.padding(12).background(barStyle)
             }
             addressFields
             if !store.draftAccount.isConnected { accountConnectionNotice }
@@ -46,8 +57,8 @@ struct ComposerView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if !store.draftAttachments.isEmpty { attachmentList }
         }
-        .background(PostmereTheme.paper)
-        .containerBackground(PostmereTheme.paper, for: .window)
+        .background(canvas)
+        .containerBackground(canvas, for: .window)
         .frame(minWidth: 640, idealWidth: 840, minHeight: 520, idealHeight: 780)
         .navigationTitle(store.draftSubject.isEmpty ? "New Message" : store.draftSubject)
         .focusedSceneValue(\.mailStore, store)
@@ -85,12 +96,14 @@ struct ComposerView: View {
                 PostmereSheetHeader("Booking links")
                 BookingLinksView(session: runtime.backend) { text in formatting.insertText(text); showsBookingLinks = false }
             }.frame(width: 650, height: 540)
+                .mailPanelSurface()
         }
         .sheet(isPresented: $showsTeamTemplates) {
             VStack(spacing: 0) {
                 PostmereSheetHeader("Team templates")
                 SharedTemplatesView(runtime: runtime)
             }.frame(width: 760, height: 570)
+                .mailPanelSurface()
         }
         .sheet(isPresented: $showsAIWriting) {
             MailAIAssistantView(runtime: runtime, mode: .draft,
@@ -241,7 +254,7 @@ struct ComposerView: View {
             Spacer(minLength: 8)
             AccountSettingsButton(title: MailAccount.allCases.isEmpty ? "Add Account" : "Manage Accounts")
                 .controlSize(.small)
-        }.padding(.horizontal, 24).padding(.vertical, 10).background(.bar)
+        }.padding(.horizontal, 24).padding(.vertical, 10).background(barStyle)
     }
 
     private var addressFields: some View {
@@ -450,7 +463,7 @@ struct ComposerView: View {
                     .font(.system(size: 12))
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .background(PostmereTheme.subtleFill, in: RoundedRectangle(cornerRadius: PostmereTheme.cardRadius))
+                    .background(inset, in: RoundedRectangle(cornerRadius: PostmereTheme.cardRadius))
                 }
             }
         }

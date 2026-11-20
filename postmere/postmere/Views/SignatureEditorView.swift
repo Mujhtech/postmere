@@ -3,6 +3,7 @@ import SwiftUI
 
 /// A compact Settings section that accepts provider-independent account keys.
 struct SignatureEditorView: View {
+    @Environment(\.mailboxInset) private var inset
     let accounts: [MailSignatureAccount]
     let preferences: MailSignatureStore
     @State private var selectedAccountID: String
@@ -44,7 +45,7 @@ struct SignatureEditorView: View {
                         .frame(height: 106)
                         .id(selectedAccountID)
                 }
-                .background(PostmereTheme.subtleFill, in: .rect(cornerRadius: PostmereTheme.cardRadius))
+                .background(inset, in: .rect(cornerRadius: PostmereTheme.cardRadius))
                 .overlay { RoundedRectangle(cornerRadius: PostmereTheme.cardRadius).strokeBorder(PostmereTheme.rule) }
                 HStack(spacing: 18) {
                     Toggle("New messages", isOn: binding(\.includeInNewMessages))

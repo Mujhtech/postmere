@@ -3,6 +3,8 @@ import SwiftUI
 /// Place below the active To/Cc/Bcc field. Selecting a row inserts only its
 /// validated email address; message subjects and private notes are never used.
 struct RecipientSuggestionsView: View {
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.mailboxTheme) private var theme
     let suggestions: [MailRecipientSuggestion]
     let onSelect: (MailRecipientSuggestion) -> Void
 
@@ -21,7 +23,7 @@ struct RecipientSuggestionsView: View {
                 }.buttonStyle(.plain).accessibilityLabel("Add \(suggestion.name.isEmpty ? suggestion.email : suggestion.name + ", " + suggestion.email)")
             }
         }
-        .background(PostmereTheme.paper, in: .rect(cornerRadius: PostmereTheme.cardRadius))
+        .background(theme == .native ? PostmereTheme.paper : theme.colors(for: scheme).canvas, in: .rect(cornerRadius: PostmereTheme.cardRadius))
         .overlay { RoundedRectangle(cornerRadius: PostmereTheme.cardRadius).strokeBorder(PostmereTheme.rule) }
     }
 }

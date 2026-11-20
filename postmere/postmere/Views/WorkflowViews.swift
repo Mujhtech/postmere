@@ -22,12 +22,54 @@ struct MailScheduleSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(purpose.title).font(PostmereTheme.sheetTitle)
-            HStack {
-                Button("In one hour") { date = .now.addingTimeInterval(3600) }
-                Button("Tomorrow") { date = tomorrow }
-                Button("Next week") { date = Calendar.current.date(byAdding: .day, value: 6, to: tomorrow) ?? tomorrow }
-            }.controlSize(.small)
-            DatePicker("Date and time", selection: $date, in: Date.now..., displayedComponents: [.date, .hourAndMinute])
+            MailScheduleEditor(purpose: purpose, usesDialogShortcuts: true, onCancel: { dismiss() }) { date, conditional in
+                onSave(date, conditional)
+                dismiss()
+            }
+        }
+        .padding(24).frame(width: 430)
+        .mailPanelSurface()
+    }
+}
+
+struct MailScheduleEditor: View {
+    let purpose: MailSchedulePurpose
+    let usesDialogShortcuts: Bool
+    let onCancel: () -> Void
+    let onSave: (Date, Bool) -> Void
+    @State private var date: Date
+    @State private var onlyIfNoReply: Bool
+
+    init(purpose: MailSchedulePurpose, initialDate: Date? = nil, onlyIfNoReply: Bool = true,
+         usesDialogShortcuts: Bool = false, onCancel: @escaping () -> Void,
+         onSave: @escaping (Date, Bool) -> Void) {
+        self.purpose = purpose
+        self.usesDialogShortcuts = usesDialogShortcuts
+        self.onCancel = onCancel
+        self.onSave = onSave
+        let now = Date.now
+        _date = State(initialValue: initialDate.flatMap { $0 > now ? $0 : nil } ?? now.addingTimeInterval(3600))
+        _onlyIfNoReply = State(initialValue: onlyIfNoReply)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ViewThatFits(in: .horizontal) {
+                HStack { presets }.fixedSize()
+                Menu("Quick dates") { presets }
+            }
+            .controlSize(.small)
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text("Date and time").accessibilityHidden(true)
+                    datePicker
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Date and time").accessibilityHidden(true)
+                    datePicker
+                }
+            }
             if purpose == .followUp || purpose == .composeFollowUp {
                 Toggle("Only if nobody replies", isOn: $onlyIfNoReply)
             }
@@ -61,7 +103,40 @@ struct PrivateNoteSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Private note").font(PostmereTheme.sheetTitle)
             Text(message.displaySubject).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-            TextEditor(text: $note).font(.system(size: 13))
+            PrivateNoteEditor(store: store, message: message, usesDialogShortcuts: true,
+                              onCancel: { dismiss() }, onSave: { dismiss() })
+        }
+        .padding(24).frame(width: 460)
+        .mailPanelSurface()
+    }
+}
+
+struct PrivateNoteEditor: View {
+    let store: MailStore
+    let message: MailMessage
+    let draft: Binding<String>?
+    let usesDialogShortcuts: Bool
+    let onCancel: () -> Void
+    let onSave: () -> Void
+    @Environment(\.mailboxInset) private var inset
+    @Environment(\.dismissReaderPanel) private var dismissReaderPanel
+    @State private var note: String
+
+    init(store: MailStore, message: MailMessage, draft: Binding<String>? = nil, usesDialogShortcuts: Bool = false,
+         onCancel: @escaping () -> Void, onSave: @escaping () -> Void) {
+        self.store = store
+        self.message = message
+        self.draft = draft
+        self.usesDialogShortcuts = usesDialogShortcuts
+        self.onCancel = onCancel
+        self.onSave = onSave
+        _note = State(initialValue: message.workflow.privateNote)
+    }
+
+    var body: some View {
+        let text = draft ?? $note
+        VStack(alignment: .leading, spacing: 14) {
+            TextEditor(text: text).font(.system(size: 13))
                 .scrollContentBackground(.hidden)
                 .frame(height: 180).accessibilityLabel("Private note")
                 .padding(8)
@@ -109,6 +184,7 @@ struct SavedInboxViewEditor: View {
                               || !MailSearchQuery(source: criteria.query, defaultField: criteria.searchField).isValid)
             }.padding(24)
         }.frame(width: 500, height: 570)
+            .mailPanelSurface()
             .onAppear {
                 name = editing?.name ?? ""
                 criteria = editing?.criteria ?? SavedInboxCriteria(query: store.searchText, account: store.selectedAccount,

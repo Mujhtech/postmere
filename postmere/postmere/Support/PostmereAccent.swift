@@ -10,6 +10,7 @@ nonisolated struct PostmereAccent: Equatable, Sendable {
     let swatch: Color
     let accent: Color
     let accentInk: Color
+    let accentInkCSS: String
     let selectionFill: Color
     let selectionInk: Color
     let selectionSecondaryInk: Color
@@ -28,7 +29,9 @@ nonisolated struct PostmereAccent: Equatable, Sendable {
 
         swatch = Color(nsColor: source.color)
         accent = Self.adaptive(lightControl, darkControl.legible(on: white, toward: black))
-        accentInk = Self.adaptive(source.legible(on: white, toward: black, ratio: 5), darkInk)
+        let lightInk = source.legible(on: white, toward: black, ratio: 5)
+        accentInk = Self.adaptive(lightInk, darkInk)
+        accentInkCSS = "light-dark(\(lightInk.css), \(darkInk.css))"
         selectionFill = Self.adaptive(
             lightControl.mixed(with: white, amount: 0.68).legible(on: lightSecondary, toward: white),
             darkInk.mixed(with: darkSurface, amount: 0.52).legible(on: darkSecondary, toward: black)
@@ -71,6 +74,10 @@ nonisolated struct PostmereAccent: Equatable, Sendable {
         }
 
         var color: NSColor { NSColor(srgbRed: r, green: g, blue: b, alpha: 1) }
+
+        var css: String {
+            "rgb(\(Int((r * 255).rounded())), \(Int((g * 255).rounded())), \(Int((b * 255).rounded())))"
+        }
 
         func mixed(with other: Self, amount: Double) -> Self {
             Self(r: r + (other.r - r) * amount, g: g + (other.g - g) * amount, b: b + (other.b - b) * amount)

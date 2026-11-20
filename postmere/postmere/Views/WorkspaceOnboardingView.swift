@@ -3,6 +3,8 @@ import AppKit
 import SwiftUI
 
 struct WorkspaceOnboardingView: View {
+    @Environment(\.mailboxTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
     @Environment(\.postmereAccent) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let session: BackendSession

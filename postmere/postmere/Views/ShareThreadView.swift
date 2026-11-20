@@ -44,13 +44,37 @@ struct ShareThreadView: View {
                 Button(existing == nil ? "Share Snapshot" : "Save Access") { Task { await save() } }
                     .buttonStyle(.borderedProminent).disabled(busy || (existing == nil && !permissions.values.contains(where: { $0 != "none" })))
             }
-        }.padding(24).frame(width: 590, height: 470)
-            .task {
-                do {
-                    let response: WorkspaceMembers = try await runtime.backend.request("GET", "/v1/workspace/members")
-                    members = response.members.filter { $0.userId != runtime.backend.credential?.userID }
-                    if let existing { permissions = Dictionary(uniqueKeysWithValues: existing.members.map { ($0.userId, $0.permission) }) }
-                } catch { self.error = error.localizedDescription }
+            .padding(.horizontal, dismissReaderPanel == nil ? 24 : 16).padding(.vertical, 10)
+        }
+        .frame(width: dismissReaderPanel == nil ? 590 : nil, height: dismissReaderPanel == nil ? 470 : nil)
+        .mailPanelSurface(isPresented: dismissReaderPanel == nil)
+        .task(id: LoadRequest(scope: runtime.backend.scope, revision: reload)) { await loadMembers() }
+    }
+
+    @ViewBuilder private var memberPermissions: some View {
+        if !runtime.backend.isConnected {
+            Text("Connect your workspace to manage sharing.").foregroundStyle(.secondary)
+            AccountSettingsButton(title: "Open Accounts Settings…")
+        } else if let members, loadedScope == runtime.backend.scope {
+            if members.isEmpty {
+                Text("No other workspace members yet.").foregroundStyle(.secondary)
+            } else {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(members) { member in
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 10) {
+                                Text(member.email).fixedSize()
+                                Spacer(minLength: 0)
+                                permissionPicker(for: member).fixedSize()
+                            }
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(member.email).lineLimit(1).truncationMode(.middle).help(member.email)
+                                permissionPicker(for: member)
+                            }
+                        }
+                    }
+                }
+                .disabled(saving)
             }
     }
 

@@ -209,6 +209,16 @@ enum PostmereSymbols {
         case "plus.rectangle.on.folder", "folder":
             d.line([3, 8, 3, 5, 9, 5, 12, 8, 21, 8, 21, 20, 3, 20, 3, 8], close: true)
             if name != "folder" { d.line([12, 11, 12, 17]); d.line([9, 14, 15, 14]) }
+        case "paintpalette":
+            d.curve(from: [12, 3], to: [3, 12], c1: [7, 3], c2: [3, 7])
+            d.curve(from: [3, 12], to: [12, 21], c1: [3, 17], c2: [7, 21])
+            d.curve(from: [12, 21], to: [14, 17], c1: [15, 21], c2: [15, 19])
+            d.curve(from: [14, 17], to: [17, 14], c1: [13, 15], c2: [14.5, 14])
+            d.curve(from: [17, 14], to: [21, 11], c1: [20, 14], c2: [21, 13])
+            d.curve(from: [21, 11], to: [12, 3], c1: [21, 6.5], c2: [17, 3])
+            d.disc(7.5, 12.5, 1.3)
+            d.disc(10, 8, 1.3)
+            d.disc(15.5, 7.5, 1.3)
         case "gearshape":
             // Four rails and offset controls make the settings mark legible at
             // sidebar sizes without a dense ring of tiny gear teeth.

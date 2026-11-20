@@ -1,4 +1,5 @@
 import AppKit
+import WebKit
 
 /// Draw only the thumb. AppKit retains the full hit area, dragging and overlay fade.
 final class PostmereScroller: NSScroller {
@@ -29,24 +30,28 @@ final class PostmereScrollbars: NSObject {
         center.addObserver(self, selector: #selector(windowOpened), name: NSWindow.didBecomeKeyNotification, object: nil)
         center.addObserver(self, selector: #selector(frameChanged), name: NSView.frameDidChangeNotification, object: nil)
         center.addObserver(self, selector: #selector(scrollViewChanged), name: NSScrollView.willStartLiveScrollNotification, object: nil)
-        for window in NSApp.windows { configure(window) }
+        for window in NSApp.windows { scheduleConfiguration(of: window) }
     }
 
     @objc private func windowOpened(_ notification: Notification) {
-        if let window = notification.object as? NSWindow { configure(window) }
+        if let window = notification.object as? NSWindow { scheduleConfiguration(of: window) }
     }
 
     @objc private func scrollViewChanged(_ notification: Notification) {
-        guard let scroll = notification.object as? NSScrollView, let window = scroll.window,
-              !(window is NSSavePanel) else { return }
-        configure(scroll)
+        if let scroll = notification.object as? NSScrollView { scheduleConfiguration(of: scroll) }
     }
 
     @objc private func frameChanged(_ notification: Notification) {
         let view = notification.object as? NSView
-        guard let scroll = view as? NSScrollView ?? (view as? NSClipView)?.enclosingScrollView,
-              !pending.contains(scroll) else { return }
-        // SwiftUI installs the platform scrollers after assigning the new frame.
+        if let scroll = view as? NSScrollView ?? (view as? NSClipView)?.enclosingScrollView {
+            scheduleConfiguration(of: scroll)
+        }
+    }
+
+    private func scheduleConfiguration(of scroll: NSScrollView) {
+        guard !pending.contains(scroll) else { return }
+        // Replacing scrollers tiles the scroll view. Frame, key-window and
+        // live-scroll notifications may arrive during an active layout pass.
         pending.add(scroll)
         DispatchQueue.main.async { [weak self, weak scroll] in
             guard let self, let scroll else { return }
@@ -55,19 +60,27 @@ final class PostmereScrollbars: NSObject {
         }
     }
 
-    private func configure(_ window: NSWindow) {
-        guard !(window is NSSavePanel), let root = window.contentView else { return }
-        func visit(_ view: NSView) {
-            if let scroll = view as? NSScrollView { configure(scroll) }
-            // A table's reusable rows don't own scrollers.
-            if view is NSTableView { return }
-            for child in view.subviews { visit(child) }
+    private func scheduleConfiguration(of window: NSWindow) {
+        guard !(window is NSSavePanel) else { return }
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let root = window?.contentView else { return }
+            @MainActor func visit(_ view: NSView) {
+                if let scroll = view as? NSScrollView { self.configure(scroll) }
+                if view is NSTableView || view is WKWebView { return }
+                for child in view.subviews { visit(child) }
+            }
+            visit(root)
         }
-        visit(root)
     }
 
     private func configure(_ scroll: NSScrollView) {
         guard !installing else { return }
+        // WebKit owns scrolling inside the message body and its layer updates.
+        var ancestor = scroll.superview
+        while let view = ancestor {
+            if view is WKWebView { return }
+            ancestor = view.superview
+        }
         installing = true
         defer { installing = false }
         var replaced = false

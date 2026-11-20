@@ -4,6 +4,11 @@ import AppKit
 final class PostmereAppDelegate: NSObject, NSApplicationDelegate {
     weak var runtime: MailRuntime?
     private let scrollbars = PostmereScrollbars()
+    private var appearanceObservation: AnyCancellable?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        appearanceObservation = MailAppearance.observe(in: .standard, application: .shared)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         scrollbars.start()

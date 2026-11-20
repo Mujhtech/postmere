@@ -80,6 +80,7 @@ struct SharedTemplatesView: View {
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack { Button("Cancel") { showsPublish = false }.keyboardShortcut(.cancelAction); Spacer(); Button("Publish") { Task { await publish() } }.buttonStyle(.borderedProminent).disabled(busy || selectedLocal == nil) }
         }.padding(24).frame(width: 570, height: 480)
+            .mailPanelSurface()
     }
 
     private func reload() async { do { let value: SharedSnippetList = try await runtime.backend.request("GET", "/v1/shared/snippets"); summaries = value.snippets } catch { self.error = error.localizedDescription } }

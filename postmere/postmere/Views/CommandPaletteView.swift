@@ -118,6 +118,7 @@ struct CommandPaletteView: View {
                 Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
             }.font(.caption).padding(12)
         }.frame(width: 540)
+            .mailPanelSurface()
             .onAppear { searchFocused = true; selection = actions.first?.id }
             .onChange(of: query) { selection = actions.first?.id }
     }

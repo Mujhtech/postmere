@@ -23,6 +23,7 @@ struct MailSearchTokenControls: View {
 }
 
 private struct SearchTokenChip: View {
+    @Environment(\.mailboxInset) private var inset
     @Environment(\.postmereAccent) private var palette
     @Bindable var store: MailStore
     let token: MailSearchToken
@@ -50,6 +51,7 @@ private struct SearchTokenChip: View {
                         Button("Apply", action: apply).buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
                     }
                 }.padding(18).frame(width: 300)
+                    .mailPanelSurface()
             }
             Button { store.removeSearchToken(token.id) } label: {
                 PostmereIcon("xmark", size: 9).frame(width: 14, height: 16)
@@ -59,7 +61,7 @@ private struct SearchTokenChip: View {
         .font(.system(size: 10, weight: .medium))
         .foregroundStyle(token.isExcluded ? Color.secondary : palette.accentInk)
         .padding(.leading, 7).padding(.trailing, 3).padding(.vertical, 3)
-        .background(PostmereTheme.subtleFill, in: .rect(cornerRadius: 5))
+        .background(inset, in: .rect(cornerRadius: 5))
         .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(PostmereTheme.rule.opacity(0.7)) }
     }
 
@@ -103,5 +105,6 @@ struct MailSearchHelp: View {
             Text("Search currently includes messages saved on this Mac.")
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(22).frame(width: 370)
+            .mailPanelSurface()
     }
 }

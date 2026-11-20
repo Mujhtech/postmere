@@ -163,7 +163,8 @@ struct CalendarEventDraftView: View {
                 }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(isSaving || validationError != nil)
             }
         }
-        .padding(24).frame(width: 570)
+        .padding(dismissReaderPanel == nil ? 24 : 16).frame(width: dismissReaderPanel == nil ? 570 : nil)
+        .mailPanelSurface(isPresented: dismissReaderPanel == nil)
         .environment(\.timeZone, timeZone)
         .onChange(of: draft.isAllDay) {
             if draft.isAllDay {
@@ -245,6 +246,7 @@ struct AvailabilityPickerView: View {
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(selectedSlots.isEmpty || isLoading)
             }
         }.padding(24).frame(width: 650, height: 590)
+            .mailPanelSurface()
         .task(id: "\(day.timeIntervalSince1970)|\(duration)|\(checkedWithCalendar)") { await load() }
         .onChange(of: service.events) { Task { await load() } }
     }

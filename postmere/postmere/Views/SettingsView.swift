@@ -3,9 +3,9 @@ import UserNotifications
 
 struct SettingsView: View {
     @Environment(\.postmereAccent) private var palette
+    @Environment(\.scenePhase) private var scenePhase
     @Bindable var store: MailStore
     @Bindable var runtime: MailRuntime
-    @Environment(\.openURL) private var openURL
     @AppStorage("markdownSubstitutions") private var markdownSubstitutions = true
     @AppStorage("undoSendDelay") private var undoSendDelay = 10.0
     @State private var selectedNotificationAccount = ""
@@ -17,13 +17,13 @@ struct SettingsView: View {
     @AppStorage("showMessagePreviews") private var showMessagePreviews = true
     @AppStorage("loadRemoteMailImagesAutomatically") private var loadRemoteMailImagesAutomatically = true
     @AppStorage("blockSenderTrackingPixels") private var blockSenderTrackingPixels = true
-    @AppStorage("appearance") private var appearance: MailAppearance = .system
-    @AppStorage(PostmereAccent.preferenceKey) private var primaryColorRGB = PostmereAccent.defaultRGB
+    @Environment(\.mailboxTheme) private var theme
     @AppStorage("defaultSendingAccount") private var defaultSendingAccount = ""
 
     var body: some View {
         TabView(selection: $settingsTab) {
             readingSettings.tabItem { PostmereLabel("General", symbol: "gearshape", size: 18) }.tag("general")
+            MailAppearanceSettings().tabItem { PostmereLabel("Appearance", symbol: "paintpalette", size: 18) }.tag("appearance")
             composingSettings.tabItem { PostmereLabel("Composing", symbol: "square.and.pencil", size: 18) }.tag("composing")
             accountSettings.tabItem { PostmereLabel("Accounts", symbol: "person.crop.circle", size: 18) }.tag("accounts")
             privacySettings.tabItem { PostmereLabel("Privacy", symbol: "shield", size: 18) }.tag("privacy")
@@ -31,8 +31,11 @@ struct SettingsView: View {
             screeningSettings.tabItem { PostmereLabel("Rules", symbol: "line.3.horizontal.decrease.circle", size: 18) }.tag("rules")
             shortcutSettings.tabItem { PostmereLabel("Shortcuts", symbol: "keyboard", size: 18) }.tag("shortcuts")
         }
+        .scrollContentBackground(theme == .native ? .automatic : .hidden)
         .padding(.top, 8)
-        .frame(width: 640, height: 590)
+        .frame(width: 720, height: 590)
+        .background { SettingsTabForeground(palette: palette, selection: settingsTab).frame(width: 0, height: 0) }
+        .mailboxWindowSurface()
         .sheet(isPresented: $showsInboxManager) { InboxManagementView(store: store) }
         .onChange(of: MailAccount.allCases.map(\.rawValue), initial: true) {
             if !MailAccount.allCases.contains(where: { $0.rawValue == selectedNotificationAccount }) {

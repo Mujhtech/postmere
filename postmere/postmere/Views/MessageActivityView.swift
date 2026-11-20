@@ -122,6 +122,7 @@ private struct MessageActivityView: View {
         }
         .scrollBounceBehavior(.basedOnSize)
         .frame(width: 360, height: min(contentHeight, 396))
+        .mailPanelSurface()
         .foregroundStyle(Color.primary)
         .task(id: refreshRevision) { await refresh() }
     }

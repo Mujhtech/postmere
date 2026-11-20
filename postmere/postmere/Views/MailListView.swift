@@ -3,6 +3,8 @@ import SwiftUI
 struct MailListView: View {
     @Bindable var store: MailStore
     @Environment(MailRuntime.self) private var runtime
+    @Environment(\.mailboxTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
     @Environment(\.postmereAccent) private var accent
     var listFocusRequest = 0
     @FocusState private var isListFocused: Bool
@@ -111,6 +113,7 @@ struct MailListView: View {
                         messageActions(message)
                     }
                 }
+                .background { MessageMenuAccent(accent: accent).accessibilityHidden(true) }
                 .focused($isListFocused)
                 .accessibilityLabel("Messages in \(searchLocation)")
                 .onDeleteCommand {

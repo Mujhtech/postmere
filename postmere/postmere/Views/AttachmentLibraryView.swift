@@ -81,6 +81,7 @@ struct AttachmentLibraryView: View {
                 }.listStyle(.inset)
             }
         }.frame(width: 720, height: 510)
+            .mailPanelSurface()
             .sheet(item: $preview) { AttachmentPreviewSheet(attachment: $0) }
             .alert("Couldn’t open attachment", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("OK") { error = nil }

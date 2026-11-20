@@ -51,6 +51,37 @@ private final class ComposeCheckRig {
 func runComposerFeatureChecks() throws {
     _ = NSApplication.shared
     do {
+        let suite = "Postmere-Compose-Appearance-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let original = NSApp.appearance
+        let observation = MailAppearance.observe(in: defaults, application: NSApp)
+        defer {
+            observation.cancel()
+            NSApp.appearance = original
+            defaults.removePersistentDomain(forName: suite)
+        }
+        let inherited = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+        let rig = ComposeCheckRig()
+        rig.type("Draft in progress")
+        let selection = NSRange(location: 0, length: 5)
+        rig.editor.setSelectedRange(selection)
+        for mode in [MailAppearance.light, .dark, .system, .dark, .light, .system] {
+            defaults.set(mode.rawValue, forKey: MailAppearance.preferenceKey)
+            let override: NSAppearance.Name? = switch mode {
+            case .system: nil
+            case .light: .aqua
+            case .dark: .darkAqua
+            }
+            let deadline = Date().addingTimeInterval(2)
+            while NSApp.appearance?.name != override && Date() < deadline { rig.settle() }
+            precondition(NSApp.appearance?.name == override)
+            precondition(rig.window.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == (override ?? inherited))
+            precondition(rig.draft.text == "Draft in progress" && rig.editor.selectedRange() == selection)
+            precondition(rig.window.firstResponder === rig.editor)
+        }
+        print("PASS: switching appearance updates an open compose window and preserves its draft, selection, and focus")
+    }
+    do {
         let rig = ComposeCheckRig()
         rig.type("Original **bold** reply")
         let originalText = rig.editor.string

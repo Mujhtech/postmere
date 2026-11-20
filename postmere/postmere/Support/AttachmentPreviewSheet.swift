@@ -49,6 +49,7 @@ struct AttachmentPreviewSheet: View {
             }
         }
         .frame(width: 600, height: 480)
+        .mailPanelSurface()
     }
 
     private func isPDF(_ url: URL) -> Bool {

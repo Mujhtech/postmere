@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.mailboxTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
     @Bindable var store: MailStore
     @Environment(\.openWindow) private var openWindow
     @Environment(MailRuntime.self) private var runtime
@@ -55,7 +57,8 @@ struct ContentView: View {
                     ReaderView(store: store, compactToolbar: isCompact)
                 }
             }
-            .frame(minWidth: 300)
+            .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
+            .background(theme == .native ? Color.clear : theme.colors(for: scheme).canvas)
             .toolbar {
                 if !store.hasMessageSelection && !store.isSearchActive {
                     // Keep the toolbar divider aligned with the list when the reader has no actions.
@@ -112,6 +115,7 @@ struct ContentView: View {
 
     var body: some View {
         searchableMailbox
+        .mailboxWindowSurface()
         .onGeometryChange(for: Bool.self) { geometry in
             geometry.size.width < 960
         } action: { compact in

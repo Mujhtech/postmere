@@ -131,6 +131,7 @@ struct UnsubscribeView: View {
         }
         .padding(24)
         .frame(width: 500, height: 530)
+        .mailPanelSurface()
         .onDisappear { operation?.cancel() }
         .task {
             guard let session, let id = message.backendMessageID, message.mailAccount.remote?.scope == session.scope else { return }

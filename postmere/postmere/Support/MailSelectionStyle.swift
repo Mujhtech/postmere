@@ -2,8 +2,10 @@ import AppKit
 import SwiftUI
 
 extension View {
-    func mailSelection(_ selected: Bool, joinsAbove: Bool = false, joinsBelow: Bool = false) -> some View {
-        modifier(MailSelectionStyle(selected: selected, joinsAbove: joinsAbove, joinsBelow: joinsBelow))
+    func mailSelection(_ selected: Bool, joinsAbove: Bool = false, joinsBelow: Bool = false,
+                       horizontalInset: CGFloat = 6) -> some View {
+        modifier(MailSelectionStyle(selected: selected, joinsAbove: joinsAbove, joinsBelow: joinsBelow,
+                                    horizontalInset: horizontalInset))
     }
 }
 
@@ -11,6 +13,7 @@ private struct MailSelectionStyle: ViewModifier {
     let selected: Bool
     let joinsAbove: Bool
     let joinsBelow: Bool
+    let horizontalInset: CGFloat
     @Environment(\.postmereAccent) private var accent
     @Environment(\.appearsActive) private var active
     @Environment(\.colorSchemeContrast) private var contrast
@@ -34,7 +37,7 @@ private struct MailSelectionStyle: ViewModifier {
                     shape.strokeBorder(accent.selectionSecondaryInk, lineWidth: 1)
                 }
             }
-            .padding(.horizontal, 6)
+            .padding(.horizontal, horizontalInset)
             .background { MailSelectionTableConfiguration().frame(width: 0, height: 0) }
             .accessibilityHidden(true)
     }
@@ -55,7 +58,13 @@ private struct MailSelectionTableConfiguration: NSViewRepresentable {
             var ancestor = superview
             while let view = ancestor {
                 if let table = view as? NSTableView {
-                    if table.selectionHighlightStyle != .none { table.selectionHighlightStyle = .none }
+                    guard table.selectionHighlightStyle != .none else { return }
+                    // Changing a table style can invalidate its hosted rows. Wait for
+                    // SwiftUI to finish the update that installed this background.
+                    DispatchQueue.main.async { [weak table] in
+                        guard let table, table.selectionHighlightStyle != .none else { return }
+                        table.selectionHighlightStyle = .none
+                    }
                     return
                 }
                 ancestor = view.superview

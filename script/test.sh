@@ -29,7 +29,7 @@ backend_models=("${mail_models[@]}" Models/BackendMail.swift)
 store_sources=("${backend_models[@]}" Models/MailSearchQuery.swift Models/InboxSplit.swift
               Models/SampleMail.swift Stores/*.swift Support/ComposeAttachments.swift
               Support/MailTemplate.swift Support/MailSignature.swift Support/MailSenderContext.swift)
-theme=(Support/PostmereAccent.swift Support/PostmereTheme.swift Support/PostmereIcon.swift)
+theme=(Support/MailboxTheme.swift Support/PostmereAccent.swift Support/PostmereTheme.swift Support/PostmereIcon.swift)
 attachment_views=(Support/AttachmentFileType.swift Support/AttachmentIconView.swift)
 editor_sources=("${mail_models[@]}" "${theme[@]}" Support/MailTemplate.swift
                 Support/MarkdownSubstitutions.swift Support/ComposeContinuityCamera.swift

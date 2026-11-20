@@ -54,7 +54,8 @@ struct MailAIAssistantView: View {
                         .buttonStyle(.borderedProminent).disabled(onApplyText == nil || busy)
                 }.padding(18)
             }
-        }.frame(width: 640, height: 650)
+        }.frame(width: dismissReaderPanel == nil ? 640 : nil, height: dismissReaderPanel == nil ? 650 : nil)
+            .mailPanelSurface(isPresented: dismissReaderPanel == nil)
             .task {
                 guard runtime.backend.isConnected else { return }
                 do { settings = try await runtime.backend.request("GET", "/v1/ai/settings") }

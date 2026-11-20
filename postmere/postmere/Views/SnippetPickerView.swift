@@ -68,6 +68,7 @@ struct SnippetPickerView: View {
             }
         }
         .frame(width: 760, height: 580)
+        .mailPanelSurface()
         .onChange(of: filteredSnippets.map(\.id), initial: true) { _, visibleIDs in
             if selection.map(visibleIDs.contains) != true { selection = visibleIDs.first }
         }
@@ -244,6 +245,7 @@ private struct TemplateFieldsPreview: View {
 }
 
 private struct SnippetEditorView: View {
+    @Environment(\.mailboxInset) private var inset
     let onImportAttachments: (([URL]) throws -> [MailAttachment])?
     let onSave: (MailSnippet) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -311,7 +313,7 @@ private struct SnippetEditorView: View {
                                   fieldLabel: draft.isTemplate ? "Template message" : "Snippet text")
                     .frame(minHeight: 160, maxHeight: .infinity)
             }
-            .background(PostmereTheme.subtleFill, in: .rect(cornerRadius: PostmereTheme.cardRadius))
+            .background(inset, in: .rect(cornerRadius: PostmereTheme.cardRadius))
             .overlay { RoundedRectangle(cornerRadius: PostmereTheme.cardRadius).strokeBorder(PostmereTheme.rule) }
             if draft.isTemplate {
                 attachmentEditor
@@ -329,6 +331,7 @@ private struct SnippetEditorView: View {
             }
         }
         .padding(24).frame(width: 660, height: draft.isTemplate ? 650 : 430)
+        .mailPanelSurface()
         .fileImporter(isPresented: $showsImporter, allowedContentTypes: [.data, .content], allowsMultipleSelection: true) { result in
             do {
                 let urls = try result.get()
@@ -368,7 +371,7 @@ private struct SnippetEditorView: View {
                                 Text(attachment.name).font(.system(size: 12)).lineLimit(1).frame(maxWidth: 180)
                                 Button { draft.attachments.removeAll { $0.id == attachment.id } } label: { PostmereIcon("xmark", size: 10) }
                                     .buttonStyle(.borderless).accessibilityLabel("Remove \(attachment.name)")
-                            }.padding(6).background(PostmereTheme.subtleFill, in: .rect(cornerRadius: 6))
+                            }.padding(6).background(inset, in: .rect(cornerRadius: 6))
                         }
                     }
                 }

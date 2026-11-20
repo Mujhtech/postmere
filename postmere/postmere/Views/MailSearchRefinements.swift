@@ -137,6 +137,7 @@ struct MailSearchRefinements: View {
                 }
                 .padding(16)
                 .frame(width: 330)
+                .mailPanelSurface()
             case .help:
                 MailSearchHelp { store.updateSearchText($0) }
             }
@@ -210,6 +211,7 @@ private struct SearchSenderPicker: View {
         }
         .padding(14)
         .frame(width: 265)
+        .mailPanelSurface()
         .onAppear { focused = true }
     }
 }

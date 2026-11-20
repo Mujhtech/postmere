@@ -59,6 +59,7 @@ struct InboxManagementView: View {
             if section == 0 { splitSettings } else { vipSettings }
         }
         .frame(width: 640, height: 560)
+        .mailPanelSurface()
         .sheet(item: $editingSplit) { split in
             InboxSplitEditor(store: store, split: split)
         }
@@ -191,6 +192,7 @@ private struct InboxSplitEditor: View {
                 }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(!isValid)
             }.padding(24)
         }.frame(width: 500, height: 570)
+            .mailPanelSurface()
     }
 }
 

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SharedThreadView: View {
+    @Environment(\.mailboxInset) private var inset
     @Environment(\.postmereAccent) private var palette
     let runtime: MailRuntime
     let threadID: UUID
@@ -45,7 +46,7 @@ struct SharedThreadView: View {
                                     ForEach(message.attachments) { Text($0.filename).font(.caption).foregroundStyle(.secondary) }
                                 }
                             }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                                .background(PostmereTheme.subtleFill, in: .rect(cornerRadius: PostmereTheme.cardRadius))
+                                .background(inset, in: .rect(cornerRadius: PostmereTheme.cardRadius))
                         }
                         if detail.thread.permission != "view" {
                             Menu("Compose Reply from My Account") {

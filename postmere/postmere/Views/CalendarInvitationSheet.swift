@@ -11,6 +11,7 @@ struct CalendarInvitationSheet: View {
             CalendarInvitationView(invitation: invitation, onAddLocalEvent: { draft = $0 }, onRespond: session?.invitationResponse(for: invitation, account: account))
                 .padding(.horizontal, 24).padding(.bottom, 24)
         }.frame(width: 620)
+            .mailPanelSurface()
             .sheet(item: $draft) { CalendarEventDraftView(draft: $0) }
     }
 }

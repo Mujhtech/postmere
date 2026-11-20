@@ -1,11 +1,13 @@
 import SwiftUI
 import AppKit
+import Combine
 
 enum PostmereTheme {
     static let paper = adaptive(light: 0xFDFCF8, dark: 0x1E211F)
     static let ink = Color.primary
     static let secondary = Color.secondary
     static let icon = Color.secondary
+    static let destructiveInk = adaptive(light: 0x98332F, dark: 0xFFAAA1)
     static let subtleFill = adaptive(light: 0xF1F0EB, dark: 0x282C29)
     // Native selection can brighten label text. Keep each monogram on its own
     // opaque surface so it stays readable in a selected row and the reader.
@@ -30,14 +32,39 @@ extension View {
     func postmereStyle() -> some View {
         modifier(PostmereStyle())
     }
+
+    func mailboxWindowSurface() -> some View {
+        modifier(MailboxWindowSurface())
+    }
+}
+
+private struct MailboxWindowSurface: ViewModifier {
+    @Environment(\.mailboxTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                if theme != .native {
+                    Color.clear.containerBackground(theme.colors(for: scheme).canvas, for: .window)
+                }
+            }
+            .toolbarBackgroundVisibility(theme == .native ? .automatic : .hidden, for: .windowToolbar)
+    }
 }
 
 private struct PostmereStyle: ViewModifier {
+    @Environment(\.colorScheme) private var scheme
+    @AppStorage(MailboxTheme.lightPreference) private var light: MailboxTheme = .native
+    @AppStorage(MailboxTheme.darkPreference) private var dark: MailboxTheme = .native
     @AppStorage(PostmereAccent.preferenceKey) private var rgb = PostmereAccent.defaultRGB
 
     func body(content: Content) -> some View {
         let palette = PostmereAccent(rgb: rgb)
-        content.environment(\.postmereAccent, palette)
+        let theme = scheme == .dark ? dark : light
+        content.environment(\.mailboxTheme, theme)
+            .environment(\.mailboxInset, theme == .native ? PostmereTheme.subtleFill : theme.colors(for: scheme).inset)
+            .environment(\.postmereAccent, palette)
             .tint(palette.accent)
             .symbolRenderingMode(.monochrome)
     }
@@ -83,9 +110,31 @@ struct PostmereSheetHeader<Accessory: View>: View {
 enum MailAppearance: String, CaseIterable {
     case system, light, dark
 
+    static let preferenceKey = "appearance"
+
+    // AppKit owns the override so every window, native toolbar, and presented
+    // panel inherits it. Clearing the override resumes live system changes.
+    @MainActor
+    static func observe(in defaults: UserDefaults, application: NSApplication) -> AnyCancellable {
+        func applyPreference() {
+            let mode = defaults.string(forKey: preferenceKey).flatMap(Self.init(rawValue:)) ?? .system
+            let name: NSAppearance.Name? = switch mode {
+            case .system: nil
+            case .light: .aqua
+            case .dark: .darkAqua
+            }
+            guard application.appearance?.name != name else { return }
+            application.appearance = name.flatMap(NSAppearance.init(named:))
+        }
+        applyPreference()
+        return NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: defaults)
+            .receive(on: DispatchQueue.main)
+            .sink { _ in applyPreference() }
+    }
+
     var title: String {
         switch self {
-        case .system: "System"
+        case .system: "Match Mac"
         case .light: "Light"
         case .dark: "Dark"
         }

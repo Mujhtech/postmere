@@ -3,7 +3,6 @@ import SwiftUI
 @main
 struct postmereApp: App {
     @NSApplicationDelegateAdaptor(PostmereAppDelegate.self) private var appDelegate
-    @AppStorage("appearance") private var appearance: MailAppearance = .system
     @State private var runtime: MailRuntime
 
     init() {
@@ -19,7 +18,13 @@ struct postmereApp: App {
             WorkspaceSceneGate(runtime: runtime, offersInboxSetup: true) {
                 ContentView(store: store)
             }
-                .preferredColorScheme(appearance.colorScheme)
+                .onOpenURL { url in
+                    guard url.scheme?.lowercased() == "mailto" else { return }
+                    if !runtime.mailLinks.receive(url, verifiedScope: runtime.backend.canAccessWorkspace ? runtime.backend.scope : nil) {
+                        store.operationError = "Postmere couldn’t read this email link."
+                    }
+                }
+                .handlesExternalEvents(preferring: ["mailto:"], allowing: ["mailto:"])
                 .postmereStyle()
         }
         .handlesExternalEvents(matching: ["mailto:"])
@@ -31,7 +36,6 @@ struct postmereApp: App {
             WorkspaceSceneGate(runtime: runtime, isComposer: true) {
                 ComposerView(store: store)
             }
-                .preferredColorScheme(appearance.colorScheme)
                 .postmereStyle()
         }
         .defaultSize(width: 840, height: 780)
@@ -44,7 +48,6 @@ struct postmereApp: App {
             WorkspaceSceneGate(runtime: runtime) {
                 SettingsView(store: store, runtime: runtime)
             }
-                .preferredColorScheme(appearance.colorScheme)
                 .postmereStyle()
         }
     }
@@ -81,6 +84,7 @@ private struct WorkspaceSceneGate<Content: View>: View {
                         Text("Your unfinished draft is still held on this Mac. Sign in to its original workspace to resume and save it.")
                     }
                         .frame(minWidth: 540, minHeight: 520)
+                        .mailboxWindowSurface()
                 } else {
                     content().id(runtime.backend.scope)
                 }
