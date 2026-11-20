@@ -358,8 +358,16 @@ Responses include source metadata and only validated source UUIDs. Structured
 outputs are bounded, generated suggestions have no direct write authority, and
 no arbitrary model tools or URLs are executed.
 
-Only selected/retrieved message text, user instructions, and the style guide
-are sent to OpenAI. Attachments and private notes are excluded. Requests use
+For an inline summary, send `Accept: text/event-stream` with the same
+`POST /v1/ai/summary` request. Each SSE data field is JSON. A `delta` event
+contains the next piece of prose in `text`. The terminal `done` event carries
+the complete summary and validated citations in `result`. A terminal `error`
+carries a public error `code`. A stream that ends before either terminal event
+is incomplete. Clients requesting JSON receive the complete result in one response.
+
+For mail assistance, only selected/retrieved message text, user instructions,
+and the style guide are sent to OpenAI. Public sender research instead uses the
+sender's name and address in a separate web-enabled request. Attachments and private notes are excluded. Requests use
 `store:false`; this does not promise zero provider abuse-monitoring retention.
 Review the provider's data policy for the deployment's account. Missing setup,
 invalid model output, unauthorized sources, and rate limits fail explicitly.

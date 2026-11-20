@@ -42,11 +42,10 @@ nonisolated struct MailAIDraftInput: Encodable, Sendable {
 nonisolated struct MailAIAskInput: Encodable, Sendable { let question: String; let accountIds: [UUID] }
 
 enum MailAIMode: String, Identifiable {
-    case summary, draft, suggestions, ask
+    case draft, suggestions, ask
     var id: Self { self }
     var title: String {
         switch self {
-        case .summary: "Summarize conversation"
         case .draft: "Writing assistant"
         case .suggestions: "Suggested next steps"
         case .ask: "Ask your mail"

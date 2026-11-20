@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct MailAIAssistantView: View {
+    @Environment(\.mailboxInset) private var inset
     @Environment(\.postmereAccent) private var palette
     let runtime: MailRuntime
     let mode: MailAIMode
@@ -37,6 +38,8 @@ struct MailAIAssistantView: View {
                         inputs
                         if let result { output(result) }
                         else { Text("AI suggestions can be wrong. Review the result and its source messages before using it.").font(.caption).foregroundStyle(.secondary) }
+                    } else if error == nil {
+                        ProgressView("Loading AI settings…").controlSize(.small)
                     }
                     if busy { ProgressView("Working…").controlSize(.small) }
                     if let error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
@@ -47,7 +50,7 @@ struct MailAIAssistantView: View {
                 HStack {
                     Text("Replaces the draft body. You can undo this change.").font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Use in Draft") { onApplyText?(result.text); dismiss() }
+                    Button("Use in Draft") { onApplyText?(result.text); close() }
                         .buttonStyle(.borderedProminent).disabled(onApplyText == nil || busy)
                 }.padding(18)
             }
@@ -85,7 +88,7 @@ struct MailAIAssistantView: View {
         }
         Button(result == nil ? "Generate" : "Generate Again") { Task { await generate() } }
             .buttonStyle(.borderedProminent).disabled(busy || (mode == .ask && question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                || ((mode == .summary || mode == .suggestions) && sourceIDs.isEmpty))
+                || (mode == .suggestions && sourceIDs.isEmpty))
     }
 
     private func output(_ result: MailAIResult) -> some View {
@@ -107,7 +110,7 @@ struct MailAIAssistantView: View {
                             .disabled(applied.contains(index) || (action == "follow_up" && item.dueAt == nil))
                     }
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(PostmereTheme.subtleFill, in: .rect(cornerRadius: PostmereTheme.cardRadius))
+                    .background(inset, in: .rect(cornerRadius: PostmereTheme.cardRadius))
             }
             if undoAction != nil { Button("Undo Last Suggestion") { undoAction?(); undoAction = nil; applied = [] } }
             Text(result.scope).font(.caption).foregroundStyle(.secondary)
@@ -125,7 +128,7 @@ struct MailAIAssistantView: View {
         defer { busy = false }
         do {
             switch mode {
-            case .summary, .suggestions:
+            case .suggestions:
                 result = try await runtime.backend.request("POST", "/v1/ai/\(mode.rawValue)", body: MailAISourceInput(messageIds: sourceIDs))
             case .draft:
                 result = try await runtime.backend.request("POST", "/v1/ai/draft", body: MailAIDraftInput(messageIds: sourceIDs, draftText: draftText, instruction: instruction, notes: notes))
@@ -142,7 +145,7 @@ struct MailAIAssistantView: View {
             runtime.store.selectedInboxSplitID = nil
             runtime.store.selectedMailbox = message.mailbox
             runtime.store.select(message)
-            dismiss()
+            close()
         } catch { self.error = error.localizedDescription }
     }
     private func actionTitle(_ action: String) -> String {

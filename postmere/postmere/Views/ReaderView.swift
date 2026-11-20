@@ -721,6 +721,38 @@ struct ReaderView: View {
         return message
     }
 
+    private func summarizeConversation() {
+        guard let message = syncedToolbarMessage else { return }
+        let session = runtime.backend
+        var sourceIDs: [UUID] = []
+        if let scope = session.scope, message.mailAccount.remote?.scope == scope,
+           let selectedID = message.backendMessageID {
+            // The API accepts 30 sources. Prefer recent mail and always include the
+            // message the reader is on, even in a conversation longer than that.
+            var seen: Set<UUID> = []
+            for entry in store.selectedConversation.reversed() {
+                guard entry.mailAccount.remote?.scope == scope,
+                      let id = entry.backendMessageID, seen.insert(id).inserted else { continue }
+                sourceIDs.append(id)
+                if sourceIDs.count == 30 { break }
+            }
+            if !seen.contains(selectedID) {
+                if sourceIDs.count == 30 { sourceIDs.removeLast() }
+                sourceIDs.append(selectedID)
+            }
+            sourceIDs.reverse()
+        }
+        if let current = summaryTarget, current.messageID == message.id,
+           current.sessionID == session.realtimeGeneration, current.sourceIDs == sourceIDs {
+            if case .failed = current.phase { current.start() }
+        } else {
+            summaryTarget = MailConversationSummary(messageID: message.id, sessionID: session.realtimeGeneration, sourceIDs: sourceIDs)
+        }
+        isSummaryExpanded = true
+        summarySourceAnchor = nil
+        readingPosition.scrollTo(edge: .top)
+    }
+
     private var returnsToInbox: Bool {
         guard let message = store.selectedMessage else { return false }
         return message.mailbox == .archive || message.mailbox == .trash

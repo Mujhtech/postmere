@@ -578,6 +578,24 @@ final class BackendSession {
         } catch { await invalidateExpiredSession(error, generation: requestGeneration); throw error }
     }
 
+    func summarize(messageIDs: [UUID], onDelta: @MainActor @Sendable (String) throws -> Void) async throws -> MailAIResult {
+        guard let requestGeneration = realtimeGeneration, let credential, let transport else { throw BackendError.notConnected }
+        let stream = BackendSummaryStream(baseURL: transport.baseURL, configuration: configuration)
+        do {
+            let result = try await stream.generate(messageIDs: messageIDs, token: credential.token) { text in
+                guard !Task.isCancelled, self.realtimeGeneration == requestGeneration else { throw CancellationError() }
+                try onDelta(text)
+            }
+            try Task.checkCancellation()
+            guard realtimeGeneration == requestGeneration else { throw BackendError.notConnected }
+            return result
+        } catch {
+            await invalidateExpiredSession(error, generation: requestGeneration)
+            if let error = error as? URLError, error.code == .timedOut { throw BackendAIError.timeout }
+            throw error
+        }
+    }
+
     func receiveEvents(lastEventID: String?,
                        receive: @escaping @MainActor @Sendable (BackendServerEvent) throws -> Void) async throws {
         guard canAccessWorkspace, let credential else { throw BackendError.notConnected }

@@ -18,6 +18,39 @@ nonisolated enum BackendError: LocalizedError, Sendable {
 
 nonisolated struct BackendEmpty: Codable, Sendable {}
 
+nonisolated enum BackendAIError: String, LocalizedError {
+    case notConfigured = "ai_not_configured"
+    case credentials = "ai_provider_auth"
+    case request = "ai_provider_request"
+    case busy = "ai_provider_busy"
+    case unavailable = "ai_provider_unavailable"
+    case timeout = "ai_timeout"
+    case incomplete = "ai_incomplete"
+    case invalidOutput = "ai_invalid_output"
+    case refused = "ai_refused"
+
+    var errorDescription: String? {
+        switch self {
+        case .notConfigured: "Your workspace administrator needs to configure an AI provider."
+        case .credentials: "The AI provider denied access. Ask your workspace administrator to check the API key and model access."
+        case .request: "The AI provider rejected the request. Ask your administrator to check the configured model."
+        case .busy: "The AI provider reached a usage limit. Try again later."
+        case .unavailable: "AI assistance is temporarily unavailable. Try again shortly."
+        case .timeout: "The AI provider took too long to respond. Try again."
+        case .incomplete: "The response ended before it was complete. Try again."
+        case .invalidOutput: "Postmere couldn’t read the AI response. Try again."
+        case .refused: "The AI provider declined this request."
+        }
+    }
+
+    var canRetry: Bool {
+        switch self {
+        case .notConfigured, .credentials, .request, .refused: false
+        default: true
+        }
+    }
+}
+
 nonisolated struct BackendHTTPClient: Sendable {
     let baseURL: URL
     private let session: URLSession
@@ -82,6 +115,7 @@ nonisolated struct BackendHTTPClient: Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.httpBody = body
+        if method == "POST", Self.isAIRequest(path) { request.timeoutInterval = 115 }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }

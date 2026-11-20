@@ -40,6 +40,8 @@ nonisolated struct BackendServerEvent: Sendable, Equatable {
 nonisolated struct BackendEventParser {
     static let maximumLineBytes = 8 * 1024
     static let maximumEventBytes = 32 * 1024
+    private let lineLimit: Int
+    private let eventLimit: Int
     private var line = Data()
     private var eventBytes = 0
     private var eventName = "message"
@@ -47,6 +49,11 @@ nonisolated struct BackendEventParser {
     private var dataLines: [String] = []
     private var wasCR = false
     private var firstLine = true
+
+    init(lineLimit: Int = Self.maximumLineBytes, eventLimit: Int = Self.maximumEventBytes) {
+        self.lineLimit = lineLimit
+        self.eventLimit = eventLimit
+    }
 
     mutating func append(_ byte: UInt8) throws -> BackendServerEvent? {
         if wasCR {
@@ -57,7 +64,7 @@ nonisolated struct BackendEventParser {
             wasCR = byte == 13
             return try finishLine()
         }
-        guard line.count < Self.maximumLineBytes, eventBytes < Self.maximumEventBytes else { throw BackendError.tooLarge }
+        guard line.count < lineLimit, eventBytes < eventLimit else { throw BackendError.tooLarge }
         line.append(byte)
         eventBytes += 1
         return nil

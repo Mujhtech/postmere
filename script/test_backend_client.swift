@@ -47,6 +47,11 @@ nonisolated struct BackendFixtureFailure: Error, CustomStringConvertible {
     let description: String
 }
 
+// URLProtocol starts delivery off the main actor. The test resumes it once after receiving the first delta.
+nonisolated struct BackendStreamHandle: @unchecked Sendable {
+    let fixture: BackendFixtureProtocol
+}
+
 @main
 struct BackendClientFixtures {
     @MainActor static var failures: [String] = []
@@ -194,6 +199,82 @@ struct BackendClientFixtures {
         try await Task.sleep(for: .milliseconds(50))
         _ = reset { _, fixture in fixture.response(200, body: Data(repeating: 65, count: 40 * 1024 * 1024 + 1)) }
         await error("Streaming response size", matches: { if case BackendError.tooLarge = $0 { return true }; return false }) { _ = try await transport.raw("GET", "/v1/mail/messages") }
+    }
+
+    static func summaryFixtures() async throws {
+        let stream = BackendSummaryStream(baseURL: URL(string: "https://postmere.example.com")!,
+                                          configuration: configuration(ambient: true))
+        let json = """
+            {"text":"Meeting moved to Friday.","items":[{"kind":"date","text":"Friday","source_ids":["\(accountID)"],"action":null,"message_id":null,"due_at":null}],"sources":[{"id":"\(accountID)","account_id":"\(accountID)","subject":"Update","sender":"Ada","sent_at":"2026-11-20T06:30:00Z"}],"scope":"Selected messages","generated_at":"2026-11-20T06:30:00.123456789Z","model":"fixture"}
+            """
+        let fixtureStream = AsyncStream.makeStream(of: BackendStreamHandle.self)
+        let recorder = reset { _, fixture in
+            fixture.response(200, headers: ["Content-Type":"text/event-stream"],
+                             body: Data("data: {\"type\":\"delta\",\"text\":\"Meeting moved\"}\r\n\r\n".utf8), finish: false)
+            fixtureStream.continuation.yield(BackendStreamHandle(fixture: fixture))
+            fixtureStream.continuation.finish()
+        }
+        var chunks: [String] = []
+        let task = Task {
+            try await stream.generate(messageIDs: [accountID], token: "fixture") { chunks.append($0) }
+        }
+        for await handle in fixtureStream.stream {
+            let fixture = handle.fixture
+            for _ in 0..<200 where chunks.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+            check(chunks == ["Meeting moved"], "First chunk must appear before the result is available")
+            let second = Data("data: {\"type\":\"delta\",\"text\":\" to Friday.\"}\n\ndata: {\"type\":\"done\",\"result\":\(json)}\n\n".utf8)
+            fixture.client?.urlProtocol(fixture, didLoad: second.prefix(7))
+            fixture.client?.urlProtocol(fixture, didLoad: second.dropFirst(7))
+            fixture.client?.urlProtocolDidFinishLoading(fixture)
+        }
+        let result = try await task.value
+        let request = recorder.last!
+        check(recorder.count == 1 && request.httpMethod == "POST" && request.url?.path == "/v1/ai/summary", "Stream must use a single generation request")
+        check(request.value(forHTTPHeaderField: "Accept") == "text/event-stream" && request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture", "Stream headers")
+        check(request.value(forHTTPHeaderField: "Cookie") == nil && request.value(forHTTPHeaderField: "X-Ambient") == nil, "Stream included ambient headers")
+        check(chunks.joined() == result.text && result.items.first?.sourceIds == [accountID] && result.sources.first?.id == accountID, "Completed summary and citations")
+
+        let openRequest = reset { _, fixture in
+            fixture.response(200, headers: ["Content-Type": "text/event-stream"],
+                             body: Data("data: {\"type\":\"delta\",\"text\":\"Pending\"}\n\n".utf8), finish: false)
+        }
+        var receivedPartial = false
+        let pending = Task {
+            try await stream.generate(messageIDs: [accountID], token: "fixture") { _ in receivedPartial = true }
+        }
+        for _ in 0..<200 where !receivedPartial { try await Task.sleep(for: .milliseconds(5)) }
+        check(receivedPartial, "Expected a partial summary before cancellation")
+        pending.cancel()
+        switch await pending.result {
+        case .success: failures.append("Cancelled stream produced a finished summary")
+        case .failure: break
+        }
+        for _ in 0..<200 where openRequest.stopCount == 0 { try await Task.sleep(for: .milliseconds(5)) }
+        check(openRequest.stopCount > 0 && openRequest.count == 1, "Cancelling must close the active request without resubmitting")
+
+        let legacy = reset { _, fixture in
+            fixture.response(200, headers: ["Content-Type": "application/json"], body: Data(json.utf8))
+        }
+        let oldResult = try await stream.generate(messageIDs: [accountID], token: "fixture") { _ in failures.append("Legacy JSON emitted a synthetic delta") }
+        check(legacy.count == 1 && oldResult.text == result.text, "Legacy JSON must complete without resubmitting")
+
+        _ = reset { _, fixture in fixture.response(200, headers: ["Content-Type":"text/event-stream"],
+             body: Data("data: {\"type\":\"delta\",\"text\":\"Partial\"}\n\n".utf8)) }
+        await error("Stream closed before done", matches: { $0 as? BackendAIError == .incomplete }) {
+            _ = try await stream.generate(messageIDs: [accountID], token: "fixture") { _ in }
+        }
+        _ = reset { _, fixture in fixture.response(200, headers: ["Content-Type":"text/event-stream"],
+             body: Data("data: {\"type\":\"error\",\"code\":\"ai_invalid_output\",\"message\":\"private data\"}\n\n".utf8)) }
+        await error("Server validation failure", matches: { $0 as? BackendAIError == .invalidOutput && !$0.localizedDescription.contains("private data") }) {
+            _ = try await stream.generate(messageIDs: [accountID], token: "fixture") { _ in }
+        }
+        for (status, code, expected) in [(503,"unavailable",BackendAIError.unavailable), (504,"ai_timeout",.timeout), (502,"ai_provider_auth",.credentials)] {
+            _ = reset { _, fixture in fixture.response(status,
+                 body: Data("{\"error\":{\"code\":\"\(code)\",\"message\":\"private data\"}}".utf8)) }
+            await error("AI failure \(code)", matches: { $0 as? BackendAIError == expected }) {
+                _ = try await stream.generate(messageIDs: [accountID], token: "fixture") { _ in }
+            }
+        }
     }
 }
 
