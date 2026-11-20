@@ -3,6 +3,7 @@ import Foundation
 nonisolated struct MailAISettings: Codable, Sendable {
     var enabled: Bool
     let available: Bool
+    let decisionAvailable: Bool?
     let provider: String
     let model: String
     var styleGuide: String

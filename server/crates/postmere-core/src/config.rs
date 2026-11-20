@@ -27,6 +27,41 @@ pub struct Config {
     pub microsoft_tenant: String,
     pub ai_api_key: Option<String>,
     pub ai_model: String,
+    pub decision_adapter: Option<DecisionAdapter>,
+}
+
+#[derive(Clone)]
+pub struct DecisionAdapter {
+    pub url: Url,
+    pub token: Zeroizing<String>,
+}
+
+fn decision_adapter(
+    endpoint: Option<String>,
+    token: Option<String>,
+) -> Result<Option<DecisionAdapter>, AppError> {
+    match (endpoint, token) {
+        (None, None) => Ok(None),
+        (Some(endpoint), Some(token)) => {
+            let url = Url::parse(&endpoint)
+                .map_err(|_| AppError::internal("invalid_decision_endpoint"))?;
+            if url.scheme() != "https"
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.fragment().is_some()
+                || url.query().is_some()
+                || token.bytes().any(|b| !b.is_ascii_graphic())
+            {
+                return Err(AppError::internal("invalid_decision_configuration"));
+            }
+            Ok(Some(DecisionAdapter {
+                url,
+                token: Zeroizing::new(token),
+            }))
+        }
+        _ => Err(AppError::internal("incomplete_decision_configuration")),
+    }
 }
 
 impl Config {
@@ -106,6 +141,10 @@ impl Config {
             microsoft_tenant,
             ai_api_key: optional("OPENAI_API_KEY"),
             ai_model: env::var("POSTMERE_AI_MODEL").unwrap_or_else(|_| "gpt-6-luna".into()),
+            decision_adapter: decision_adapter(
+                optional("POSTMERE_DECISION_URL"),
+                optional("POSTMERE_DECISION_TOKEN"),
+            )?,
         })
     }
 }
@@ -172,6 +211,32 @@ fn validate_database_url(value: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn decision_adapter_requires_an_explicit_secure_endpoint_and_separate_token() {
+        let token = Some("adapter-token".to_owned());
+        assert!(decision_adapter(None, None).unwrap().is_none());
+        assert!(decision_adapter(None, token.clone()).is_err());
+        assert!(decision_adapter(Some("https://fixture.example/check".into()), None).is_err());
+        let adapter = decision_adapter(Some("https://fixture.example/check".into()), token.clone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(adapter.url.host_str(), Some("fixture.example"));
+        for invalid in [
+            "http://fixture.example/check",
+            "https://name@fixture.example/check",
+            "https://fixture.example/check?token=value",
+            "https://fixture.example/check#part",
+        ] {
+            assert!(decision_adapter(Some(invalid.into()), token.clone()).is_err());
+        }
+        assert!(
+            decision_adapter(
+                Some("https://fixture.example/check".into()),
+                Some("a\r\nb".into())
+            )
+            .is_err()
+        );
+    }
     #[test]
     fn mcp_redirects_require_explicit_secure_callbacks() {
         assert!(parse_mcp_redirect_uris("[]").unwrap().is_empty());

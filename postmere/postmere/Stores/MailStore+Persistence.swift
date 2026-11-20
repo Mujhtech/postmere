@@ -86,6 +86,7 @@ extension MailStore {
             vipContacts = saved.vipContacts
             backendSyncCursors = saved.backendSyncCursors
             backendNotificationCutoffs = saved.backendNotificationCutoffs
+            spamCheckResults = saved.spamCheckResults
             selectedInboxSplitID = inboxSplits.first(where: { $0.id == saved.selectedInboxSplitID && !$0.isHidden })?.id
             snippets = saved.snippets
             senderRules = saved.senderRules
@@ -163,6 +164,9 @@ extension MailStore {
                 selectedInboxSplitID: selectedInboxSplitID, inboxSplitOverlapPolicy: inboxSplitOverlapPolicy,
                 vipContacts: vipContacts, backendSyncCursors: backendSyncCursors,
                 backendNotificationCutoffs: backendNotificationCutoffs)
+        snapshot.replyIndexVersion = replyIndexVersion
+        snapshot.spamCheckResults = spamCheckResults
+        return snapshot
     }
 
     /// Coalesce ordinary edits. Commits that must precede delivery and the final quit flush share this queue.

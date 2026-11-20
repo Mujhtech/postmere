@@ -264,6 +264,15 @@ async fn ai_opt_in_and_retrieval_stay_user_and_workspace_scoped() {
             StatusCode::NOT_FOUND
         );
     }
+    check_spam_provider(
+        &state,
+        &sessions,
+        workspace,
+        users[1],
+        peer_message,
+        inactive_message,
+    )
+    .await;
     let no_scope: i64 =
         sqlx::query_scalar("SELECT count(*) FROM ai_preferences WHERE workspace_id=$1")
             .bind(workspace)
@@ -301,4 +310,152 @@ async fn ai_opt_in_and_retrieval_stay_user_and_workspace_scoped() {
         .execute(&pool)
         .await
         .unwrap();
+}
+
+async fn check_spam_provider(
+    state: &AppState,
+    sessions: &[SessionResponse],
+    workspace: Uuid,
+    owner: Uuid,
+    message: Uuid,
+    disconnected: Uuid,
+) {
+    use axum::{Json, http::HeaderMap, routing::post};
+    use postmere_core::config::DecisionAdapter;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let fixture = Router::new()
+        .route("/assess", post(move |headers: HeaderMap, Json(payload): Json<Value>| {
+            let observed = observed.clone();
+            async move {
+                observed.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(headers.get("authorization").unwrap(), "Bearer local-decision-fixture");
+                assert_eq!(payload, json!({
+                    "task": "spam", "message": {
+                        "sender_domain": "example.test", "subject": "Private project",
+                        "text": "Confidential peer data",
+                    },
+                }));
+                Json(json!({"verdict":"uncertain","reason":"The excerpt provides little context."}))
+            }
+        }))
+        .route("/redirect", post(|| async { axum::response::Redirect::temporary("/assess") }));
+    let transport = tokio::spawn(async move { axum::serve(listener, fixture).await.unwrap() });
+    let mut cfg = (*state.config).clone();
+    cfg.ai_api_key = None;
+    // Only this in-process test bypasses the production HTTPS-only loader.
+    cfg.decision_adapter = Some(DecisionAdapter {
+        url: format!("http://127.0.0.1:{port}/assess").parse().unwrap(),
+        token: Zeroizing::new("local-decision-fixture".into()),
+    });
+    let isolated = AppState::new(state.pool.clone(), cfg).await.unwrap();
+    let mut redirect = isolated.clone();
+    Arc::make_mut(&mut redirect.config)
+        .decision_adapter
+        .as_mut()
+        .unwrap()
+        .url
+        .set_path("/redirect");
+    let app = application(isolated, ai::router());
+    let path = "/v1/decisions/spam";
+    let token = Some(sessions[1].token.as_str());
+    let body = json!({"message_id":message});
+    assert_eq!(
+        request(&app, "POST", path, None, body.clone()).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(&app, "POST", path, token, body.clone()).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(&app, "POST", path, Some(&sessions[0].token), body.clone())
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            path,
+            Some(&sessions[0].token),
+            json!({"message_id":disconnected})
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let settings = request(
+        &app,
+        "PUT",
+        "/v1/ai/settings",
+        token,
+        json!({"enabled":true}),
+    )
+    .await;
+    assert_eq!(settings.0, StatusCode::OK);
+    assert_eq!(settings.1["decision_available"], true);
+    assert_eq!(settings.1["available"], false);
+    assert!(
+        settings.1["data_notice"]
+            .as_str()
+            .unwrap()
+            .contains("127.0.0.1")
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let result = request(&app, "POST", path, token, body.clone()).await;
+    assert_eq!(result.0, StatusCode::OK, "{}", result.1);
+    assert_eq!(
+        result.1,
+        json!({"message_id":message,"verdict":"uncertain","reason":"The excerpt provides little context."})
+    );
+    let redirected = request(
+        &application(redirect, ai::router()),
+        "POST",
+        path,
+        token,
+        body.clone(),
+    )
+    .await;
+    assert_eq!(redirected.0, StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the production HTTP client must not follow redirects"
+    );
+    let mut tx = db::scoped_transaction(&state.pool, workspace, owner)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE mail_messages SET deleted_at=now() WHERE id=$1")
+        .bind(message)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        request(&app, "POST", path, token, body).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let mut limited = false;
+    for _ in 0..40 {
+        if request(&app, "POST", path, token, json!({"message_id":message}))
+            .await
+            .0
+            == StatusCode::TOO_MANY_REQUESTS
+        {
+            limited = true;
+            break;
+        }
+    }
+    assert!(
+        limited,
+        "the persisted per-user quota covers the decision endpoint"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    transport.abort();
 }

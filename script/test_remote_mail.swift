@@ -14,6 +14,8 @@ import Foundation
     payload.dkimSignatures = ["v=1; a=rsa-sha256;\r\n d=EXAMPLE.com; s=primary; b=abc",
                               "d=example.com; b=second", "d=ambiguous.example; d=other.example", "d=<invalid>"]
     let one = payload.localMessage(identity: first), two = payload.localMessage(identity: second)
+    try await checkJunkMailbox(one, directory: directory)
+    try await checkSpamReviewArrivals(first, directory: directory)
     try check(one.envelopeDetails?.signingDomains == ["example.com"] && one.envelopeDetails?.deliveryHeaders?.receivedWith == "ESMTPS"
               && one.envelopeDetails?.recipientNames["me@example.com"] == "Alex", "reader preserves delivery headers and display names, and rejects ambiguous signer domains")
     try await checkAutomaticReplyQueue(one, otherAccount: two, directory: directory)
@@ -589,4 +591,240 @@ import Foundation
     try check(reopened.messages.first { $0.id == draft.id }?.receivedHTML == nil &&
               reopened.messages.first { $0.id == draft.id }?.paragraphs == draft.paragraphs,
               "drafts use their current editable text")
+}
+
+@MainActor private func checkVerifiedSenderMarks(message: MailMessage, identity: RemoteAccountIdentity, other: RemoteAccountIdentity) async throws {
+    let artwork = #"<svg xmlns="http://www.w3.org/2000/svg" version="1.2" baseProfile="tiny-ps" viewBox="0 0 100 100"><title>Example</title><rect width="100" height="100" fill="green"/></svg>"#
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    decoder.dateDecodingStrategy = .iso8601
+    func evidence(_ changes: [String: Any] = [:]) throws -> BackendSenderMark {
+        var object: [String: Any] = ["domain": "example.com", "provider": "gmail",
+                                     "expires_at": ISO8601DateFormatter().string(from: Date.now.addingTimeInterval(3600)),
+                                     "logo_svg": Data(artwork.utf8).base64EncodedString()]
+        object.merge(changes) { _, v in v }
+        return try decoder.decode(BackendSenderMark.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+    let expected = try evidence()
+    let mark = expected.localMark(for: message, identity: identity)
+    try PostmereBackendRegression.check(mark?.logoPNG.starts(with: [137, 80, 78, 71]) == true && mark?.verifier == "Postmere",
+                                         "only the certificate logo becomes the displayed raster and independent verification names Postmere")
+    if let mark {
+        var sibling = message
+        sibling.id = UUID()
+        sibling.backendMessageID = UUID()
+        sibling.providerMessageID = "sibling"
+        let store = MailStore(messages: [message, sibling])
+        store.selectedMessageID = sibling.id
+        await store.loadMailboxView()
+        let initialThread = store.selectedConversation
+        let frozen = store.loadedMailboxView?.sections.flatMap(\.messages).first { $0.id == message.id }
+        let revision = store.mailboxDataRevision
+        store.cacheSenderMark(mark, localID: message.id)
+        try PostmereBackendRegression.check(initialThread.count == 2 && store.selectedConversation.first { $0.id == message.id }?.currentSenderMark == mark,
+                                             "an already-open thread immediately receives the certified artwork of its expanded sibling")
+        try PostmereBackendRegression.check(frozen?.currentSenderMark == nil && frozen.flatMap(store.displayedSenderMark(for:)) == mark &&
+                                             store.mailboxDataRevision == revision,
+                                             "painted inbox rows immediately show the same logo without rebuilding or reordering the mailbox")
+    }
+    let gmail = try evidence(["verified_by": "gmail"])
+    try PostmereBackendRegression.check(gmail.localMark(for: message, identity: identity)?.verifier == "Gmail",
+                                         "explicit Gmail attestation credits Gmail")
+    let unsafe = artwork.replacingOccurrences(of: "<title>Example</title>", with: #"<image href="https://remote.example/track"/>"#)
+    let wrongEvidence: [[String: Any]] = [["verified_by": "untrusted"], ["verified_by": NSNull()], ["domain": "mail.example.com"],
+                                         ["provider": "outlook"], ["expires_at": "2020-01-01T00:00:00Z"], ["logo_svg": "invalid"],
+                                         ["logo_svg": Data(unsafe.utf8).base64EncodedString()]]
+    for fields in wrongEvidence {
+        let unusable = try evidence(fields)
+        try PostmereBackendRegression.check(unusable.localMark(for: message, identity: identity) == nil,
+                                             "invalid, expired or externally referenced evidence cannot earn a badge")
+    }
+    try PostmereBackendRegression.check(expected.localMark(for: message, identity: other) == nil, "sender evidence stays in its workspace")
+    var modified = message
+    modified.verifiedSenderMark = mark
+    try PostmereBackendRegression.check(modified.currentSenderMark != nil, "certified artwork matches the original message")
+    modified.backendMessageID = UUID()
+    try PostmereBackendRegression.check(modified.currentSenderMark == nil, "a different message from the same sender cannot borrow the badge")
+    modified = message
+    modified.isOutgoing = true
+    try PostmereBackendRegression.check(expected.localMark(for: modified, identity: identity) == nil, "outgoing marks cannot appear on recipients")
+}
+
+
+@MainActor private func checkAutomaticReplyQueue(_ base: MailMessage, otherAccount: MailMessage, directory: URL) async throws {
+    func check(_ condition: Bool, _ description: String) throws { try PostmereBackendRegression.check(condition, description) }
+    let now = Date.now
+    func incoming(_ body: String, at offset: TimeInterval) -> MailMessage {
+        var message = base
+        message.id = UUID()
+        message.backendMessageID = UUID()
+        message.providerMessageID = UUID().uuidString
+        message.paragraphs = [body]
+        message.sentAt = now.addingTimeInterval(offset)
+        return message
+    }
+    let ask = incoming("Could you approve the revised print estimate?", at: -120)
+    var sentAsk = incoming("Could you share the role requirements?", at: -240)
+    sentAsk.mailbox = .sent
+    // Sent folder membership also identifies older records without a direction flag.
+    sentAsk.isOutgoing = false
+    var echoed = incoming("Thanks for getting in touch.\n\nCould you share the role requirements?", at: -180)
+    echoed.subject = "AW: Rollenbeschreibung"
+    let echoStore = MailStore(messages: [echoed], persistenceURL: directory.appendingPathComponent("echo.json"))
+    try check(echoStore.messages.first?.automaticReplyPending == true, "an unmarked body initially looks like an ask")
+    echoStore.mergeIncoming([sentAsk])
+    try check(echoStore.count(for: .needsReply) == 0 && echoStore.messages.allSatisfy { $0.replyRequestText == nil },
+              "an earlier Sent copy imported later prevents attributing the account's own request to the correspondent")
+    let revision = echoStore.mailboxDataRevision
+    echoStore.mergeIncoming([echoed])
+    try check(echoStore.mailboxDataRevision == revision, "replaying a suppressed echo does not republish the message list")
+    echoStore.setNeedsReply(true, for: echoed.id)
+    try check(echoStore.count(for: .needsReply) == 1 && echoStore.messages.allSatisfy { $0.replyRequestText == nil },
+              "a manual flag survives without attributing an outgoing quote to the correspondent")
+    var withNewAsk = echoed
+    withNewAsk.paragraphs.append("Can you meet on Tuesday morning?")
+    let genuine = MailStore(messages: [withNewAsk, sentAsk], persistenceURL: directory.appendingPathComponent("genuine.json"))
+    try check(genuine.messages.first(where: { $0.id == echoed.id })?.replyRequestText == "Can you meet on Tuesday morning?",
+              "a new inbound question survives an unmarked copy of an earlier sent question")
+    echoStore.flushPersistence()
+    let source = directory.appendingPathComponent("echo.json")
+    var stale = try JSONSerialization.jsonObject(with: Data(contentsOf: source)) as! [String: Any]
+    stale["replyIndexVersion"] = 1
+    var staleRows = stale["messages"] as! [[String: Any]]
+    for index in staleRows.indices {
+        staleRows[index]["replyRequestCandidates"] = nil
+        if (staleRows[index]["id"] as? String)?.lowercased() == echoed.id.uuidString.lowercased() {
+            staleRows[index]["replyRequestText"] = sentAsk.paragraphs.first
+            staleRows[index]["automaticReplyPending"] = true
+        }
+    }
+    stale["messages"] = staleRows
+    let previousVersion = directory.appendingPathComponent("echo-v1.json")
+    try JSONSerialization.data(withJSONObject: stale).write(to: previousVersion)
+    let upgrading = MailStore(persistenceURL: previousVersion, openInBackground: true)
+    await upgrading.openingTask?.value
+    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+    while upgrading.replyIndexVersion < MailStateSnapshot.currentReplyIndexVersion && ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    let corrected = upgrading.messages.first { $0.id == echoed.id }
+    try check(upgrading.replyIndexVersion == MailStateSnapshot.currentReplyIndexVersion
+              && corrected?.replyRequestText == nil && corrected?.automaticReplyPending != true
+              && corrected?.workflow.needsReply == true,
+              "a version-one cache clears the false quote, preserves manual decisions and upgrades without a provider request")
+    let captured = await MailReplyQueue.savedCandidates(in: [echoed, sentAsk])
+    withNewAsk.workflow.privateNote = "A note saved during indexing"
+    let concurrent = await MailReplyQueue.corrections(in: [withNewAsk, sentAsk], using: captured, preservingLegacyFlags: false)
+    let correctedLater = concurrent.first { $0.0 == 0 }?.1
+    try check(correctedLater?.replyRequestText == "Can you meet on Tuesday morning?"
+              && correctedLater?.workflow.privateNote == withNewAsk.workflow.privateNote,
+              "a changed message and local notes survive a stale index calculation")
+    var foreign = sentAsk
+    foreign.account = otherAccount.account
+    foreign.providerAccountEmail = otherAccount.providerAccountEmail
+    let isolated = MailStore(messages: [echoed, foreign], persistenceURL: directory.appendingPathComponent("echo-scope.json"))
+    try check(isolated.count(for: .needsReply) == 1, "a different account cannot claim authorship in the current conversation")
+    var unrelated = otherAccount
+    unrelated.conversationID = ask.conversationID
+    unrelated.paragraphs = ask.paragraphs
+    let storage = directory.appendingPathComponent("reply-queue.json")
+    let store = MailStore(messages: [ask, unrelated], persistenceURL: storage)
+    try check(store.count(for: .needsReply) == 2 && store.messages.first?.replyRequestText == ask.paragraphs.first,
+              "Needs Reply surfaces the authored question and scopes identical conversations to their accounts")
+    store.setNeedsReply(false, for: ask.id)
+    store.mergeIncoming([ask, incoming("Please confirm the older quote.", at: -300)])
+    try check(store.count(for: .needsReply) == 1, "Mark Done survives a replay and an out-of-order import")
+    let next = incoming("Can you send the final drawing?", at: 30)
+    store.mergeIncoming([next])
+    try check(store.count(for: .needsReply) == 2, "a new question reopens the conversation after dismissal")
+    var answer = incoming("I've sent the drawing.", at: 60)
+    answer.isOutgoing = true
+    answer.mailbox = .outbox
+    store.mergeIncoming([answer])
+    try check(store.count(for: .needsReply) == 2, "a queued reply keeps its request visible")
+    // The Sent copy can arrive on another device while Postmere is closed.
+    answer.id = UUID()
+    answer.backendMessageID = UUID()
+    answer.providerMessageID = UUID().uuidString
+    answer.mailbox = .sent
+    store.mergeIncoming([answer, next])
+    try check(store.count(for: .needsReply) == 1, "a delivered reply clears only its own conversation even if the request replays")
+    store.flushPersistence()
+    let reopened = MailStore(persistenceURL: storage)
+    try check(reopened.count(for: .needsReply) == 1 && reopened.messages.contains { $0.id == unrelated.id && $0.needsReply },
+              "automatic and dismissed reply decisions survive a relaunch")
+
+    // Model an older snapshot which never ran detection. The other account's
+    // open request must be discovered without pulling these messages again.
+    var disk = try JSONSerialization.jsonObject(with: Data(contentsOf: storage)) as! [String: Any]
+    disk["replyIndexVersion"] = nil
+    var oldMessages = disk["messages"] as! [[String: Any]]
+    for index in oldMessages.indices {
+        oldMessages[index]["replyRequestText"] = nil
+        oldMessages[index]["automaticReplyPending"] = nil
+    }
+    disk["messages"] = oldMessages
+    let legacy = directory.appendingPathComponent("reply-legacy.json")
+    try JSONSerialization.data(withJSONObject: disk).write(to: legacy)
+    let migrated = MailStore(persistenceURL: legacy)
+    try check(migrated.count(for: .needsReply) == 1 && migrated.messages.contains {
+        $0.id == unrelated.id && $0.replyRequestText == ask.paragraphs.first
+    }, "saved mail from older builds gains reply requests without a provider refresh")
+
+}
+
+@MainActor private func checkSpamReviewArrivals(_ identity: RemoteAccountIdentity, directory: URL) async throws {
+    func check(_ condition: Bool, _ description: String) throws { try PostmereBackendRegression.check(condition, description) }
+    let enabledAt = Date.now.addingTimeInterval(-120)
+    func payload(_ offset: TimeInterval, from: String = "other@example.test", mailbox: String = "inbox") -> BackendMailMessage {
+        let id = UUID()
+        return BackendMailMessage(id: id, accountId: identity.accountID, providerMessageId: id.uuidString,
+            providerThreadId: id.uuidString, subject: "An update", from: BackendAddress(email: from),
+            to: [BackendAddress(email: identity.email)], cc: [], bcc: [], textBody: "Please reply with your password.",
+            htmlBody: nil, preview: "", sentAt: enabledAt.addingTimeInterval(offset), isRead: true,
+            isStarred: false, mailbox: mailbox, providerLabels: [], attachments: [], listUnsubscribe: [], listUnsubscribePost: [])
+    }
+    let store = MailStore(messages: [], persistenceURL: directory.appendingPathComponent("spam-review-arrivals.json"))
+    store.senderScreeningEnabled = true
+    let ready = await store.prepareBackendNotifications(for: identity, now: enabledAt.addingTimeInterval(-3600))
+    try check(ready, "arrival cutoff for spam checks is durable")
+    let recent = payload(30)
+    let page = BackendMailPage(messages: [recent, recent, payload(-60), payload(-7200), payload(3600),
+        payload(30, from: identity.email), payload(30, mailbox: "archive"), payload(30, mailbox: "junk")],
+        nextCursor: "spam-test", hasMore: false)
+    var notified: [MailMessage] = []
+    var toReview: [MailMessage] = []
+    let saved = await store.applyBackendPage(page, identity: identity, automaticSpamChecksSince: enabledAt,
+        onSpamCheckArrivals: { toReview += $0 }, onArrivals: { notified += $0 })
+    try check(saved && notified.isEmpty && toReview.map(\.backendMessageID) == [recent.id]
+              && toReview[0].workflow.screeningState == .pending && toReview[0].hasSpamCheckSignals,
+              "only newly arrived Inbox mail after opt-in is eligible, including read and pending senders without notifications")
+    var replayed: [MailMessage] = []
+    let replay = await store.applyBackendPage(page, identity: identity, automaticSpamChecksSince: enabledAt,
+        onSpamCheckArrivals: { replayed += $0 })
+    let afterOptOut = BackendMailPage(messages: [payload(32)], nextCursor: "after-opt-out", hasMore: false)
+    let optedOut = await store.applyBackendPage(afterOptOut, identity: identity, onSpamCheckArrivals: { replayed += $0 })
+    try check(replay && optedOut && replayed.isEmpty, "replays and disabled automatic checks never submit a message")
+    let broken = directory.appendingPathComponent("spam-undurable.json")
+    try Data("broken".utf8).write(to: broken)
+    let unavailable = MailStore(messages: [], persistenceURL: broken)
+    unavailable.backendNotificationCutoffs[identity.localID] = enabledAt
+    let failed = await unavailable.applyBackendPage(page, identity: identity, automaticSpamChecksSince: enabledAt,
+        onSpamCheckArrivals: { replayed += $0 })
+    try check(!failed && replayed.isEmpty, "an unsuccessful durable merge cannot submit a spam review")
+
+    var ordinary = recent.localMessage(identity: identity)
+    ordinary.paragraphs = ["Here is our meeting agenda."]
+    ordinary.preview = "Here is our meeting agenda."
+    try check(!ordinary.hasSpamCheckSignals, "an unknown sender by itself is not suspicious")
+    ordinary.paragraphs = ["We will never ask you to reply with your password."]
+    try check(!ordinary.hasSpamCheckSignals, "a password safety reminder does not trigger automatic review")
+    ordinary.paragraphs = ["Claim your prize by paying a processing fee."]
+    try check(ordinary.hasSpamCheckSignals, "a prize claim with an upfront payment can trigger review")
+    ordinary.paragraphs = []
+    ordinary.attachments = [MailAttachment(name: "agenda.pdf.EXE", detail: "File")]
+    try check(ordinary.hasSpamCheckSignals, "executable attachments are detected without opening the attachment")
+    ordinary.attachments = []
+    ordinary.sender = "support@another.example"
+    try check(ordinary.hasSpamCheckSignals, "an email display name claiming another domain can trigger review")
 }

@@ -88,12 +88,27 @@ extension MailStore {
     /// Persist message changes and their resume cursor together so a failed disk
     /// write never skips changes on the next launch.
     func applyBackendPage(_ page: BackendMailPage, identity: RemoteAccountIdentity, read: ProviderPageRead? = nil,
-                          isCurrent: () -> Bool = { true }) async -> Bool {
+                          isCurrent: () -> Bool = { true }, automaticSpamChecksSince: Date? = nil,
+                          onSpamCheckArrivals: (([MailMessage]) -> Void)? = nil,
+                          onArrivals: (([MailMessage]) -> Void)? = nil) async -> Bool {
         let pageRead = read ?? beginProviderPage(for: identity.localID)
         defer { if read == nil { endProviderPage(pageRead) } }
         guard pageRead.account == identity.localID, isCurrent(),
               let incoming = try? await page.localMessages(for: identity) else { return false }
         let oldCursor = backendSyncCursors[identity.localID]
+        let cutoff = backendNotificationCutoffs[identity.localID]
+        var spamSourceIDs: Set<UUID> = []
+        if let automaticSpamChecksSince, let cutoff, onSpamCheckArrivals != nil {
+            let since = max(cutoff, automaticSpamChecksSince)
+            let latest = Date.now.addingTimeInterval(300)
+            spamSourceIDs = Set(incoming.lazy.filter {
+                $0.mailbox == .inbox && !$0.isFromAccountOwner && $0.sentAt >= since && $0.sentAt <= latest
+            }.compactMap(\.backendMessageID))
+        }
+        let notifyInsertions = onArrivals != nil && cutoff.map { date in incoming.contains { $0.sentAt >= date } } == true
+        let trackInsertions = notifyInsertions || !spamSourceIDs.isEmpty
+        var insertions: [(id: UUID, index: Int)] = []
+        var requiresSave = false
         guard await mergeReceivedPage(incoming, deletedIDs: Set(page.deletedMessageIds ?? []),
                                       read: pageRead, trackInsertions: trackInsertions, isCurrent: isCurrent, beforeSave: { messagesChanged, newRows in
             insertions = newRows
@@ -107,6 +122,17 @@ extension MailStore {
         guard await persistStateAsync() else {
             if backendSyncCursors[identity.localID] == page.nextCursor { backendSyncCursors[identity.localID] = oldCursor }
             return false
+        }
+        if !insertions.isEmpty, let cutoff, isCurrent() {
+            let newRows = committedInsertions(at: insertions)
+            onArrivals?(newRows.filter { canNotifyArrival($0, account: identity.localID, since: cutoff) })
+            if !spamSourceIDs.isEmpty, let onSpamCheckArrivals {
+                onSpamCheckArrivals(newRows.filter {
+                    $0.account == identity.localID && $0.backendMessageID.map(spamSourceIDs.contains) == true
+                        && $0.mailbox == .inbox && !$0.isFromAccountOwner && !$0.isDeletedOnProvider
+                        && $0.workflow.screeningState != .blocked
+                })
+            }
         }
         return true
     }

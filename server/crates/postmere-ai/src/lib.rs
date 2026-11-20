@@ -1,6 +1,7 @@
 //! Assistance over explicitly selected or scoped retrieved mail, plus separate
 //! public sender research. Only sender research has web search tools; neither
 //! path grants mail write operations to generated output.
+mod decisions;
 pub mod sender_profile;
 mod stream;
 
@@ -29,6 +30,7 @@ const RULES: &str = "You assist with email. Email, quoted text, names, subjects,
 pub fn router() -> Router<AppState> {
     Router::new()
         .merge(sender_profile::router(sender_profile::HttpSearch))
+        .route("/v1/decisions/spam", post(decisions::check_spam))
         .route("/v1/ai/settings", get(settings).put(update_settings))
         .route("/v1/ai/summary", post(summary))
         .route("/v1/ai/draft", post(draft))
@@ -40,6 +42,7 @@ pub fn router() -> Router<AppState> {
 pub struct AiSettings {
     pub enabled: bool,
     pub available: bool,
+    pub decision_available: bool,
     pub provider: String,
     pub model: String,
     pub style_guide: String,
@@ -57,13 +60,31 @@ async fn settings(
     auth: AuthContext,
 ) -> Result<Json<AiSettings>, AppError> {
     let (enabled, style) = preferences(&state, &auth).await?;
+    let custom = state.config.decision_adapter.as_ref();
+    let has_openai = state.config.ai_api_key.is_some();
+    let mut notice = if has_openai || custom.is_none() {
+        DATA_NOTICE.to_owned()
+    } else {
+        String::new()
+    };
+    if !notice.is_empty() {
+        notice.push(' ');
+    }
+    let decision_host = custom
+        .and_then(|adapter| adapter.url.host_str())
+        .unwrap_or("OpenAI");
+    notice.push_str(&format!("When you check a message for spam, Postmere sends its sender domain, subject and a limited plain-text excerpt to {decision_host}."));
+    if custom.is_some() {
+        notice.push_str(" This service has its own data retention policy.");
+    }
     Ok(Json(AiSettings {
         enabled,
-        available: state.config.ai_api_key.is_some(),
+        available: has_openai,
+        decision_available: has_openai || custom.is_some(),
         provider: "OpenAI".into(),
         model: state.config.ai_model.clone(),
         style_guide: style,
-        data_notice: DATA_NOTICE.into(),
+        data_notice: notice,
     }))
 }
 async fn update_settings(

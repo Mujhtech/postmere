@@ -205,6 +205,8 @@ struct BackendSessionFixtures {
         progress("Checking many-account identity, reconnect and disconnect isolation")
         await manyAccounts()
         try await labels()
+        progress("Checking spam decisions, per-workspace opt-in, and paid request deduplication")
+        try await spamDecisions()
         progress("Checking stale network and credential-store responses")
         await races()
         if !failures.isEmpty {
@@ -218,6 +220,82 @@ struct BackendSessionFixtures {
         print("PASS: persistent lifetime, expired-cache migration, network/408 recovery, atomic upgrades and durable offline sign-out")
         print("PASS: original sign-out time survives retries/relaunch, legacy jobs omit MCP revocation, and rejected-login cleanup preserves MCP connections")
         print("PASS: all credentials in memory, preferences in isolated suites, and all HTTP requests mocked; no Keychain or real server accessed")
+    }
+
+    private static func spamDecisions() async throws {
+        let person = SessionPersona("reader@example.test")
+        let session = fixture(SessionMemoryStore())
+        install(person)
+        await login(session, person)
+        guard let account = RemoteAccountRegistry.accounts.first,
+              let defaults = preferencesBySession[ObjectIdentifier(session)] else {
+            throw SessionFixtureFailure(description: "Missing spam fixture account")
+        }
+        var mail = MailMessage(sender: "Invoice", senderEmail: "sender@example.test", initials: "I",
+                               subject: "Claim your prize", preview: "Pay the processing fee",
+                               paragraphs: ["Pay the processing fee"], timeLabel: "", account: account.localID)
+        mail.backendMessageID = UUID()
+        let messageID = mail.backendMessageID!
+        let store = MailStore(messages: [mail])
+        let checks = MailSpamChecks(store: store, defaults: defaults)
+        let endpoint = "/v1/decisions/spam"
+        let before = SessionFixtureProtocol.recorder.values.filter { $0.path == endpoint }.count
+        let response = try JSONSerialization.data(withJSONObject: [
+            "message_id": messageID.uuidString, "verdict": "possible_spam", "reason": "A prize requires an upfront payment."
+        ])
+        SessionFixtureProtocol.handler = { request, fixture in
+            if request.url?.path == endpoint { fixture.respond(200, response) } else { person.serve(request, fixture) }
+        }
+        check(!checks.automaticChecksEnabled(for: session), "Automatic checks started enabled")
+        checks.enqueueIncoming([mail], session: session)
+        check(checks.phase(for: mail, session: session) == nil, "A disabled automatic check displayed a result")
+        checks.setAutomaticChecksEnabled(true, for: session)
+        checks.enqueueIncoming([mail], session: session)
+        await Task.yield()
+        check(SessionFixtureProtocol.recorder.values.filter { $0.path == endpoint }.count == before,
+              "Enabling checks sent pre-existing mail")
+        mail.sentAt = .now
+        store.messages = [mail]
+        checks.enqueueIncoming([mail, mail], session: session)
+        try await waitForSpamResult(checks, message: mail, session: session)
+        checks.check(mail, session: session)
+        checks.dismiss(mail, session: session)
+        checks.enqueueIncoming([mail], session: session)
+        let reopened = MailSpamChecks(store: store, defaults: defaults)
+        check(reopened.automaticChecksEnabled(for: session), "The workspace opt-in did not persist")
+        check(reopened.phase(for: mail, session: session) == nil, "A dismissed assessment reappeared")
+        reopened.check(mail, session: session)
+        try await waitForSpamResult(reopened, message: mail, session: session)
+        let requests = SessionFixtureProtocol.recorder.values.filter { $0.path == endpoint }
+        check(requests.count == before + 1, "Checking, reopening or replaying the same mail called the provider twice")
+        let sent = try JSONSerialization.jsonObject(with: requests.last!.body) as? [String: String]
+        check(sent?.count == 1 && sent?["message_id"].flatMap(UUID.init(uuidString:)) == messageID,
+              "The client submitted more than the selected message ID")
+        check(store.messages.first?.mailbox == .inbox && store.canMoveMessage(mail, to: .junk), "A check moved mail or prevented manual filing")
+        checks.cancelPending()
+        reopened.setAutomaticChecksEnabled(false, for: session)
+        var second = mail
+        second.backendMessageID = UUID()
+        second.id = UUID()
+        store.messages.append(second)
+        reopened.check(second, session: session)
+        for _ in 0..<250 {
+            if case .failed? = reopened.phase(for: second, session: session) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        if case .failed? = reopened.phase(for: second, session: session) {} else {
+            failures.append("A result for a different message was accepted")
+        }
+        session.clearSession()
+        check(reopened.phase(for: mail, session: session) == nil, "An earlier workspace's assessment was still accessible")
+    }
+
+    private static func waitForSpamResult(_ checks: MailSpamChecks, message: MailMessage, session: BackendSession) async throws {
+        for _ in 0..<250 {
+            if case .result(let decision) = checks.phase(for: message, session: session), decision.verdict == .possibleSpam { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw SessionFixtureFailure(description: "Expected the mock spam decision for the selected message")
     }
 
     static func labels() async throws {

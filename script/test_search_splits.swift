@@ -192,6 +192,85 @@ func runSearchSplitRegressions(directory: URL) throws {
 }
 
 @MainActor
+private func runSmartCategoryRegressions() throws {
+    func check(_ condition: @autoclosure () -> Bool, _ description: String) throws {
+        try PostmereBackendRegression.check(condition(), description)
+    }
+    func message(_ subject: String) -> MailMessage {
+        MailMessage(sender: "A. Sender", senderEmail: "mailbox@example.com", initials: "AS", subject: subject,
+                    preview: "", paragraphs: [], timeLabel: "Now", isUnread: true)
+    }
+
+    let receipt = message("Your receipt from Studio")
+    let newsletter = message("Fieldnotes weekly digest — November")
+    let purchaseQuery = MailSearchQuery(source: "is:purchase")
+    let subscriptionQuery = MailSearchQuery(source: "is:subscription")
+    for subject in ["Order confirmation", "Invoice #48290", "Your order #A321", "Your order has shipped", "Payment received"] {
+        try check(purchaseQuery.matches(message(subject)), "recognizes a purchase: \(subject)")
+    }
+    for subject in ["Buy now and save", "Save on your next order", "Did you receive my invoice?", "Your guide to invoice automation", "Payment confirmation code", "Re: Your receipt from Studio"] {
+        try check(!purchaseQuery.matches(message(subject)), "avoids classifying an offer or a conversation as a purchase")
+    }
+    var promotion = message("Studio sale")
+    promotion.providerLabelIDs = ["CATEGORY_PROMOTIONS"]
+    var categorized = message("Download ready")
+    categorized.providerCategories = ["Receipts"]
+    var list = message("A new edition")
+    list.unsubscribeHeaders = MailUnsubscribeHeaders(listUnsubscribe: ["<mailto:leave@example.com>"], listUnsubscribePost: [], authenticationResults: [], dkimSignatures: [], source: "gmail")
+    var identifiedList = message("Meeting moved to Friday")
+    identifiedList.hasMailingListID = true
+    try check(subscriptionQuery.matches(list) && subscriptionQuery.matches(newsletter) && subscriptionQuery.matches(identifiedList),
+              "List-ID, unsubscribe headers and newsletter subjects each identify subscriptions")
+    try check(!subscriptionQuery.matches(promotion), "an ordinary promotion alone does not imply a subscription")
+    try check(categorized.isPurchaseMail && !categorized.isSubscriptionMail, "explicit Outlook receipt category is honored")
+    var spam = receipt
+    spam.providerLabelIDs = ["SPAM", "CATEGORY_PROMOTIONS"]
+    var outgoing = newsletter
+    outgoing.isOutgoing = true
+    try check(!spam.isSubscriptionMail && !spam.isPurchaseMail && !outgoing.isSubscriptionMail,
+              "smart categories exclude outgoing and legacy provider spam")
+    let store = MailStore(messages: [receipt, newsletter])
+    let purchase = try requireSplit("Purchases", store)
+    let subscriptions = try requireSplit("Subscriptions", store)
+    try check(store.splitMessages(purchase.id).map(\.id) == [receipt.id] &&
+              store.splitMessages(subscriptions.id).map(\.id) == [newsletter.id],
+              "specific categories win over the default broad People filter")
+
+    var old = subscriptions
+    old.name = "Newsletters"
+    old.criteria = SavedInboxCriteria(query: "has:unsubscribe OR category:promotions OR category:forums")
+    old.isHidden = true
+    let custom = InboxSplit(name: "Studio", criteria: .init(query: "from:studio"))
+    let upgraded = InboxSplit.upgradingLegacyTabs([custom, old])
+    try check(upgraded.first == custom && upgraded.contains { $0.id == old.id && $0.name == "Subscriptions" && $0.isHidden },
+              "legacy Newsletters retains identity, relative order and hidden state")
+    old.name = "For later"
+    old.criteria = SavedInboxCriteria(query: "from:design")
+    let edited = InboxSplit.upgradingLegacyTabs([old])
+    try check(edited.contains(old) && edited.contains { $0.name == "Subscriptions" && $0.id != old.id },
+              "a user-edited legacy tab stays intact alongside the new category")
+    try check(InboxSplit.upgradingLegacyTabs([]).contains { $0.name == "Subscriptions" && $0.isHidden },
+              "removing Newsletters before upgrading keeps its successor hidden")
+
+    let oldData = try JSONEncoder().encode(MailStateSnapshot(messages: [], savedViews: [], snippets: [], senderRules: [],
+        outgoingQueue: [], activeDraft: nil, senderScreeningEnabled: true, inboxSplits: [old]))
+    var json = try JSONSerialization.jsonObject(with: oldData) as! [String: Any]
+    json.removeValue(forKey: "inboxSplitDefaultsVersion")
+    var restored = try JSONDecoder().decode(MailStateSnapshot.self, from: JSONSerialization.data(withJSONObject: json))
+    try check(restored.inboxSplits.contains { $0.name == "Purchases" }, "a saved legacy tab configuration gains Purchases")
+    restored.inboxSplits.removeAll { $0.name == "Purchases" }
+    let reopened = try JSONDecoder().decode(MailStateSnapshot.self, from: JSONEncoder().encode(restored))
+    try check(!reopened.inboxSplits.contains { $0.name == "Purchases" }, "later launches respect deletion of a migrated tab")
+}
+
+@MainActor
+private func requireSplit(_ name: String, _ store: MailStore) throws -> InboxSplit {
+    let split = store.inboxSplits.first { $0.name == name }
+    try PostmereBackendRegression.check(split != nil, "missing default split " + name)
+    return split!
+}
+
+@MainActor
 private func runSearchSessionRegressions() throws {
     func check(_ condition: @autoclosure () -> Bool, _ description: String) throws {
         try PostmereBackendRegression.check(condition(), description)

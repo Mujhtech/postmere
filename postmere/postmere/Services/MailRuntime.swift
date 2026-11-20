@@ -13,6 +13,8 @@ final class MailRuntime {
         return cache
     }()
     let store: MailStore
+    let spamChecks: MailSpamChecks
+    let mailLinks = MailLinkDrafts()
     let backend = BackendSession()
     let defaultMail: DefaultMailAppService
     @ObservationIgnored let absentSenderMarks: NSCache<NSString, NSDate> = {
@@ -74,6 +76,7 @@ final class MailRuntime {
     init(store: MailStore? = nil, defaultMail: DefaultMailAppService? = nil) {
         self.defaultMail = defaultMail ?? DefaultMailAppService()
         self.store = store ?? MailStore(openInBackground: true)
+        spamChecks = MailSpamChecks(store: self.store)
         mailboxCounts = MailboxCounts(store: self.store, dockAccounts: { [backend] in
             guard backend.canAccessWorkspace, let scope = backend.scope else { return [] }
             let disconnecting = backend.disconnectingAccountIDs
@@ -129,6 +132,17 @@ final class MailRuntime {
         mailLinks.useWorkspace(backend.canAccessWorkspace ? backend.scope : nil)
         reconcileRealtime()
         let generation = backend.realtimeGeneration
+        if mailSyncGeneration != generation {
+            spamChecks.cancelPending()
+            mailSyncGeneration = generation
+            pendingMailSync = []
+            nextMailCacheCheck = .distantPast
+            nextAccountCatalogCheck = .distantPast
+            lastMailSyncError = nil
+            mailSyncRateLimit = nil
+            mailSyncStatuses = [:]
+            mailSyncActivity = .idle
+        }
         push.reset(generation: generation)
         if pushRegistrationGeneration != generation {
             deferredIncomingNotificationIDs = []

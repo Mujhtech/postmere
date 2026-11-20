@@ -73,6 +73,54 @@ final class RemoteAccountRegistry {
     }
 }
 
+nonisolated struct MailSpamDecision: Codable, Equatable, Sendable {
+    enum Verdict: String, Codable {
+        case possibleSpam = "possible_spam"
+        case noSpamSignals = "no_spam_signals"
+        case uncertain
+    }
+    let messageId: UUID
+    let verdict: Verdict
+    let reason: String
+}
+
+nonisolated struct StoredSpamCheck: Codable, Equatable, Sendable {
+    let decision: MailSpamDecision
+    var isVisible: Bool
+}
+
+extension MailMessage {
+    /// Selects a small set for opt-in review. These signals never move or label mail.
+    nonisolated var hasSpamCheckSignals: Bool {
+        let name = sender.trimmingCharacters(in: .whitespacesAndNewlines)
+        let claimedAddress = name.split(separator: "@", omittingEmptySubsequences: false)
+        if claimedAddress.count == 2, !claimedAddress[0].isEmpty, claimedAddress[1].contains("."),
+           !name.contains(where: \.isWhitespace), let actual = incomingSenderDomain,
+           claimedAddress[1].lowercased() != actual { return true }
+        if attachments.prefix(24).contains(where: {
+            MailSpamSignals.executableExtensions.contains(($0.name as NSString).pathExtension.lowercased())
+        }) { return true }
+        let text = [subject, preview, paragraphs.first ?? ""].map {
+            String(decoding: $0.utf8.prefix(640), as: UTF8.self)
+        }.joined(separator: "\n").lowercased()
+        if MailSpamSignals.prizeClaims.contains(where: text.contains)
+            && MailSpamSignals.upfrontPayments.contains(where: text.contains) { return true }
+        return text.split(whereSeparator: { ".!?\n".contains($0) }).contains { sentence in
+            !MailSpamSignals.warnings.contains(where: sentence.contains)
+                && MailSpamSignals.secretRequest.firstMatch(in: String(sentence), range: NSRange(location: 0, length: sentence.utf16.count)) != nil
+        }
+    }
+}
+
+private nonisolated enum MailSpamSignals {
+    static let executableExtensions: Set<String> = ["exe", "scr", "hta", "cmd", "bat", "vbs", "js", "lnk", "ps1"]
+    static let prizeClaims = ["claim your prize", "collect your winnings", "you have won", "lottery winner"]
+    static let upfrontPayments = ["processing fee", "advance fee", "wire transfer", "gift card", "crypto payment"]
+    static let warnings = ["never", "do not", "don't", "don’t", "will not", "won't", "won’t", "avoid "]
+    static let secretRequest = try! NSRegularExpression(pattern:
+        #"\b(?:reply (?:to (?:us|me|this (?:message|email)) )?with|send (?:me|us)|provide)\s+(?:us with\s+)?your\s+(?:password|pin\b|(?:verification|security|one[ -]time) code|seed phrase|recovery phrase)\b"#)
+}
+
 enum MailSearchScope: String, Codable, CaseIterable, Identifiable {
     case currentMailbox, allMailboxes
 

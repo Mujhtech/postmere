@@ -19,11 +19,12 @@ nonisolated struct MailStateSnapshot: Codable, Sendable {
     var vipContacts: [VIPContact] = []
     var backendSyncCursors: [String: String] = [:]
     var backendNotificationCutoffs: [String: Date] = [:]
+    var spamCheckResults: [String: StoredSpamCheck] = [:]
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, messages, savedViews, snippets, senderRules, outgoingQueue, activeDraft,
-             senderScreeningEnabled, inboxSplits, selectedInboxSplitID, inboxSplitOverlapPolicy, vipContacts, backendSyncCursors,
-             backendNotificationCutoffs
+        case junkMailboxVersion, replyIndexVersion, schemaVersion, messages, savedViews, snippets, senderRules, outgoingQueue, activeDraft,
+             senderScreeningEnabled, inboxSplitDefaultsVersion, inboxSplits, selectedInboxSplitID, inboxSplitOverlapPolicy, vipContacts, backendSyncCursors,
+             backendNotificationCutoffs, spamCheckResults
     }
 
     @MainActor
@@ -78,6 +79,7 @@ nonisolated struct MailStateSnapshot: Codable, Sendable {
         vipContacts = try values.decodeIfPresent([VIPContact].self, forKey: .vipContacts) ?? []
         backendSyncCursors = try values.decodeIfPresent([String: String].self, forKey: .backendSyncCursors) ?? [:]
         backendNotificationCutoffs = try values.decodeIfPresent([String: Date].self, forKey: .backendNotificationCutoffs) ?? [:]
+        spamCheckResults = try values.decodeIfPresent([String: StoredSpamCheck].self, forKey: .spamCheckResults) ?? [:]
     }
 }
 

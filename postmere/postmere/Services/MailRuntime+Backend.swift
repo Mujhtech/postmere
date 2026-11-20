@@ -89,10 +89,52 @@ extension MailRuntime {
                     }
                 }
             }
-            store.reconcileSelection()
-            backend.errorMessage = failures.isEmpty ? nil : failures.joined(separator: "\n")
-        } catch {
-            if backend.realtimeGeneration == sessionID { backend.errorMessage = error.localizedDescription }
+            remaining = next
+            firstPass = false
+            await Task.yield()
+        }
+        guard backend.realtimeGeneration == generation else { return }
+        reportMailSyncError(failures.isEmpty ? nil : failures.joined(separator: "\n"))
+        updateMailSyncActivity()
+        // The event stream wakes us on commits. This also recovers a silent
+        // connection or the end of a worker cooldown that produced no new mail.
+        let now = Date.now
+        let workerIsActive = mailSyncActivity == .syncing || mailSyncActivity == .importing(cached: nil)
+        let fallback = now.addingTimeInterval(workerIsActive || !failures.isEmpty ? 60 : 300)
+        nextMailCacheCheck = mailSyncStatuses.values.compactMap(\.retryAt)
+            .filter { $0 > now }.min().map { min(fallback, $0) } ?? fallback
+    }
+
+    private func readMailPage(_ identity: RemoteAccountIdentity, generation: UUID,
+                              refreshProvider: Bool) async throws -> BackendMailPage? {
+        func isCurrent() -> Bool {
+            !Task.isCancelled && backend.realtimeGeneration == generation
+                && backend.isAccountConnected(identity.accountID, scope: identity.scope)
+        }
+        let cursor = store.backendSyncCursors[identity.localID]
+        let read = store.beginProviderPage(for: identity.localID)
+        defer { store.endProviderPage(read) }
+        let page: BackendMailPage = try await backend.request("POST", "/v1/mail/accounts/\(identity.accountID.uuidString)/sync",
+            body: BackendSyncInput(cursor: cursor, refreshProvider: refreshProvider))
+        guard isCurrent() else { return nil }
+        if !page.messages.isEmpty && mailSyncActivity == .idle { mailSyncActivity = .loadingCache(loaded: 0) }
+        var arrivals: [MailMessage] = []
+        guard await store.applyBackendPage(page, identity: identity, read: read, isCurrent: isCurrent,
+                                          automaticSpamChecksSince: spamChecks.automaticChecksEnabledSince(for: backend),
+                                          onSpamCheckArrivals: { self.spamChecks.enqueueIncoming($0, session: self.backend) },
+                                          onArrivals: { arrivals = $0 }), isCurrent() else { return nil }
+        for message in arrivals {
+            guard isCurrent() else { return nil }
+            await notifyBackendMessage(message)
+        }
+        return page
+    }
+
+    private func reportMailSyncError(_ message: String?) {
+        if let message {
+            if lastMailSyncError != message { backend.errorMessage = message }
+        } else if lastMailSyncError != nil && backend.errorMessage == lastMailSyncError {
+            backend.errorMessage = nil
         }
         lastMailSyncError = message
     }

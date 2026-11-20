@@ -31,6 +31,7 @@ Provide secrets through your deployment secret manager; do not commit them:
 | `POSTMERE_GMAIL_PUBSUB_TOPIC`, `POSTMERE_GMAIL_PUBSUB_SUBSCRIPTION`, `POSTMERE_GMAIL_PUSH_AUDIENCE`, `POSTMERE_GMAIL_PUSH_SERVICE_ACCOUNT` | Optional Gmail authenticated Pub/Sub delivery; configure all four together. |
 | `POSTMERE_MICROSOFT_WEBHOOKS` | Set `true` to maintain Microsoft mail subscriptions. Requires public HTTPS. |
 | `OPENAI_API_KEY`, `POSTMERE_AI_MODEL` | Optional AI provider configuration; user opt-in is separate. |
+| `POSTMERE_DECISION_URL`, `POSTMERE_DECISION_TOKEN` | Optional HTTPS endpoint and bearer token for a spam analyzer, used in preference to OpenAI for explicit spam checks. |
 | `POSTMERE_APNS_KEY_FILE`, `POSTMERE_APNS_KEY_ID`, `POSTMERE_APNS_TEAM_ID` | Optional server-only APNs `.p8` signing key path and Apple key/team identifiers. Configure all APNs values together. |
 | `POSTMERE_APNS_TOPIC`, `POSTMERE_APNS_ENVIRONMENT` | Signed app bundle ID and `sandbox` or `production`; these must match the app's provisioning. |
 

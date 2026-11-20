@@ -475,6 +475,14 @@ struct ReaderView: View {
 
     private func messageContents(_ message: MailMessage, trackerCount: Binding<Int>, quoteContext: MailQuoteContext? = nil) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            SpamCheckView(message: message, store: store)
+            if !message.isDraft && message.mailbox != .outbox {
+                MailMessageInvitation(message: message, runtime: runtime) { event in
+                    presentedSheet = .invitation(event, message.mailAccount)
+                }
+                .id("invitation-\(message.id)")
+            }
+            MailVerificationCodeView(message: message) { EmptyView() }
             Group {
                 if let html = message.receivedHTML {
                     HTMLMessageBody(html: html, paragraphs: message.paragraphs, fontSize: readingFontSize) { count in
@@ -556,6 +564,7 @@ struct ReaderView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(presentation == .expanded ? "Collapse" : "Expand") message from \(sender), \(message.dateLabel), \(message.timeLabel)")
                     .accessibilityValue(presentation == .expanded ? "Expanded" : "Collapsed")
+                    .contextMenu { spamCheckAction(message) }
                 }
                 if presentation != .collapsed {
                     HStack(spacing: 6) {
@@ -893,8 +902,9 @@ struct ReaderView: View {
 
     @ViewBuilder private var additionalMessageActions: some View {
         if let message = store.selectedMessage {
-            if store.selectedMessageIDs.count <= 1 && !message.isDraft && message.mailbox != .outbox {
-                Button(message.workflow.needsReply ? "Mark Conversation Done" : "Needs Reply") { store.setNeedsReply(!message.workflow.needsReply, for: message.id) }
+            if store.selectedMessageIDs.count <= 1 && message.allowsWorkflowActions {
+                spamCheckAction(message)
+                Button(message.needsReply ? "Mark Conversation Done" : "Needs Reply") { store.setNeedsReply(!message.needsReply, for: message.id) }
                 if toolbarMessage == nil {
                     Button("Snooze…") { runtime.openReaderPanel(.snooze) }
                 }
@@ -930,7 +940,20 @@ struct ReaderView: View {
                     }
                 }
             }
-            Button("Message Details") { toolbarDetailsTarget = message }.disabled(store.selectedMessageIDs.count > 1)
+            Button("Message Details") { runtime.openReaderPanel(.details) }.disabled(store.selectedMessageIDs.count > 1)
+        }
+    }
+
+    @ViewBuilder private func spamCheckAction(_ message: MailMessage) -> some View {
+        if MailSpamChecks.canCheck(message, session: runtime.backend) {
+            if case .checking? = runtime.spamChecks.phase(for: message, session: runtime.backend) {
+                Button("Checking for Spam…", systemImage: "shield") {}.disabled(true)
+            } else {
+                Button("Check for Spam", systemImage: "shield") {
+                    if store.selectedConversation.count > 1 { revealMessageInThread(message.id) }
+                    runtime.spamChecks.check(message, session: runtime.backend)
+                }
+            }
         }
     }
 

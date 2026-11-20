@@ -64,7 +64,7 @@ run_suite() {
             ;;
         backend_session)
             flags=(-swift-version 6 -parse-as-library -O)
-            sources=("${backend_models[@]}" Services/BackendHTTPClient.swift Services/BackendEvents.swift Services/BackendKeychain.swift Services/BackendSession.swift)
+            sources=("${store_sources[@]}" "${summary_sources[@]}" Services/BackendHTTPClient.swift Services/BackendEvents.swift Services/BackendKeychain.swift Services/BackendSession.swift Services/MailSpamChecks.swift)
             ;;
         backend_events)
             flags=(-swift-version 6 -parse-as-library -O)

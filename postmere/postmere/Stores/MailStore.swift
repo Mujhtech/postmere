@@ -16,6 +16,9 @@ final class MailStore {
         }
     }
     private(set) var mailboxDataRevision = 0
+    var spamCheckResults: [String: StoredSpamCheck] = [:]
+    @ObservationIgnored var replyIndexVersion = MailStateSnapshot.currentReplyIndexVersion
+    @ObservationIgnored var workflowDateScan: (revision: Int, visibleAccounts: Set<String>, nextWake: Date?)?
     var mailboxRulesRevision = 0
     var loadedMailboxView: MailboxViewData?
     @ObservationIgnored var preparedInboxTabs: [MailboxViewData] = []
