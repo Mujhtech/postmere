@@ -10,19 +10,19 @@ struct MailParticipantAvatar: View {
 
     var body: some View {
         Button { showsProfile = true } label: {
-            ParticipantPhoto(address: address, name: name, size: size)
+            ParticipantPhoto(address: address, name: name, size: size, verifiedMark: verifiedMark)
         }
         .buttonStyle(.plain)
-        .help("View profile for \(displayName)")
+        .help(verifiedMark?.explanation ?? "View profile for \(displayName)")
         .onChange(of: messageID) { showsProfile = false }
-        .accessibilityLabel("View profile for \(displayName)")
+        .accessibilityLabel(verifiedMark.map { "View profile for \(displayName). \($0.explanation)" } ?? "View profile for \(displayName)")
         .popover(isPresented: $showsProfile) {
             VStack(spacing: 10) {
-                ParticipantPhoto(address: address, name: name, size: 148, enlarged: true)
+                ParticipantPhoto(address: address, name: name, size: 148, enlarged: true, verifiedMark: verifiedMark)
                 if !name.isEmpty && name != address { Text(name).font(.headline) }
                 Text(address).font(.callout).textSelection(.enabled)
                     .multilineTextAlignment(.center)
-                if !MailContactPhotos.shared.canRead { ContactPhotoAccess() }
+                if verifiedMark == nil && !MailContactPhotos.shared.canRead { ContactPhotoAccess() }
             }
             .padding(18)
             .frame(width: 252)
@@ -38,8 +38,7 @@ struct ParticipantPhoto: View {
     let size: CGFloat
     var enlarged = false
     @State private var loadedKey: PhotoKey?
-    @State private var image: CGImage?
-    @State private var website: String?
+    @State private var photo: MailRemoteParticipantImages.Photo?
 
     private struct PhotoKey: Equatable {
         let email: String
@@ -62,10 +61,13 @@ struct ParticipantPhoto: View {
         let icons = MailRemoteParticipantImages.websiteIcons
         let key = PhotoKey(email: address, revision: photos.revision, gravatarRevision: gravatar.revision,
                            websiteRevision: icons.revision, enlarged: enlarged)
-        VStack(spacing: 7) {
+        // Recycled list rows can draw a previously fetched photo on their first frame.
+        let visiblePhoto = loadedKey == key ? photo : cachedPhoto()
+        return VStack(spacing: 7) {
             Group {
-                if loadedKey == key, let image {
-                    if website != nil {
+                if let visiblePhoto {
+                    let image = visiblePhoto.image
+                    if visiblePhoto.website != nil {
                         Image(decorative: image, scale: 1).resizable().scaledToFit()
                             .padding(size * 0.13)
                             .frame(width: size, height: size)
@@ -82,35 +84,42 @@ struct ParticipantPhoto: View {
                 }
             }
             .frame(width: size, height: size)
-            .clipShape(.rect(cornerRadius: enlarged && image != nil ? 8 : size / 2))
+            .clipShape(.rect(cornerRadius: enlarged && visiblePhoto != nil ? 8 : size / 2))
             .accessibilityHidden(true)
             if enlarged {
-                if loadedKey != key {
-                    ProgressView().controlSize(.small).accessibilityLabel("Loading profile photo")
-                } else if let website {
+                if let website = visiblePhoto?.website {
                     Text("Website icon for \(website)").font(.caption).foregroundStyle(.secondary)
-                } else if image == nil {
+                } else if visiblePhoto == nil && loadedKey != key {
+                    ProgressView().controlSize(.small).accessibilityLabel("Loading profile photo")
+                } else if visiblePhoto == nil {
                     Text("No profile photo available.").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
         .task(id: key) {
             let email = MailSenderDomain.email(in: address) ?? ""
-            var result = await photos.photo(email: email, enlarged: enlarged)
-            var domain: String?
+            var result = await photos.photo(email: email, enlarged: enlarged).map {
+                MailRemoteParticipantImages.Photo(image: $0, website: nil)
+            }
             if result == nil, gravatar.enabled, !Task.isCancelled {
-                result = await gravatar.photo(email: email)?.image
+                result = await gravatar.photo(email: email)
             }
             if result == nil, icons.enabled, !Task.isCancelled {
-                let icon = await icons.photo(email: email)
-                result = icon?.image
-                domain = icon?.website
+                result = await icons.photo(email: email)
             }
             guard !Task.isCancelled else { return }
-            image = result
-            website = domain
+            photo = result
             loadedKey = key
         }
+    }
+
+    private func cachedPhoto() -> MailRemoteParticipantImages.Photo? {
+        guard let email = MailSenderDomain.email(in: address) else { return nil }
+        if let image = MailContactPhotos.shared.cachedPhoto(email: email, enlarged: enlarged) {
+            return .init(image: image, website: nil)
+        }
+        return MailRemoteParticipantImages.gravatar.cachedPhoto(email: email)
+            ?? MailRemoteParticipantImages.websiteIcons.cachedPhoto(email: email)
     }
 }
 

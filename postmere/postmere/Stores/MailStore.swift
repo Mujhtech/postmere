@@ -7,6 +7,7 @@ import Observation
 final class MailStore {
     var messages: [MailMessage] {
         didSet {
+            guard !updatingSenderArtwork else { return }
             mailboxDataRevision &+= 1
             guard !updatingReaderMessage else { return }
             schedulePersistence()

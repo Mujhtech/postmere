@@ -37,7 +37,7 @@ final class MailRemoteParticipantImages {
     }
     private(set) var revision = 0
     @ObservationIgnored private let source: Source
-    @ObservationIgnored private let iconDomains: WebsiteIconDomains?
+    @ObservationIgnored private var iconDomains: WebsiteIconDomains?
     @ObservationIgnored private let preferences: UserDefaults
     @ObservationIgnored private let configuration: URLSessionConfiguration
     @ObservationIgnored private var session: URLSession?
@@ -75,26 +75,34 @@ final class MailRemoteParticipantImages {
         let website: String?
     }
 
-    func photo(email address: String) async -> Photo? {
-        guard enabled, !Task.isCancelled, let email = MailSenderDomain.email(in: address) else { return nil }
-        let version = revision
-        let website: String?
-        let url: URL
+    private func location(for address: String) -> (url: URL, website: String?)? {
+        guard enabled, let email = MailSenderDomain.email(in: address) else { return nil }
         switch source {
         case .gravatar:
             let hash = SHA256.hash(data: Data(email.utf8)).map { String(format: "%02x", $0) }.joined()
-            url = URL(string: "https://gravatar.com/avatar/\(hash)?s=320&d=404&r=g")!
-            website = nil
+            return (URL(string: "https://gravatar.com/avatar/\(hash)?s=320&d=404&r=g")!, nil)
         case .websiteIcon:
-            let domains: WebsiteIconDomains
-            if let iconDomains { domains = iconDomains } else { domains = await WebsiteIconDomains.bundled.value }
-            guard enabled, version == revision, !Task.isCancelled,
-                  let domain = domains.website(for: email) else { return nil }
-            url = URL(string: "https://icons.bitwarden.net")!.appending(path: domain).appending(path: "icon.png")
-            website = domain
+            guard let domain = iconDomains?.website(for: email) else { return nil }
+            return (URL(string: "https://icons.bitwarden.net")!.appending(path: domain).appending(path: "icon.png"), domain)
         }
-        guard let image = await image(at: url, version: version) else { return nil }
-        return Photo(image: image, website: website)
+    }
+
+    func cachedPhoto(email address: String) -> Photo? {
+        guard let location = location(for: address),
+              let hit = cache.object(forKey: location.url.absoluteString as NSString),
+              hit.expires > .now, let image = hit.image else { return nil }
+        return Photo(image: image, website: location.website)
+    }
+
+    func photo(email address: String) async -> Photo? {
+        guard enabled, !Task.isCancelled else { return nil }
+        let version = revision
+        if source == .websiteIcon && iconDomains == nil {
+            iconDomains = await WebsiteIconDomains.bundled.value
+        }
+        guard version == revision, !Task.isCancelled, let location = location(for: address),
+              let image = await image(at: location.url, version: version) else { return nil }
+        return Photo(image: image, website: location.website)
     }
 
     private func image(at url: URL, version: Int) async -> CGImage? {

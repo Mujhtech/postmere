@@ -40,6 +40,11 @@ final class MailContactPhotos {
         revision += 1
     }
 
+    func cachedPhoto(email: String, enlarged: Bool) -> CGImage? {
+        guard canRead, !email.isEmpty else { return nil }
+        return cache.object(forKey: "\(enlarged)-\(email)" as NSString)?.image
+    }
+
     func photo(email: String, enlarged: Bool) async -> CGImage? {
         guard canRead, !email.isEmpty else { return nil }
         let key = "\(enlarged)-\(email)" as NSString

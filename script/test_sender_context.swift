@@ -140,12 +140,15 @@ private struct SenderContextChecks {
         let favicon = await icons.photo(email: "fixture@bitmap.co.uk")
         try realtimeCheck(favicon?.image.width == 32 && favicon?.image.height == 32 && recorder.requests.count == 4,
                           "An ICO site icon should use its largest valid representation")
+        let reused = icons.cachedPhoto(email: "other@news.bitmap.co.uk")
+        try realtimeCheck(reused?.image.width == 32 && reused?.website == "bitmap.co.uk" && recorder.requests.count == 4,
+                          "Recycled rows draw a cached website icon on their first frame without a lookup")
         RealtimeFixtureProtocol.handler = { _, fixture in fixture.response(404, headers: ["Content-Type": "image/x-icon"], chunks: [ico]) }
         let genericMissingIcon = await icons.photo(email: "fixture@nousericon.co.uk")
         try realtimeCheck(genericMissingIcon == nil, "A 404 containing an ICO must still fall back to initials")
         icons.enabled = false
         let disabled = await icons.photo(email: "again@newshop.co.uk")
-        try realtimeCheck(disabled == nil && recorder.requests.count == 5 &&
+        try realtimeCheck(disabled == nil && icons.cachedPhoto(email: "again@newshop.co.uk") == nil && recorder.requests.count == 5 &&
                           !MailRemoteParticipantImages(source: .websiteIcon, preferences: defaults).enabled,
                           "Disabling website icons should suppress cached images and persist across launches")
         defaults.removeObject(forKey: "showParticipantWebsiteIcons")
