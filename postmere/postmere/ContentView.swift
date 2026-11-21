@@ -15,6 +15,7 @@ struct ContentView: View {
     @FocusState private var searchFocused: Bool
     @State private var listFocusRequest = 0
     @State private var editingCompactSearch = false
+    @State private var searchCancel = SearchFieldCancel()
 
     private var showsSearchButton: Bool {
         isCompact && store.hasMessageSelection && !editingCompactSearch
@@ -93,6 +94,9 @@ struct ContentView: View {
         }
         .onChange(of: store.isSearchActive) {
             if store.isSearchActive {
+                // The field's ✕ leaves search entirely, as in Mail, not just clears it.
+                searchCancel.onCancel = { [store] in store.endSearch() }
+                DispatchQueue.main.async { searchCancel.install(in: NSApp.keyWindow) }
                 preSearchVisibility = isCompact ? wideColumnVisibility : columnVisibility
                 columnVisibility = .doubleColumn
             } else {
@@ -247,3 +251,28 @@ struct ContentView: View {
     let runtime = MailRuntime(store: MailStore())
     ContentView(store: runtime.store).environment(runtime).frame(width: 1280, height: 820)
 }
+
+/// Routes the toolbar search field's ✕ to leaving search, as in Mail, rather
+/// than only clearing the text.
+@MainActor final class SearchFieldCancel: NSObject {
+    var onCancel: () -> Void = {}
+    private weak var field: NSSearchField?
+
+    func install(in window: NSWindow?) {
+        guard let item = window?.toolbar?.items.first(where: { $0 is NSSearchToolbarItem }) as? NSSearchToolbarItem,
+              let cell = item.searchField.cell as? NSSearchFieldCell else { return }
+        field = item.searchField
+        cell.cancelButtonCell?.target = self
+        cell.cancelButtonCell?.action = #selector(cancel(_:))
+    }
+
+    @objc private func cancel(_ sender: Any?) {
+        field?.stringValue = ""
+        if let window = field?.window,
+           let item = window.toolbar?.items.first(where: { $0 is NSSearchToolbarItem }) as? NSSearchToolbarItem {
+            item.endSearchInteraction()
+        }
+        onCancel()
+    }
+}
+

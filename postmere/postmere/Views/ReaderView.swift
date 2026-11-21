@@ -431,26 +431,25 @@ struct ReaderView: View {
         }
     }
 
+    /// Shown beside search results until one is chosen.
     private var searchPlaceholder: some View {
-        let unread = store.messages.lazy.filter { message in
-            message.isUnread && store.matchesMailbox(message, mailbox: .inbox)
-                && (store.selectedAccount == nil || store.selectedAccount == message.account)
-        }.count
-        return VStack(spacing: 8) {
-            Image(nsImage: NSApplication.shared.applicationIconImage)
-                .resizable()
-                .interpolation(.high)
-                .scaledToFit()
-                .frame(width: 64, height: 64)
-                .padding(.bottom, 7)
+        let count = store.activeSearchResults.count
+        let label = store.shownLabelName
+        return VStack(spacing: 10) {
+            PostmereIcon(label == nil ? "magnifyingglass" : "tag", size: 20)
+                .foregroundStyle(palette.accentInk)
+                .frame(width: 46, height: 46)
+                .background(palette.accentInk.opacity(0.1), in: Circle())
+                .padding(.bottom, 4)
                 .accessibilityHidden(true)
-            Text("No conversation selected")
-                .font(.headline)
-            Text("\(unread.formatted()) unread in Inbox")
+            Text(label ?? (store.isSearchingMessages && count == 0 ? "Searching…" : count == 1 ? "1 result" : "\(count.formatted()) results"))
+                .font(.system(size: 20, weight: .medium, design: .serif))
+                .contentTransition(.numericText(value: Double(count)))
+            Text(label == nil ? "Choose a message to read it." : "\(count.formatted()) \(count == 1 ? "message" : "messages") with this label.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
-        .accessibilityElement(children: .combine)
+        .animation(.smooth, value: count)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
