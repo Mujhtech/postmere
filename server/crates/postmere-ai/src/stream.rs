@@ -405,6 +405,7 @@ mod tests {
             sender: "sender@example.test".into(),
             sent_at: Utc::now(),
             text: "Fixture email body".into(),
+            labels: String::new(),
         };
         let release = Arc::new(Notify::new());
         let count = Arc::new(AtomicUsize::new(0));
@@ -485,6 +486,7 @@ mod tests {
             sender: "sender@example.test".into(),
             sent_at: Utc::now(),
             text: "Can you confirm by Friday?".into(),
+            labels: String::new(),
         };
         let id = source.id;
         let forged = Uuid::new_v4();
@@ -565,6 +567,7 @@ mod tests {
             sender: "billing@example.test".into(),
             sent_at: Utc::now(),
             text: "Private body text".into(),
+            labels: String::new(),
         };
         let id = source.id;
         let app = Router::new().route("/responses", post(move || async move {

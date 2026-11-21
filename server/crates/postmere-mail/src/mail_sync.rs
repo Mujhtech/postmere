@@ -86,6 +86,26 @@ impl SyncTransport for HttpSync {
                     }
                 }
             }
+            // Label names change rarely; refresh the cached Gmail names a few
+            // times a day. A failure only delays label matching in search.
+            let stale = batch
+                .checkpoint
+                .label_names_refreshed_at
+                .is_none_or(|at| at < Utc::now() - Duration::hours(6));
+            if provider == Provider::Gmail
+                && stale
+                && provider::has_label_scope(provider, &session.credentials)
+            {
+                match provider::list_labels(state, provider, &session.credentials.access_token).await {
+                    Ok(labels) => {
+                        batch.checkpoint.label_catalog = Some(labels);
+                        batch.checkpoint.label_names_refreshed_at = Some(Utc::now());
+                    }
+                    Err(error) => {
+                        tracing::warn!(event = "mail_sync_labels", reason = ?error, "label names refresh deferred");
+                    }
+                }
+            }
             batch.checkpoint.junk_label = mail::classify_mailboxes(
                 state,
                 session,
@@ -372,6 +392,10 @@ pub async fn sync_account_with(
         .bind(&session.account.provider)
         .execute(&mut *tx)
         .await?;
+    }
+    // Names first, so the messages written below pick them up.
+    if let Some(labels) = batch.checkpoint.label_catalog.take() {
+        crate::mail_labels::store_label_names(&mut tx, workspace, user, account, &labels).await?;
     }
     for message in &mut batch.messages {
         if message.account_id != account {

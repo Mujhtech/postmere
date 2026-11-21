@@ -1630,6 +1630,12 @@ pub struct SyncCheckpoint {
     pub target_history_id: Option<String>,
     pub modified_after: Option<DateTime<Utc>>,
     pub scan_started_at: Option<DateTime<Utc>>,
+    /// When the Gmail label names used by search were last fetched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label_names_refreshed_at: Option<DateTime<Utc>>,
+    /// A label catalog fetched with this batch, stored with it and never persisted.
+    #[serde(skip)]
+    pub label_catalog: Option<Vec<MailLabel>>,
 }
 impl SyncCheckpoint {
     fn poll_history_during_backfill(&mut self, now: DateTime<Utc>) {

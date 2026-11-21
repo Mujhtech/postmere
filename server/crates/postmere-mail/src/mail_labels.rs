@@ -1,5 +1,14 @@
 //! Account-scoped Gmail labels and Outlook categories. Provider IDs are opaque
 //! and a message mutation changes only the requested label.
+/// The cached names of the labels on message row `m`, as a SQL expression.
+macro_rules! label_text {
+    () => {
+        "coalesce((SELECT string_agg(n.name, ', ' ORDER BY n.name) FROM mail_label_names n \
+         WHERE n.account_id=m.account_id AND (m.normalized->'provider_labels') ? n.label_id), '')"
+    };
+}
+pub(crate) use label_text;
+
 use crate::mail::{self, AccountSession};
 use axum::{
     Extension, Json, Router,
@@ -142,6 +151,46 @@ impl LabelTransport for HttpLabels {
     }
 }
 
+/// Caches an account's Gmail label names and rewrites each message's
+/// `label_text`, so questions and search can match labels by name. Outlook
+/// categories are stored on messages by name and need no cache.
+pub(crate) async fn store_label_names(
+    tx: &mut Transaction<'_, Postgres>,
+    workspace: Uuid,
+    user: Uuid,
+    account: Uuid,
+    labels: &[MailLabel],
+) -> Result<(), AppError> {
+    let ids: Vec<&str> = labels.iter().map(|label| label.id.as_str()).collect();
+    let names: Vec<&str> = labels.iter().map(|label| label.name.as_str()).collect();
+    sqlx::query("DELETE FROM mail_label_names WHERE account_id=$1 AND NOT (label_id=ANY($2))")
+        .bind(account)
+        .bind(&ids)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO mail_label_names(workspace_id,user_id,account_id,label_id,name)
+         SELECT $1,$2,$3,id,name FROM unnest($4::text[],$5::text[]) AS l(id,name)
+         ON CONFLICT(account_id,label_id) DO UPDATE SET name=excluded.name,updated_at=now()",
+    )
+    .bind(workspace)
+    .bind(user)
+    .bind(account)
+    .bind(&ids)
+    .bind(&names)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(concat!(
+        "UPDATE mail_messages m SET label_text=", label_text!(),
+        " WHERE m.account_id=$1 AND m.deleted_at IS NULL AND m.label_text IS DISTINCT FROM ", label_text!()
+    ))
+    .bind(account)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+
 async fn label_session(
     state: &AppState,
     auth: &AuthContext,
@@ -188,8 +237,11 @@ async fn catalog<T: LabelTransport>(
     Path(account): Path<Uuid>,
     Extension(provider): Extension<T>,
 ) -> Result<Json<Catalog>, AppError> {
-    let (tx, session) = label_session(&state, &auth, account).await?;
+    let (mut tx, session) = label_session(&state, &auth, account).await?;
     let labels = provider.list(&state, &session).await?;
+    if session.account.provider == "gmail" {
+        store_label_names(&mut tx, auth.workspace_id, auth.user_id, account, &labels).await?;
+    }
     tx.commit().await?;
     Ok(Json(Catalog { labels }))
 }
@@ -207,8 +259,14 @@ async fn create<T: LabelTransport>(
             "Enter a valid label or category name.",
         ));
     }
-    let (tx, session) = label_session(&state, &auth, account).await?;
+    let (mut tx, session) = label_session(&state, &auth, account).await?;
     let label = provider.create(&state, &session, name).await?;
+    if session.account.provider == "gmail" {
+        sqlx::query("INSERT INTO mail_label_names(workspace_id,user_id,account_id,label_id,name) VALUES($1,$2,$3,$4,$5)
+                     ON CONFLICT(account_id,label_id) DO UPDATE SET name=excluded.name,updated_at=now()")
+            .bind(auth.workspace_id).bind(auth.user_id).bind(account).bind(&label.id).bind(&label.name)
+            .execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(Json(label))
 }

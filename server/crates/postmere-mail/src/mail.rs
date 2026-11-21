@@ -617,6 +617,16 @@ pub(crate) async fn persist_message(
     );
     sqlx::query("INSERT INTO mail_messages(id,workspace_id,user_id,account_id,provider_message_id,provider_thread_id,sent_at,normalized,search_text,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,clock_timestamp()) ON CONFLICT(id) DO UPDATE SET provider_message_id=excluded.provider_message_id,provider_thread_id=excluded.provider_thread_id,sent_at=excluded.sent_at,normalized=excluded.normalized,search_text=excluded.search_text,deleted_at=NULL,updated_at=clock_timestamp() WHERE mail_messages.normalized IS DISTINCT FROM excluded.normalized OR mail_messages.deleted_at IS NOT NULL")
         .bind(message.id).bind(workspace).bind(user).bind(message.account_id).bind(&message.provider_message_id).bind(&message.provider_thread_id).bind(message.sent_at).bind(serde_json::to_value(message).map_err(|_|AppError::internal("mail_encode"))?).bind(searchable).execute(&mut **tx).await?;
+    if !message.provider_labels.is_empty() {
+        sqlx::query(concat!(
+            "UPDATE mail_messages m SET label_text=",
+            crate::mail_labels::label_text!(),
+            " WHERE m.id=$1"
+        ))
+        .bind(message.id)
+        .execute(&mut **tx)
+        .await?;
+    }
     Ok(())
 }
 
