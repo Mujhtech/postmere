@@ -32,6 +32,8 @@ final class MailRuntime {
     var showsInboxManager = false
     var showsCalendar = false
     var showsAIQuestion = false
+    /// A question typed elsewhere (such as the home page) for the Ask panel to start with.
+    var pendingAIQuestion: String?
     var showsWorkspace = false
     var activeSharedReplyID: UUID?
     var activeSharedReplyScope: String?
@@ -162,6 +164,7 @@ final class MailRuntime {
         showsInboxManager = false
         showsCalendar = false
         showsAIQuestion = false
+        pendingAIQuestion = nil
         showsWorkspace = false
         readerPanel = nil
         activeSharedReplyID = nil
