@@ -23,6 +23,20 @@ includes Caddy and the ChatGPT callback preset for deployment on your server.
    with your workspace ID, email and password, inspect the client name, callback
    and requested permissions, then choose **Allow access**.
 
+### Command-line assistants and quick setup
+
+Settings → AI in the Mac app has one-click setup for Claude Code, Codex,
+Cursor, VS Code, Claude and ChatGPT. Claude Code and Codex sign in through a
+callback on `localhost` with a new port each time. Following RFC 8252 §7.3, a
+loopback entry such as `http://localhost/callback` in
+`POSTMERE_MCP_REDIRECT_URIS` matches any port with the same host and path;
+every other entry must match exactly.
+
+Settings → AI also lists each connected assistant with its recent actions (tool
+names only, kept seven days) and lets you hide individual accounts. A hidden
+account, its mail and its outbox are invisible to every assistant, enforced by
+row-level security on assistant requests.
+
 For example, an allowlist can contain
 `["https://chatgpt.com/connector_platform_oauth_redirect"]` **when that is the
 exact callback displayed for your connection**. Postmere publishes matching

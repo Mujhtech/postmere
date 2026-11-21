@@ -32,7 +32,13 @@ pub async fn tenant_transaction(
     pool: &PgPool,
     auth: &AuthContext,
 ) -> Result<Transaction<'static, Postgres>, AppError> {
-    scoped_transaction(pool, auth.workspace_id, auth.user_id).await
+    let mut tx = scoped_transaction(pool, auth.workspace_id, auth.user_id).await?;
+    if auth.assistant {
+        sqlx::query("SELECT set_config('postmere.assistant', 'on', true)")
+            .execute(&mut *tx)
+            .await?;
+    }
+    Ok(tx)
 }
 
 /// Only use this directly for a verified service job or a nonce-authenticated

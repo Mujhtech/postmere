@@ -61,7 +61,7 @@ Provider credentials remain encrypted on the server; the Mac stores its workspac
 
 The server requires deployment and provider configuration; see [server setup](server/README.md). No production server or provider account is provisioned automatically.
 
-The backend also provides [remote MCP](docs/remote-mcp.md) for ChatGPT and other OAuth clients. Assistants stay connected until workspace sign-out or access revocation. They can read mail, draft, and manage messages; sending, trashing, and disconnecting accounts require explicit approval in Postmere's browser review page. Manage or revoke connections from Settings → Accounts.
+The backend also provides [remote MCP](docs/remote-mcp.md) for ChatGPT and other OAuth clients. Assistants stay connected until workspace sign-out or access revocation. They can read mail, draft, and manage messages; sending, trashing, and disconnecting accounts require explicit approval in Postmere's browser review page. Manage or revoke connections from Settings → AI.
 
 - **Unsubscribe:** The message reader offers standard mailing-list actions. Workspace one-click requests require a cryptographically verified DKIM signature and an explicit action. The server fetches raw MIME from Google or Microsoft, verifies that the signature covers both list headers, and rechecks the exact URL before an isolated HTTPS request. Browser/email fallbacks and archive/block actions show their separate outcomes.
 - **Calendar:** Message → Calendar Agenda opens calendars on this Mac, booking links, and team availability. Local calendar access is requested only when enabled. Recognized dates open an editable event draft; `.ics` attachments have invitation previews. The composer can insert static availability or a live booking link.

@@ -19,10 +19,18 @@ pub(crate) struct Connection {
     client_name: String,
     scopes: Vec<String>,
     created_at: DateTime<Utc>,
+    last_used_at: Option<DateTime<Utc>>,
+    /// The most recent tools used, newest first.
+    recent: Vec<Activity>,
+}
+#[derive(Serialize)]
+pub(crate) struct Activity {
+    tool: String,
+    at: DateTime<Utc>,
 }
 async fn connections(state: &AppState, auth: &AuthContext) -> Result<Vec<Connection>, AppError> {
     let mut tx = auth.begin_authorized(&state.pool).await?;
-    let rows = sqlx::query("SELECT g.id,c.name,g.scopes,g.created_at FROM mcp_oauth_grants g JOIN mcp_oauth_clients c ON c.id=g.client_id JOIN sessions s ON s.id=g.session_id WHERE s.workspace_id=$1 AND s.user_id=$2 AND s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at>clock_timestamp()) AND (s.absolute_expires_at IS NULL OR s.absolute_expires_at>clock_timestamp()) AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>clock_timestamp()) ORDER BY g.created_at DESC,g.id")
+    let rows = sqlx::query("SELECT g.id,c.name,g.scopes,g.created_at,g.last_used_at,coalesce((SELECT json_agg(json_build_object('tool',r.tool,'at',r.at) ORDER BY r.at DESC) FROM (SELECT tool,at FROM mcp_activity WHERE grant_id=g.id ORDER BY at DESC LIMIT 6) r),'[]'::json) AS recent FROM mcp_oauth_grants g JOIN mcp_oauth_clients c ON c.id=g.client_id JOIN sessions s ON s.id=g.session_id WHERE s.workspace_id=$1 AND s.user_id=$2 AND s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at>clock_timestamp()) AND (s.absolute_expires_at IS NULL OR s.absolute_expires_at>clock_timestamp()) AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>clock_timestamp()) ORDER BY g.created_at DESC,g.id")
         .bind(auth.workspace_id).bind(auth.user_id).fetch_all(&mut *tx).await?;
     tx.commit().await?;
     Ok(rows
@@ -32,6 +40,19 @@ async fn connections(state: &AppState, auth: &AuthContext) -> Result<Vec<Connect
             client_name: row.get("name"),
             scopes: row.get("scopes"),
             created_at: row.get("created_at"),
+            last_used_at: row.get("last_used_at"),
+            recent: row
+                .get::<serde_json::Value, _>("recent")
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|item| {
+                    Some(Activity {
+                        tool: item["tool"].as_str()?.to_owned(),
+                        at: item["at"].as_str()?.parse().ok()?,
+                    })
+                })
+                .collect(),
         })
         .collect())
 }

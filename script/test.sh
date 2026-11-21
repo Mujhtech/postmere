@@ -25,7 +25,7 @@ test_dir="$(mktemp -d "${TMPDIR:-/tmp}/postmere-tests.XXXXXX")"
 trap 'rm -rf "$test_dir"' EXIT
 
 mail_models=(Models/MailMessage.swift Models/ReceivedMailBody.swift Models/MailWorkflow.swift)
-backend_models=("${mail_models[@]}" Models/BackendMail.swift Models/BackendSenderMark.swift)
+backend_models=("${mail_models[@]}" Models/BackendMail.swift Models/BackendSenderMark.swift Models/BackendAssistants.swift)
 summary_sources=(Models/MailAI.swift Services/BackendSummaryStream.swift)
 store_sources=("${backend_models[@]}" Models/MailMessage+SmartCategories.swift Models/MailReplyIntent.swift Models/MailSearchQuery.swift Models/InboxSplit.swift
               Models/SampleMail.swift Stores/*.swift Support/ComposeAttachments.swift

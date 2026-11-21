@@ -185,6 +185,7 @@ async fn identity(state: &AppState) -> AuthContext {
     sqlx::query("INSERT INTO sessions(id,workspace_id,user_id,token_hash,expires_at,absolute_expires_at) VALUES($1,$2,$3,$4,NULL,NULL)")
         .bind(session_id).bind(workspace).bind(user).bind(Sha256::digest(session_id.as_bytes()).as_slice()).execute(&state.pool).await.unwrap();
     AuthContext {
+        assistant: false,
         workspace_id: workspace,
         user_id: user,
         session_id,

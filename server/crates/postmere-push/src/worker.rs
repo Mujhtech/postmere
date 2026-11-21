@@ -41,6 +41,7 @@ pub async fn process_one(state: &AppState, service: &PushService) -> Result<bool
         return Ok(true);
     };
     let auth = AuthContext {
+        assistant: false,
         workspace_id: workspace,
         user_id: user,
         session_id: identity.try_get("session_id")?,

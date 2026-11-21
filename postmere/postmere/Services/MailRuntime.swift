@@ -32,6 +32,8 @@ final class MailRuntime {
     var showsInboxManager = false
     var showsCalendar = false
     var showsAIQuestion = false
+    /// Connected MCP assistants and whether one is working right now.
+    let assistants = AssistantActivityMonitor()
     /// A question typed elsewhere (such as the home page) for the Ask panel to start with.
     var pendingAIQuestion: String?
     var showsWorkspace = false
@@ -216,6 +218,7 @@ final class MailRuntime {
         }
         Task { await backend.retryPendingRevocations(force: true) }
         await backend.restore()
+        assistants.start(session: backend)
         await notifications.refreshAuthorization()
         while !Task.isCancelled {
             Task { await backend.retryPendingRevocations() }

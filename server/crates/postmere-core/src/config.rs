@@ -171,6 +171,38 @@ fn parse_mcp_redirect_uris(value: &str) -> Result<Vec<String>, AppError> {
     }
     Ok(entries)
 }
+/// Whether an MCP client may use this OAuth callback. Allowlisted entries
+/// match exactly, except that native apps on a loopback address may use any
+/// port (RFC 8252 §7.3): CLIs such as Claude Code and Codex listen on a fresh
+/// port for each sign-in. Host, path and query must still match an entry.
+pub fn mcp_redirect_allowed(allowlist: &[String], uri: &str) -> bool {
+    if allowlist.iter().any(|entry| entry == uri) {
+        return true;
+    }
+    let loopback = |url: &Url| {
+        url.scheme() == "http"
+            && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
+    };
+    let Ok(requested) = Url::parse(uri) else {
+        return false;
+    };
+    if !loopback(&requested)
+        || !requested.username().is_empty()
+        || requested.password().is_some()
+        || requested.fragment().is_some()
+    {
+        return false;
+    }
+    allowlist
+        .iter()
+        .filter_map(|entry| Url::parse(entry).ok())
+        .any(|entry| {
+            loopback(&entry)
+                && entry.host_str() == requested.host_str()
+                && entry.path() == requested.path()
+                && entry.query() == requested.query()
+        })
+}
 fn required(name: &'static str) -> Result<String, AppError> {
     optional(name).ok_or_else(|| AppError::internal(name))
 }
@@ -236,6 +268,32 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn loopback_callbacks_match_any_port_but_nothing_else() {
+        let allow = vec![
+            "http://localhost/callback".to_string(),
+            "https://claude.ai/api/mcp/auth_callback".to_string(),
+        ];
+        assert!(mcp_redirect_allowed(
+            &allow,
+            "http://localhost:51023/callback"
+        ));
+        assert!(mcp_redirect_allowed(&allow, "http://localhost/callback"));
+        assert!(mcp_redirect_allowed(
+            &allow,
+            "https://claude.ai/api/mcp/auth_callback"
+        ));
+        for denied in [
+            "http://localhost:51023/other",
+            "http://127.0.0.1:51023/callback",
+            "http://localhost:51023/callback?x=1",
+            "http://evil.example:51023/callback",
+            "https://claude.ai:8443/api/mcp/auth_callback",
+            "http://user@localhost:51023/callback",
+        ] {
+            assert!(!mcp_redirect_allowed(&allow, denied), "{denied}");
+        }
     }
     #[test]
     fn mcp_redirects_require_explicit_secure_callbacks() {

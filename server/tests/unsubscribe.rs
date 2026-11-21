@@ -71,6 +71,7 @@ async fn unsubscribe_preview_and_preflight_are_authenticated_scoped_and_make_no_
         sqlx::query("INSERT INTO sessions(id,workspace_id,user_id,token_hash,expires_at,absolute_expires_at)VALUES($1,$2,$3,$4,now()+interval '1 day',now()+interval '30 days')").bind(session).bind(ws).bind(id).bind(Sha256::digest(token.as_bytes()).as_slice()).execute(&pool).await.unwrap();
     }
     let auth = AuthContext {
+        assistant: false,
         user_id: user,
         workspace_id: ws,
         session_id: session,

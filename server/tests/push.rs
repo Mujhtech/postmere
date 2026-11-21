@@ -70,6 +70,7 @@ async fn identity(pool: &PgPool) -> (AuthContext, String) {
         .bind(session).bind(workspace).bind(user).bind(Sha256::digest(token.as_bytes()).to_vec()).execute(pool).await.unwrap();
     (
         AuthContext {
+            assistant: false,
             workspace_id: workspace,
             user_id: user,
             session_id: session,

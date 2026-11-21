@@ -39,6 +39,10 @@ pub fn router() -> Router<AppState> {
         .route("/v1/mail/oauth/{provider}/callback", get(oauth_callback))
         .route("/v1/mail/oauth/connections/{id}", get(oauth_status))
         .route("/v1/mail/accounts/{id}/sync", post(sync))
+        .route(
+            "/v1/mail/accounts/{id}/assistants",
+            axum::routing::put(set_assistant_access),
+        )
         .route("/v1/mail/accounts/{id}/search", post(deep_search))
         .route("/v1/mail/messages", get(list_messages))
         .route(
@@ -103,6 +107,8 @@ pub struct Account {
     pub capabilities: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync_status: Option<AccountSyncStatus>,
+    /// Kept out of reach of MCP assistants.
+    pub hidden_from_assistants: bool,
 }
 pub struct AccountSession {
     pub account: Account,
@@ -119,6 +125,7 @@ fn account_row(row: &sqlx::postgres::PgRow) -> Result<Account, AppError> {
         last_synced_at: row.try_get("last_synced_at")?,
         capabilities: row.try_get("capabilities")?,
         sync_status: None,
+        hidden_from_assistants: row.try_get("hidden_from_assistants").unwrap_or(false),
     })
 }
 
@@ -132,7 +139,7 @@ async fn accounts(
 pub async fn list_accounts(state: &AppState, auth: &AuthContext) -> Result<Vec<Account>, AppError> {
     let mut tx = auth.begin_authorized(&state.pool).await?;
     let query = account_status_query!(
-        "a.id,a.provider,a.email,a.display_name,a.status,a.last_synced_at,a.capabilities,",
+        "a.id,a.provider,a.email,a.display_name,a.status,a.last_synced_at,a.capabilities,a.hidden_from_assistants,",
         "WHERE a.disabled_at IS NULL ORDER BY a.created_at,a.id"
     );
     let rows = sqlx::query(query).fetch_all(&mut *tx).await?;
@@ -144,6 +151,36 @@ pub async fn list_accounts(state: &AppState, auth: &AuthContext) -> Result<Vec<A
     }
     tx.commit().await?;
     Ok(result)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssistantAccess {
+    visible: bool,
+}
+
+/// Shows or hides an account from MCP assistants. Assistants cannot call
+/// this: their transactions cannot see a hidden account to change it.
+async fn set_assistant_access(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+    Json(input): Json<AssistantAccess>,
+) -> Result<Json<Value>, AppError> {
+    if auth.assistant {
+        return Err(AppError::forbidden());
+    }
+    let mut tx = auth.begin_authorized(&state.pool).await?;
+    let changed = sqlx::query("UPDATE provider_accounts SET hidden_from_assistants=$2,updated_at=now() WHERE id=$1 AND disabled_at IS NULL")
+        .bind(id)
+        .bind(!input.visible)
+        .execute(&mut *tx)
+        .await?;
+    if changed.rows_affected() == 0 {
+        return Err(AppError::not_found());
+    }
+    tx.commit().await?;
+    Ok(Json(json!({"visible": input.visible})))
 }
 
 async fn disconnect(

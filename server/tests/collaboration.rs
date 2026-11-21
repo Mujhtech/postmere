@@ -58,6 +58,7 @@ async fn identity(pool: &PgPool, workspace: Uuid, role: &str) -> Identity {
     sqlx::query("INSERT INTO sessions(id,workspace_id,user_id,token_hash,expires_at,absolute_expires_at) VALUES($1,$2,$3,$4,now()+interval '1 day',now()+interval '30 days')").bind(session).bind(workspace).bind(user).bind(Sha256::digest(token.as_bytes()).as_slice()).execute(pool).await.unwrap();
     Identity {
         auth: AuthContext {
+            assistant: false,
             user_id: user,
             workspace_id: workspace,
             session_id: session,

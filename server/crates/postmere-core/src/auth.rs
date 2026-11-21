@@ -22,6 +22,10 @@ use zeroize::Zeroizing;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AuthContext {
+    /// Set for MCP assistant requests: their transactions hide accounts the
+    /// user has kept from assistants.
+    #[serde(skip)]
+    pub assistant: bool,
     pub user_id: Uuid,
     pub workspace_id: Uuid,
     pub session_id: Uuid,
@@ -178,6 +182,7 @@ impl AuthService {
         let row = sqlx::query("SELECT s.id,s.user_id,s.workspace_id,m.role FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN workspaces w ON w.id=s.workspace_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at>clock_timestamp()) AND (s.absolute_expires_at IS NULL OR s.absolute_expires_at>clock_timestamp()) AND u.disabled_at IS NULL AND m.revoked_at IS NULL AND w.disabled_at IS NULL")
             .bind(hash).fetch_optional(&self.pool).await?.ok_or_else(AppError::unauthorized)?;
         Ok(AuthContext {
+            assistant: false,
             session_id: row.get("id"),
             user_id: row.get("user_id"),
             workspace_id: row.get("workspace_id"),
@@ -246,6 +251,7 @@ impl AuthService {
         let active = sqlx::query("SELECT m.role FROM memberships m JOIN users u ON u.id=m.user_id JOIN workspaces w ON w.id=m.workspace_id WHERE m.user_id=$1 AND m.workspace_id=$2 AND m.revoked_at IS NULL AND u.disabled_at IS NULL AND w.disabled_at IS NULL AND u.password_hash=$3 FOR SHARE OF m,u,w")
             .bind(row.get::<Uuid,_>("id")).bind(input.workspace_id).bind(row.get::<String,_>("password_hash")).fetch_optional(&mut *tx).await?.ok_or_else(AppError::unauthorized)?;
         let auth = AuthContext {
+            assistant: false,
             user_id: row.get("id"),
             workspace_id: input.workspace_id,
             session_id: Uuid::new_v4(),
@@ -300,6 +306,7 @@ impl AuthService {
         let row = sqlx::query("SELECT s.absolute_expires_at,s.kind,m.role FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=$1 AND s.user_id=$2 AND s.workspace_id=$3 AND s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at>clock_timestamp()) AND (s.absolute_expires_at IS NULL OR s.absolute_expires_at>clock_timestamp()) AND u.disabled_at IS NULL AND m.revoked_at IS NULL AND w.disabled_at IS NULL FOR UPDATE OF s")
             .bind(auth.session_id).bind(auth.user_id).bind(auth.workspace_id).fetch_optional(&mut *tx).await?.ok_or_else(AppError::unauthorized)?;
         let current_auth = AuthContext {
+            assistant: false,
             role: row.get("role"),
             ..auth.clone()
         };

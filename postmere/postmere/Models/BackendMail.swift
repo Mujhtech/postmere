@@ -10,6 +10,7 @@ nonisolated struct BackendAccount: Codable, Equatable, Identifiable, Sendable {
     let lastSyncedAt: Date?
     var capabilities: [String]? = nil
     var syncStatus: BackendMailSyncStatus? = nil
+    var hiddenFromAssistants: Bool? = nil
 }
 
 nonisolated struct BackendAddress: Codable, Sendable {

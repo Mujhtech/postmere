@@ -81,6 +81,7 @@ impl PostmereMcp {
         let auth = &principal.auth;
         let scope = catalog::required_scope(name).ok_or_else(AppError::not_found)?;
         principal.require_scope(scope)?;
+        record_activity(state, principal.grant_id, name).await;
         let grant_guard = principal.begin_authorized(&state.pool).await?;
         let result = match name {
             "list_accounts" => json!({"accounts":ops::list_accounts(state,auth).await?}),
@@ -185,5 +186,22 @@ impl ServerHandler for PostmereMcp {
                 result
             },
         }.into())
+    }
+}
+
+/// Notes that an assistant used a tool, for Settings: the time and tool name
+/// only. A failure here never blocks the tool itself.
+async fn record_activity(state: &postmere_core::AppState, grant: uuid::Uuid, tool: &str) {
+    let result = sqlx::query(
+        "WITH used AS (UPDATE mcp_oauth_grants SET last_used_at=now() WHERE id=$1 RETURNING id),
+              logged AS (INSERT INTO mcp_activity(grant_id,tool) SELECT id,$2 FROM used RETURNING grant_id)
+         DELETE FROM mcp_activity WHERE grant_id=$1 AND at < now() - interval '7 days'",
+    )
+    .bind(grant)
+    .bind(tool)
+    .execute(&state.pool)
+    .await;
+    if let Err(error) = result {
+        tracing::warn!(event = "mcp_activity", reason = %error, "assistant activity not recorded");
     }
 }

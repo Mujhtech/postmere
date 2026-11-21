@@ -140,6 +140,7 @@ struct SidebarView: View {
                 .foregroundStyle(sidebarSecondary)
                 SidebarSyncIndicator(activity: runtime.mailSyncActivity)
                     .layoutPriority(1)
+                AssistantWorkingChip(monitor: runtime.assistants)
             }
             .padding(.horizontal, 14)
         }
@@ -304,3 +305,48 @@ struct SidebarView: View {
             .accessibilityHidden(true)
     }
 }
+
+/// Shows that a connected assistant is using the mailbox right now.
+private struct AssistantWorkingChip: View {
+    let monitor: AssistantActivityMonitor
+    @Environment(\.openSettings) private var openSettings
+    @AppStorage("settingsTab") private var settingsTab = "general"
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulse = false
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 15)) { context in
+            let working = monitor.connections.filter { $0.isWorking(at: context.date) }
+            if let first = working.first {
+                Button {
+                    settingsTab = "ai"
+                    openSettings()
+                } label: {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(SettingsTint.green)
+                            .frame(width: 7, height: 7)
+                            .overlay(Circle().stroke(SettingsTint.green.opacity(0.5), lineWidth: 1)
+                                .scaleEffect(pulse ? 2.3 : 1).opacity(pulse ? 0 : 1))
+                        Text(working.count == 1 ? "\(first.clientName) is working" : "\(working.count) assistants working")
+                            .font(.system(size: 11, weight: .medium))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(SettingsTint.green.opacity(0.12), in: Capsule())
+                    .foregroundStyle(SettingsTint.green)
+                }
+                .buttonStyle(.plain)
+                .help(first.recent.first.map { "Last: \($0.summary)" } ?? "An assistant is using your mail")
+                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                .onAppear {
+                    guard !reduceMotion else { return }
+                    withAnimation(.easeOut(duration: 1.4).repeatForever(autoreverses: false)) { pulse = true }
+                }
+            }
+        }
+        .animation(.smooth, value: monitor.working.map(\.id))
+    }
+}
+

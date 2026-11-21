@@ -115,6 +115,7 @@ pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<McpAu
         .bind(&token_hash).bind(resource(state)).fetch_optional(&state.pool).await?.ok_or_else(AppError::unauthorized)?;
     Ok(McpAuth {
         auth: AuthContext {
+            assistant: true,
             session_id: row.get("session_id"),
             user_id: row.get("user_id"),
             workspace_id: row.get("workspace_id"),

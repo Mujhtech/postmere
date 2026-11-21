@@ -76,10 +76,9 @@ pub(crate) async fn register(
         || !["none", "client_secret_basic"].contains(&method)
         || input.redirect_uris.is_empty()
         || input.redirect_uris.len() > 8
-        || input
-            .redirect_uris
-            .iter()
-            .any(|uri| !state.config.mcp_redirect_uris.contains(uri))
+        || input.redirect_uris.iter().any(|uri| {
+            !postmere_core::config::mcp_redirect_allowed(&state.config.mcp_redirect_uris, uri)
+        })
         || input.grant_types.as_ref().is_some_and(|v| {
             v.is_empty()
                 || v.iter()
@@ -137,7 +136,10 @@ pub(crate) async fn authorize(
         || checked_hash(&input.code_challenge, "").is_err()
         || input.state.as_ref().is_some_and(|s| s.len() > 2048)
         || input.client_id.len() > 120
-        || !state.config.mcp_redirect_uris.contains(&input.redirect_uri)
+        || !postmere_core::config::mcp_redirect_allowed(
+            &state.config.mcp_redirect_uris,
+            &input.redirect_uri,
+        )
     {
         return Ok(oauth_error("invalid_request"));
     }
@@ -265,7 +267,7 @@ pub(crate) async fn decide(
     let mut tx = browser.auth.begin_authorized(&state.pool).await?;
     let row = request_for_browser(&mut tx, id, &browser.auth).await?;
     let redirect: String = row.get("redirect_uri");
-    if !state.config.mcp_redirect_uris.contains(&redirect)
+    if !postmere_core::config::mcp_redirect_allowed(&state.config.mcp_redirect_uris, &redirect)
         || row.get::<String, _>("resource") != resource(&state)
     {
         return Err(AppError::forbidden());
@@ -421,6 +423,7 @@ async fn grant_auth(state: &AppState, grant: Uuid) -> Result<AuthContext, OAuthF
     let row=sqlx::query("SELECT s.id,s.user_id,s.workspace_id,m.role FROM mcp_oauth_grants g JOIN sessions s ON s.id=g.session_id JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id WHERE g.id=$1")
         .bind(grant).fetch_optional(&state.pool).await?.ok_or(OAuthFailure("invalid_grant"))?;
     Ok(AuthContext {
+        assistant: false,
         session_id: row.get("id"),
         user_id: row.get("user_id"),
         workspace_id: row.get("workspace_id"),

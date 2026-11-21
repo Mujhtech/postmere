@@ -34,6 +34,7 @@ pub async fn browser_session(
         .bind(checked_hash(&token, "")?).fetch_optional(&state.pool).await?.ok_or_else(AppError::unauthorized)?;
     Ok(BrowserSession {
         auth: AuthContext {
+            assistant: false,
             session_id: row.get("id"),
             user_id: row.get("user_id"),
             workspace_id: row.get("workspace_id"),
@@ -193,6 +194,7 @@ pub(crate) async fn login(
         .expires_at
         .ok_or_else(|| AppError::internal("browser_session_lifetime"))?;
     let auth = AuthContext {
+        assistant: false,
         user_id: session.user_id,
         workspace_id: session.workspace_id,
         session_id: session.session_id,

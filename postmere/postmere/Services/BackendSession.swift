@@ -549,6 +549,23 @@ final class BackendSession {
         statusMessage = "Account disconnected. Cached mail and drafts remain on this Mac."
     }
 
+    // MARK: Assistants
+
+    func assistantConnections() async throws -> [AssistantConnection] {
+        try await request("GET", "/v1/mcp/connections")
+    }
+
+    func revokeAssistant(id: UUID) async throws {
+        let _: BackendEmpty = try await request("DELETE", "/v1/mcp/connections/\(id.uuidString)")
+    }
+
+    /// Shows or hides an account from assistants, then refreshes the list.
+    func setAssistantAccess(accountID: UUID, visible: Bool) async throws {
+        let _: BackendEmpty = try await request("PUT", "/v1/mail/accounts/\(accountID.uuidString)/assistants",
+                                                body: AssistantAccessInput(visible: visible))
+        try await refreshAccounts()
+    }
+
     nonisolated struct OAuthOptions: Encodable, Sendable { let calendarAccess: Bool }
 
     func startOAuth(provider: String, calendarAccess: Bool = false) async throws -> OAuthStart {
