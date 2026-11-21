@@ -158,9 +158,6 @@ struct ContentView: View {
         .sheet(isPresented: Binding(get: { runtime.showsCalendar }, set: { runtime.showsCalendar = $0 })) {
             CalendarHomeView(runtime: runtime)
         }
-        .sheet(isPresented: Binding(get: { runtime.showsAIQuestion }, set: { runtime.showsAIQuestion = $0 })) {
-            MailAskView(runtime: runtime)
-        }
         .sheet(isPresented: Binding(get: { runtime.showsWorkspace }, set: { runtime.showsWorkspace = $0 })) {
             WorkspaceView(runtime: runtime)
         }

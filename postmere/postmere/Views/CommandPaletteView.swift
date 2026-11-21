@@ -62,7 +62,7 @@ struct CommandPaletteView: View {
         result.append(Action(id: "saveView", title: "Save current inbox view…", symbol: "plus.rectangle.on.folder", run: { runtime.showsSavedViewEditor = true }))
         result.append(Action(id: "attachments", title: "Open attachment library", symbol: "paperclip", run: { runtime.showsAttachmentLibrary = true }))
         result.append(Action(id: "calendar", title: "Open calendar", symbol: "calendar", shortcut: "⌥⌘C", run: { runtime.showsCalendar = true }))
-        result.append(Action(id: "askMail", title: "Ask your mail…", symbol: "sparkles", run: { runtime.showsAIQuestion = true }))
+        result.append(Action(id: "askMail", title: "Ask your mail…", symbol: "postmere.ask", run: { runtime.showsAIQuestion = true }))
         if runtime.backend.isConnected {
             result.append(Action(id: "workspace", title: "Open workspace and team templates…", symbol: "bubble.left.and.bubble.right", run: { runtime.showsWorkspace = true }))
             if !runtime.isSyncingBackend {

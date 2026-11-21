@@ -36,6 +36,14 @@ final class PacedText {
         }
     }
 
+    /// Stops revealing and drops text that has not been shown yet.
+    func halt() {
+        task?.cancel()
+        task = nil
+        pending = ""
+        isRevealing = false
+    }
+
     func reset() {
         task?.cancel()
         task = nil
@@ -72,6 +80,15 @@ final class MailAskTurn: Identifiable {
         return sources.filter { cited.contains($0.id) } + sources.filter { !cited.contains($0.id) }
     }
 
+    /// Ends a turn the user stopped: a partial answer stays as it is.
+    func stop() {
+        guard phase == .searching || phase == .answering || answer.isRevealing else { return }
+        answer.halt()
+        withAnimation(.smooth) {
+            phase = answer.shown.isEmpty ? .failed("Stopped.", canRetry: true) : .done
+        }
+    }
+
     func run(session: BackendSession) async {
         phase = .searching
         answer.reset()
@@ -104,13 +121,16 @@ final class MailAskTurn: Identifiable {
 }
 
 /// Ask questions about indexed mail as a short conversation with streamed,
-/// sourced answers.
+/// sourced answers. Lives in the reader's trailing panel, so opening a source
+/// shows the message beside the conversation instead of ending it.
 struct MailAskView: View {
     let runtime: MailRuntime
+    let onClose: () -> Void
+    var onOpenSource: () -> Void = {}
 
     @Environment(\.postmereAccent) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.mailboxInset) private var inset
     @Namespace private var fieldSpace
     @State private var settings: MailAISettings?
     @State private var settingsError: String?
@@ -140,18 +160,22 @@ struct MailAskView: View {
                     .padding(.vertical, 12)
             }
         }
-        .frame(width: 680, height: 640)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .tint(palette.accentInk)
-        .mailPanelSurface()
+        .background(inset)
+        .onExitCommand(perform: onClose)
         .task { await loadSettings() }
+        // A question typed on the home page while the panel is already open.
+        .onChange(of: runtime.pendingAIQuestion) { askPendingQuestion() }
         .onDisappear { running?.cancel() }
+        .accessibilityElement(children: .contain)
     }
 
     // MARK: Header
 
     private var header: some View {
         HStack(spacing: 8) {
-            PostmereIcon("sparkles", size: 14).foregroundStyle(palette.accentInk)
+            PostmereIcon("postmere.ask", size: 15).foregroundStyle(palette.accentInk)
             Text("Ask your mail").font(.system(size: 13, weight: .semibold))
             Spacer()
             if !turns.isEmpty {
@@ -160,10 +184,9 @@ struct MailAskView: View {
                     .font(.callout)
                     .disabled(isWorking)
             }
-            Button { dismiss() } label: { PostmereIcon("xmark", size: 11) }
+            Button(action: onClose) { PostmereIcon("xmark", size: 11) }
                 .buttonStyle(.borderless)
-                .keyboardShortcut(.cancelAction)
-                .help("Close")
+                .help("Close · Esc")
                 .accessibilityLabel("Close")
         }
         .foregroundStyle(.secondary)
@@ -181,7 +204,8 @@ struct MailAskView: View {
                     .scaleEffect(1.3)
                     .padding(.bottom, 6)
                 Text("What do you want to know?")
-                    .font(.system(size: 28, weight: .medium, design: .serif))
+                    .font(.system(size: 26, weight: .medium, design: .serif))
+                    .multilineTextAlignment(.center)
                 Text("Answers come from mail synced to your workspace, with the messages they’re based on.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -192,13 +216,13 @@ struct MailAskView: View {
             } else if let settingsError {
                 Text(settingsError).font(.callout).foregroundStyle(PostmereTheme.destructiveInk)
             } else {
-                field.padding(.horizontal, 40)
+                field
                 starters
             }
             Spacer(minLength: 0)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 24)
+        .padding(.horizontal, 20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -263,45 +287,13 @@ struct MailAskView: View {
     // MARK: Field
 
     private var field: some View {
-        HStack(spacing: 10) {
-            PostmereIcon("sparkles", size: 15).foregroundStyle(palette.accentInk)
-            TextField("Ask anything about your mail", text: $draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(size: 15))
-                .lineLimit(1...4)
-                .focused($fieldFocused)
-                .onSubmit { submit(draft) }
-                .disabled(!isReady)
-            scopeMenu
-            Button { submit(draft) } label: {
-                PostmereIcon("arrow.up", size: 13)
-                    .foregroundStyle(canSubmit ? Color.white : Color.secondary)
-                    .frame(width: 28, height: 28)
-                    .background(canSubmit ? palette.accent : PostmereTheme.rule, in: Circle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!canSubmit)
-            .keyboardShortcut(.defaultAction)
-            .help("Ask (Return)")
-            .accessibilityLabel("Ask")
-            .animation(.snappy(duration: 0.2), value: canSubmit)
-        }
-        .padding(.leading, 14)
-        .padding(.trailing, 7)
-        .padding(.vertical, 7)
-        .background(PostmereTheme.paper, in: .rect(cornerRadius: 20, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-            .strokeBorder(fieldFocused ? palette.accentInk.opacity(0.45) : PostmereTheme.rule, lineWidth: fieldFocused ? 1.5 : 1))
-        .shadow(color: .black.opacity(turns.isEmpty ? 0.07 : 0), radius: 14, y: 6)
-        .matchedGeometryEffect(id: "field", in: fieldSpace)
-        .animation(.easeOut(duration: 0.15), value: fieldFocused)
-        .onAppear {
-            fieldFocused = true
-            if let pending = runtime.pendingAIQuestion {
-                runtime.pendingAIQuestion = nil
-                draft = pending
-            }
-        }
+        AskComposer(text: $draft, focused: $fieldFocused,
+                    placeholders: turns.isEmpty ? starterPrompts : [],
+                    isDocked: !turns.isEmpty, isReady: isReady, isWorking: isWorking,
+                    canSubmit: canSubmit, submitCount: turns.count,
+                    onSubmit: { submit(draft) }, onStop: stop) { scopeMenu }
+            .matchedGeometryEffect(id: "field", in: fieldSpace)
+            .onAppear { fieldFocused = true }
     }
 
     private var canSubmit: Bool {
@@ -320,13 +312,19 @@ struct MailAskView: View {
                 }
             }
         } label: {
-            Text(runtime.backend.accounts.first { $0.id == accountID }?.email ?? "All accounts")
-                .font(.caption.weight(.medium))
-                .lineLimit(1)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(palette.accentInk.opacity(0.08), in: Capsule())
+            HStack(spacing: 5) {
+                PostmereIcon("tray", size: 11)
+                Text(runtime.backend.accounts.first { $0.id == accountID }?.email ?? "All accounts")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                PostmereIcon("chevron.down", size: 8).opacity(0.7)
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(palette.accentInk.opacity(0.08), in: Capsule())
+            .frame(maxWidth: 190, alignment: .leading)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -375,6 +373,13 @@ struct MailAskView: View {
         running = Task { await turn.run(session: runtime.backend) }
     }
 
+    private func stop() {
+        running?.cancel()
+        running = nil
+        turns.last?.stop()
+        fieldFocused = true
+    }
+
     private func retry(_ turn: MailAskTurn) {
         running?.cancel()
         running = Task { await turn.run(session: runtime.backend) }
@@ -396,6 +401,15 @@ struct MailAskView: View {
             withAnimation(.smooth) { settings = loaded }
         } catch { settingsError = error.localizedDescription }
         accountID = runtime.store.selectedAccount.flatMap(MailAccount.init(rawValue:))?.remote?.accountID
+        askPendingQuestion()
+    }
+
+    /// Asks a question handed over from elsewhere straight away; it only
+    /// fills the field when AI is not enabled yet.
+    private func askPendingQuestion() {
+        guard let pending = runtime.pendingAIQuestion, settings != nil || settingsError != nil else { return }
+        runtime.pendingAIQuestion = nil
+        if isReady && !isWorking { submit(pending) } else { draft = pending }
     }
 
     private func enable() async {
@@ -406,6 +420,7 @@ struct MailAskView: View {
                 "PUT", "/v1/ai/settings", body: MailAISettingsInput(enabled: true, styleGuide: settings?.styleGuide ?? ""))
             withAnimation(.smooth) { settings = updated }
             fieldFocused = true
+            if !draft.isEmpty { submit(draft) }
         } catch { settingsError = error.localizedDescription }
     }
 
@@ -419,7 +434,7 @@ struct MailAskView: View {
             runtime.store.selectedInboxSplitID = nil
             runtime.store.selectedMailbox = message.mailbox
             runtime.store.select(message)
-            dismiss()
+            onOpenSource()
         } catch { settingsError = error.localizedDescription }
     }
 }
@@ -621,7 +636,7 @@ private struct AskOrb: View {
                     } animation: { expanded in expanded ? .easeOut(duration: 1.3) : .linear(duration: 0) }
                     .transition(.opacity)
             }
-            PostmereIcon("sparkles", size: 14).foregroundStyle(palette.accentInk)
+            PostmereIcon("postmere.ask", size: 15).foregroundStyle(palette.accentInk)
         }
         .frame(width: 30, height: 30)
         .animation(.smooth, value: isWorking)
@@ -702,5 +717,203 @@ private extension MailAISource {
     var senderName: String {
         let name = sender.split(separator: "<").first.map { $0.trimmingCharacters(in: .whitespaces.union(.init(charactersIn: "\""))) } ?? ""
         return name.isEmpty ? (senderAddress.isEmpty ? "Unknown sender" : senderAddress) : name
+    }
+}
+
+// MARK: - Composer
+
+/// The question field: a card that glows when focused, traces its border
+/// while an answer is on the way, and cycles example questions when empty.
+private struct AskComposer<Scope: View>: View {
+    @Binding var text: String
+    var focused: FocusState<Bool>.Binding
+    let placeholders: [String]
+    let isDocked: Bool
+    let isReady: Bool
+    let isWorking: Bool
+    let canSubmit: Bool
+    let submitCount: Int
+    let onSubmit: () -> Void
+    let onStop: () -> Void
+    @ViewBuilder let scope: () -> Scope
+
+    @Environment(\.postmereAccent) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var placeholderIndex = 0
+    @State private var appeared = false
+    @State private var introStart: Date?
+
+    private let radius: CGFloat = 18
+    private var isFocused: Bool { focused.wrappedValue }
+    private var placeholder: String {
+        if isDocked { return "Ask a follow-up…" }
+        guard !placeholders.isEmpty else { return "Ask anything about your mail" }
+        return placeholders[placeholderIndex % placeholders.count]
+    }
+    private var offersPlaceholder: Bool { !isDocked && !placeholders.isEmpty && text.isEmpty && isReady }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: isDocked ? 6 : 10) {
+            ZStack(alignment: .topLeading) {
+                if text.isEmpty {
+                    Text(placeholder)
+                        .font(.system(size: 15))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .id(placeholder)
+                        .transition(reduceMotion ? .opacity : .asymmetric(
+                            insertion: .offset(y: 10).combined(with: .opacity),
+                            removal: .offset(y: -10).combined(with: .opacity)))
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+                TextField("", text: $text, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 15))
+                    .lineLimit(isDocked ? 1...5 : 2...6)
+                    .focused(focused)
+                    .onSubmit(onSubmit)
+                    .disabled(!isReady)
+                    .accessibilityLabel("Ask anything about your mail")
+                    .onKeyPress(.tab) {
+                        guard offersPlaceholder else { return .ignored }
+                        text = placeholder
+                        return .handled
+                    }
+            }
+            .clipped()
+            HStack(spacing: 8) {
+                scope()
+                Spacer(minLength: 4)
+                if offersPlaceholder {
+                    HStack(spacing: 4) {
+                        Text("tab")
+                            .font(.system(size: 10, weight: .semibold, design: .rounded))
+                            .padding(.horizontal, 5).padding(.vertical, 1.5)
+                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(PostmereTheme.rule))
+                        Text("to use")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .transition(.opacity.combined(with: .offset(x: 6)))
+                }
+                sendButton
+            }
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 8)
+        .padding(.top, isDocked ? 10 : 13)
+        .padding(.bottom, 8)
+        .background(PostmereTheme.paper, in: .rect(cornerRadius: radius, style: .continuous))
+        .overlay { border }
+        .shadow(color: isFocused || isWorking ? palette.accent.opacity(0.20) : .black.opacity(isDocked ? 0.03 : 0.07),
+                radius: isFocused || isWorking ? 18 : 12, y: isFocused ? 4 : 6)
+        .keyframeAnimator(initialValue: 1.0, trigger: submitCount) { content, scale in
+            content.scaleEffect(reduceMotion ? 1 : scale)
+        } keyframes: { _ in
+            SpringKeyframe(0.97, duration: 0.1, spring: .snappy)
+            SpringKeyframe(1.0, duration: 0.45, spring: .bouncy)
+        }
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared || reduceMotion ? 0 : 16)
+        .scaleEffect(appeared || reduceMotion ? 1 : 0.96, anchor: .bottom)
+        .animation(.easeOut(duration: 0.18), value: isFocused)
+        .animation(.smooth(duration: 0.3), value: isWorking)
+        .animation(.snappy(duration: 0.25), value: offersPlaceholder)
+        .animation(.smooth(duration: 0.3), value: isDocked)
+        .onAppear {
+            guard !appeared else { return }
+            // Rise in just after the panel slides open, then trace the border once.
+            withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .spring(duration: 0.55, bounce: 0.2).delay(0.12)) {
+                appeared = true
+            }
+            if !reduceMotion { introStart = .now.addingTimeInterval(0.25) }
+        }
+        .task(id: placeholders) {
+            // Cycle examples while the field is empty.
+            guard placeholders.count > 1 else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3.2))
+                guard text.isEmpty else { continue }
+                withAnimation(.smooth(duration: 0.45)) { placeholderIndex += 1 }
+            }
+        }
+    }
+
+    // MARK: Border
+
+    @ViewBuilder private var border: some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        ZStack {
+            shape.strokeBorder(isFocused ? palette.accentInk.opacity(0.45) : PostmereTheme.rule,
+                               lineWidth: isFocused ? 1.5 : 1)
+            if !reduceMotion, isWorking || introStart != nil {
+                TimelineView(.animation) { context in
+                    let tracing = tracer(at: context.date)
+                    shape.strokeBorder(
+                        AngularGradient(colors: [palette.accent.opacity(0), palette.accent, palette.accentInk,
+                                                 palette.accent.opacity(0)],
+                                        center: .center, angle: .degrees(tracing.angle)),
+                        lineWidth: 1.75)
+                        .opacity(tracing.opacity)
+                }
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            } else if isWorking {
+                shape.strokeBorder(palette.accent.opacity(0.7), lineWidth: 1.5)
+            }
+        }
+    }
+
+    /// While working the highlight circles steadily; the entrance trace makes
+    /// one faster lap and fades.
+    private func tracer(at date: Date) -> (angle: Double, opacity: Double) {
+        if isWorking {
+            return (date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2) * 180, 1)
+        }
+        guard let introStart else { return (0, 0) }
+        let elapsed = date.timeIntervalSince(introStart)
+        if elapsed > 1.1 { Task { @MainActor in self.introStart = nil } }
+        guard elapsed > 0 else { return (0, 0) }
+        let fade = elapsed < 0.7 ? 1 : max(0, 1 - (elapsed - 0.7) / 0.4)
+        return (elapsed * 360, fade)
+    }
+
+    // MARK: Send / Stop
+
+    private var sendButton: some View {
+        let active = canSubmit || isWorking
+        return Button(action: isWorking ? onStop : onSubmit) {
+            ZStack {
+                Circle().fill(active ? palette.accent : PostmereTheme.rule)
+                Group {
+                    if isWorking {
+                        RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                            .frame(width: 9, height: 9)
+                    } else {
+                        PostmereIcon("arrow.up", size: 13)
+                    }
+                }
+                .foregroundStyle(active ? Color.white : Color.secondary)
+                .transition(.scale(scale: 0.3).combined(with: .opacity))
+            }
+            .frame(width: 30, height: 30)
+            .contentShape(Circle())
+        }
+        .buttonStyle(SendButtonStyle())
+        .disabled(!active)
+        .scaleEffect(active || reduceMotion ? 1 : 0.88)
+        .animation(.spring(duration: 0.35, bounce: 0.5), value: canSubmit)
+        .animation(.spring(duration: 0.35, bounce: 0.3), value: isWorking)
+        .help(isWorking ? "Stop" : "Ask (Return)")
+        .accessibilityLabel(isWorking ? "Stop" : "Ask")
+    }
+}
+
+private struct SendButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.86 : 1)
+            .animation(.snappy(duration: 0.18), value: configuration.isPressed)
     }
 }

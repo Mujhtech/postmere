@@ -33,8 +33,10 @@ private struct OverviewContent: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     hero(compact: compact).entrance(appeared, order: 0)
-                    if overview.isInbox && runtime.backend.canAccessWorkspace {
+                    // The bar hands off to the Ask panel while it is open.
+                    if overview.isInbox && runtime.backend.canAccessWorkspace && !runtime.showsAIQuestion {
                         askBar.entrance(appeared, order: 1)
+                            .transition(.opacity.combined(with: .offset(x: 24)))
                     }
                     if overview.isInbox, !tiles.isEmpty {
                         tileRow.entrance(appeared, order: 2)
@@ -108,7 +110,7 @@ private struct OverviewContent: View {
 
     private var askBar: some View {
         HStack(spacing: 10) {
-            PostmereIcon("sparkles", size: 15).foregroundStyle(palette.accentInk)
+            PostmereIcon("postmere.ask", size: 16).foregroundStyle(palette.accentInk)
             TextField("Ask anything about your mail…", text: $question)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14.5))

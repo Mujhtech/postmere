@@ -181,6 +181,17 @@ enum PostmereSymbols {
         case "sparkles":
             d.line([12, 3, 14.5, 9.5, 21, 12, 14.5, 14.5, 12, 21, 9.5, 14.5, 3, 12, 9.5, 9.5, 12, 3], close: true)
             d.line([20, 2, 20, 6]); d.line([18, 4, 22, 4])
+        case "postmere.ask":
+            // A speech bubble holding an envelope fold, its top corner left open for a spark.
+            d.line([12.5, 4, 6, 4])
+            d.curve(from: [6, 4], to: [3, 7], c1: [4.3, 4], c2: [3, 5.3])
+            d.line([3, 7, 3, 13])
+            d.curve(from: [3, 13], to: [6, 16], c1: [3, 14.7], c2: [4.3, 16])
+            d.line([7.5, 16, 6.5, 20.5, 11.5, 16, 16, 16])
+            d.curve(from: [16, 16], to: [19, 13], c1: [17.7, 16], c2: [19, 14.7])
+            d.line([19, 13, 19, 10.5])
+            d.line([7, 8, 11, 11, 15, 8])
+            d.line([19, 1.5, 19.9, 4.1, 22.5, 5, 19.9, 5.9, 19, 8.5, 18.1, 5.9, 15.5, 5, 18.1, 4.1], close: true)
         case "note.text":
             d.rect(4, 3, 16, 18, radius: 2.5)
             d.line([8, 7, 16, 7]); d.line([8, 11, 16, 11]); d.line([8, 15, 12, 15])

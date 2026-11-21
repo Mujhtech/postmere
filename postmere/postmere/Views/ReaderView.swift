@@ -107,8 +107,35 @@ struct ReaderView: View {
         }
     }
 
+    /// Ask shares the reader's trailing panel slot: beside the reader when there
+    /// is room, over it when narrow. It stays mounted as messages open beside it.
+    private var readerWithAsk: some View {
+        let beside = readerSize.width >= 720
+        let layout = beside ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(ZStackLayout(alignment: .trailing))
+        return layout {
+            readerContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if runtime.showsAIQuestion {
+                HStack(spacing: 0) {
+                    Rectangle().fill(.separator).frame(width: 1).accessibilityHidden(true)
+                    MailAskView(runtime: runtime, onClose: closeAsk,
+                                onOpenSource: { if !beside { closeAsk() } })
+                }
+                .frame(width: beside ? min(420, max(330, readerSize.width * 0.4)) : nil)
+                .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(reduceMotion ? .easeOut(duration: 0.2) : .spring(duration: 0.45, bounce: 0.12),
+                   value: runtime.showsAIQuestion)
+    }
+
+    private func closeAsk() {
+        runtime.showsAIQuestion = false
+        runtime.pendingAIQuestion = nil
+    }
+
     var body: some View {
-        readerContent
+        readerWithAsk
         // Revealing the panel asks the split layout for enough room to retain
         // a readable message; it never becomes a modal inspector at small sizes.
         .frame(minWidth: showsSenderDetails ? 661 : nil, maxWidth: .infinity, maxHeight: .infinity)
@@ -117,8 +144,15 @@ struct ReaderView: View {
             if requestID == nil, senderDetailsSelection?.target != nil { closeSenderDetails() }
         }
         .onDisappear(perform: closeSenderDetails)
+        // One trailing panel at a time: Ask, a reader action, or sender details.
         .onChange(of: runtime.readerPanel?.id) {
-            if runtime.readerPanel != nil { closeSenderDetails() }
+            if runtime.readerPanel != nil { closeSenderDetails(); runtime.showsAIQuestion = false }
+        }
+        .onChange(of: runtime.showsAIQuestion) { _, shows in
+            if shows { runtime.readerPanel = nil; closeSenderDetails() }
+        }
+        .onChange(of: showsSenderDetails) { _, shows in
+            if shows { runtime.showsAIQuestion = false }
         }
         .toolbar {
             if store.selectedMessage != nil || store.selectedMessageIDs.count > 1 { readerToolbar }
