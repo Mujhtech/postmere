@@ -149,24 +149,20 @@ struct MailListView: View {
         .background(theme == .native ? Color.clear : theme.colors(for: scheme).canvas)
         .overlay(alignment: .bottom) {
             if showsAction, let action = store.lastAction {
-                HStack(spacing: 10) {
-                    Text(action).lineLimit(2)
-                    if store.lastActionOffersUndo {
-                        Button("Undo", action: store.undoLastMove)
-                    }
+                ActionToast(store: store, action: action, detail: store.lastActionDetail,
+                            offersUndo: store.lastActionOffersUndo) {
+                    withAnimation(.smooth(duration: 0.3)) { showsAction = false }
                 }
-                .font(.callout)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(.regularMaterial, in: Capsule())
-                .padding(8)
+                .id(store.actionRevision)
+                .padding(12)
+                .transition(.move(edge: .bottom).combined(with: .opacity).combined(with: .scale(scale: 0.9, anchor: .bottom)))
             }
         }
+        .animation(.spring(duration: 0.45, bounce: 0.2), value: showsAction)
         .task(id: store.isSearchActive ? nil : store.mailboxViewKey) { await store.loadMailboxView() }
         .task(id: store.actionRevision) {
+            // The toast dismisses itself when its countdown ends.
             showsAction = store.lastAction != nil
-            try? await Task.sleep(for: .seconds(4))
-            if !Task.isCancelled { showsAction = false }
         }
         .defaultFocus($isListFocused, true)
         .navigationTitle(store.isSearchActive ? "Search" : mailboxTitle)

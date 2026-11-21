@@ -11,6 +11,8 @@ struct ReaderView: View {
     @AppStorage("readingFontSize") private var readingFontSize = 14.0
     @AppStorage(MailReadingFont.preference) private var readingFont = MailReadingFont.original
     @State private var presentedSheet: ReaderSheet?
+    @State private var trashKick = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var noteDrafts: [UUID: String] = [:]
     @State private var attachmentError: String?
     @State private var expandedMessageIDs: Set<UUID> = []
@@ -69,27 +71,31 @@ struct ReaderView: View {
         }
     }
 
-    var body: some View {
-        Group {
+    /// The open message, selection or overview. A message moved out of the
+    /// reader, or brought back by Undo, animates rather than swapping instantly.
+    private var readerContent: some View {
+        // Overlapping so a departing message and its successor share the space.
+        ZStack {
             if store.selectedMessageIDs.count > 1 {
                 MultiSelectionView(store: store)
             } else if let message = store.selectedMessage {
-                HSplitView {
-                    readerWithActions(message)
-                        .frame(minWidth: showsSenderDetails ? 380 : nil, maxWidth: .infinity, maxHeight: .infinity)
-                    if showsSenderDetails, let sender = senderDetailsMessage {
-                        SenderContextView(message: sender, target: senderProfileTarget, research: senderResearch,
-                                          onRefresh: { requestSenderDetails(.refresh) }, onClose: closeSenderDetails,
-                                          onEnable: { requestSenderDetails(.enable) }, isEnabling: isEnablingSenderResearch, enableError: senderEnableError)
-                            .frame(minWidth: 280, idealWidth: 300, maxWidth: 320)
-                    }
-                }
+                openMessage(message)
             } else if store.isSearchActive {
                 searchPlaceholder
             } else {
                 InboxOverviewView(store: store)
             }
         }
+        .animation(reduceMotion ? .easeOut(duration: 0.2) : .spring(duration: 0.5, bounce: 0.1), value: store.departure?.id)
+        .onChange(of: store.departure?.id) {
+            guard store.departure?.destination == .trash else { return }
+            trashKick += 1
+            NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+        }
+    }
+
+    var body: some View {
+        readerContent
         // Revealing the panel asks the split layout for enough room to retain
         // a readable message; it never becomes a modal inspector at small sizes.
         .frame(minWidth: showsSenderDetails ? 661 : nil, maxWidth: .infinity, maxHeight: .infinity)
@@ -168,6 +174,24 @@ struct ReaderView: View {
         )) {
             Button("OK") { attachmentError = nil }
         } message: { Text(attachmentError ?? "Please try again.") }
+    }
+
+    /// The reader for one message, beside the optional sender details panel.
+    private func openMessage(_ message: MailMessage) -> some View {
+        HSplitView {
+            readerWithActions(message)
+                .frame(minWidth: showsSenderDetails ? 380 : nil, maxWidth: .infinity, maxHeight: .infinity)
+            if showsSenderDetails, let sender = senderDetailsMessage {
+                SenderContextView(message: sender, target: senderProfileTarget, research: senderResearch,
+                                  onRefresh: { requestSenderDetails(.refresh) }, onClose: closeSenderDetails,
+                                  onEnable: { requestSenderDetails(.enable) }, isEnabling: isEnablingSenderResearch, enableError: senderEnableError)
+                    .frame(minWidth: 280, idealWidth: 300, maxWidth: 320)
+            }
+        }
+        // Identity changes only when a message leaves or returns, so
+        // ordinary navigation keeps the same reader and web view.
+        .id(store.departure?.id)
+        .transition(reduceMotion ? .opacity : .asymmetric(insertion: .readerArrival, removal: .readerDeparture))
     }
 
     private func readerWithActions(_ message: MailMessage) -> some View {
@@ -827,6 +851,7 @@ struct ReaderView: View {
                 PostmereLabel("Move to Trash", symbol: "trash", size: 17)
                     .labelStyle(.iconOnly)
                     .foregroundStyle(PostmereTheme.icon)
+                    .trashWobble(trigger: trashKick, enabled: !reduceMotion)
             }
                 .help("Move to Trash · ⌘Delete")
                 .disabled(!store.canMoveSelected(to: .trash))

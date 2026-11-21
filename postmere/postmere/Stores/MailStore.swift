@@ -89,7 +89,9 @@ final class MailStore {
     var draftBodyRTF: Data? { didSet { draftChanged() } }
     var draftAttachments: [MailAttachment] = [] { didSet { draftChanged() } }
     var composeTitle = "New message"
-    var lastAction: String? { didSet { actionRevision += 1 } }
+    var lastAction: String? { didSet { actionRevision += 1; lastActionDetail = nil } }
+    /// The subject of the single message an action moved, for its confirmation.
+    var lastActionDetail: String?
     private(set) var actionRevision = 0
     private var undoRevision: Int?
 
@@ -103,6 +105,9 @@ final class MailStore {
     var draftConversationID = UUID()
     var initialDraft = DraftSnapshot()
     private var lastMove: MoveSnapshot?
+    /// Set when the open message leaves the reader by a move, or comes back by
+    /// Undo, so the reader can animate that change rather than swap instantly.
+    var departure: MailDeparture?
     var batchMoveUndo: (messages: [MailMessage], selection: Set<UUID>, lead: UUID?, scope: MailboxViewScope)?
     @ObservationIgnored var pendingMoveSelection: (lead: UUID, selection: Set<UUID>, scope: MailboxViewScope)?
     var savedViews: [SavedInboxView] = [] { didSet { mailboxRulesRevision &+= 1; schedulePersistence(); if isSearchActive { refreshSearch() } } }
@@ -508,6 +513,7 @@ final class MailStore {
     }
 
     func undoLastMove() {
+        departure = MailDeparture(messageID: selectedMessageID, destination: nil, subject: nil)
         pendingMoveSelection = nil
         if undoBatchMove() { lastMove = nil; return }
         guard let lastMove,
@@ -930,4 +936,12 @@ final class MailStore {
     func removeDraftAttachment(_ id: UUID) {
         draftAttachments.removeAll { $0.id == id }
     }
+}
+
+nonisolated struct MailDeparture: Equatable, Sendable {
+    let id = UUID()
+    let messageID: UUID?
+    /// Nil when the message is coming back.
+    let destination: Mailbox?
+    let subject: String?
 }

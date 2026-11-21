@@ -93,6 +93,10 @@ extension MailStore {
             updated[index].isUnread = false
         }
         guard let first = originals.first else { return false }
+        if let lead = selectedMessageID, let open = originals.first(where: { $0.id == lead }) {
+            departure = MailDeparture(messageID: lead, destination: mailbox ?? restoreDestination(for: open),
+                                      subject: open.displaySubject)
+        }
         MailReplyQueue.reconcile(&updated, conversations: Set(originals.map(\.conversationID)))
         recordMoveUndo(originals)
         pendingMoveSelection = nil
@@ -104,6 +108,7 @@ extension MailStore {
         if originals.count == 1 {
             let destination = mailbox ?? restoreDestination(for: first)
             announceMove("Moved to \(destination.title)")
+            lastActionDetail = first.displaySubject
         } else if let mailbox {
             announceMove("Moved \(originals.count) messages to \(mailbox.title)")
         } else {
