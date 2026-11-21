@@ -808,7 +808,7 @@ private struct AskComposer<Scope: View>: View {
         .overlay { border }
         .shadow(color: isFocused || isWorking ? palette.accent.opacity(0.20) : .black.opacity(isDocked ? 0.03 : 0.07),
                 radius: isFocused || isWorking ? 18 : 12, y: isFocused ? 4 : 6)
-        .keyframeAnimator(initialValue: 1.0, trigger: submitCount) { content, scale in
+        .keyframeAnimator(initialValue: 1.0, trigger: submitCount) { [reduceMotion] content, scale in
             content.scaleEffect(reduceMotion ? 1 : scale)
         } keyframes: { _ in
             SpringKeyframe(0.97, duration: 0.1, spring: .snappy)

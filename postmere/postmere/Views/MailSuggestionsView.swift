@@ -214,7 +214,7 @@ struct MailSuggestionsView: View {
         case .failed(let message, let canRetry):
             VStack(alignment: .leading, spacing: 8) {
                 Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                if canRetry { Button("Try Again", action: rerun).buttonStyle(.accentLink) }
+                if canRetry { Button("Try Again", action: rerun).buttonStyle(AccentLinkStyle()) }
             }
             .transition(.opacity)
         case .loading, .streaming, .ready:
@@ -682,7 +682,7 @@ private struct SuggestionCard: View {
                 Spacer(minLength: 0)
                 if isApplied {
                     Button("Undo", action: onUndo)
-                        .buttonStyle(.accentLink)
+                        .buttonStyle(AccentLinkStyle())
                         .font(.caption)
                         .transition(.opacity.combined(with: .offset(x: 6)))
                 } else {

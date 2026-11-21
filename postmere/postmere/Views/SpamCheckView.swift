@@ -229,7 +229,7 @@ private struct ShieldOrb: View {
                 .transition(.scale(scale: 0.4).combined(with: .opacity))
         }
         .frame(width: 30, height: 30)
-        .keyframeAnimator(initialValue: 1.0, trigger: kick) { content, scale in
+        .keyframeAnimator(initialValue: 1.0, trigger: kick) { [reduceMotion] content, scale in
             content.scaleEffect(reduceMotion ? 1 : scale)
         } keyframes: { _ in
             SpringKeyframe(1.18, duration: 0.14, spring: .snappy)
