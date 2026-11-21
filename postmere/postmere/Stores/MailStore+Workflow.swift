@@ -239,6 +239,8 @@ nonisolated struct InboxOverview: Sendable {
     let title: String
     let summary: String
     let sections: [Section]
+    /// All unread conversations, including those listed in an earlier section.
+    let unreadCount: Int
 
     @MainActor init(store: MailStore) {
         self.init(messages: store.messages, visible: store.filteredMessages, request: store.searchRequest(), title: store.overviewTitle)
@@ -254,6 +256,7 @@ nonisolated struct InboxOverview: Sendable {
             let conversations = conversations(in: visible).sorted { $0.sentAt > $1.sentAt }
             summary = conversations.isEmpty ? "No conversations in this view." : Self.count(conversations.count, singular: "conversation", plural: "conversations")
             sections = conversations.isEmpty ? [] : [Section(title: "Recent conversations", messages: conversations, mailbox: nil)]
+            unreadCount = conversations.count(where: \.isUnread)
             return
         }
 
@@ -264,6 +267,7 @@ nonisolated struct InboxOverview: Sendable {
         let waiting = queue(.needsReply).sorted { $0.sentAt > $1.sentAt }
         let reminders = queue(.followUps).sorted { ($0.workflow.followUpAt ?? .distantFuture) < ($1.workflow.followUpAt ?? .distantFuture) }
         let unread = conversations(in: visible.filter(\.isUnread)).sorted { $0.sentAt > $1.sentAt }
+        unreadCount = unread.count
         var counts: [String] = []
         if !waiting.isEmpty { counts.append(Self.count(waiting.count, singular: "conversation needs a reply", plural: "conversations need a reply")) }
         if !unread.isEmpty { counts.append(Self.count(unread.count, singular: "unread conversation", plural: "unread conversations")) }
@@ -276,7 +280,8 @@ nonisolated struct InboxOverview: Sendable {
         let alreadyListed = Set((waiting + reminders).map(\.searchConversationKey))
         let otherUnread = unread.filter { !alreadyListed.contains($0.searchConversationKey) }
         if !otherUnread.isEmpty {
-            groups.append(Section(title: "Unread", messages: otherUnread, mailbox: .inbox))
+            groups.append(Section(title: otherUnread.count < unread.count ? "Other unread" : "Unread",
+                                  messages: otherUnread, mailbox: .inbox))
         } else if groups.isEmpty && !visible.isEmpty {
             let conversations = conversations(in: visible).sorted { $0.sentAt > $1.sentAt }
             groups.append(Section(title: "Recent conversations", messages: conversations, mailbox: nil))
