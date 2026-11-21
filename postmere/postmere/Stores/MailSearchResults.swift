@@ -133,7 +133,7 @@ extension MailStore {
         let index = mailbox == .inbox && saved == nil ? splits.firstIndex { $0.id == splitID } : nil
         var earlier: [MailCriteriaMatcher] = []
         if let index, inboxSplitOverlapPolicy == .firstMatch { earlier = splits[..<index].map { matcher($0.criteria) } }
-        let context = MailSearchContext(vipContacts: vipContacts, referenceDate: .now)
+        let context = MailSearchContext(vipContacts: vipContacts, referenceDate: .now, labelIDsByName: labelIDsByName)
         return MailSearchRequest(accounts: searchableAccounts, account: selectedAccount, mailbox: mailbox,
                                  saved: saved, split: index.map { matcher(splits[$0].criteria) }, earlierSplits: earlier,
                                  query: parsedSearchQuery, context: context, unreadOnly: unreadOnly,

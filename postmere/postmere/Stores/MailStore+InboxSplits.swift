@@ -1,7 +1,7 @@
 import Foundation
 
 extension MailStore {
-    var searchContext: MailSearchContext { MailSearchContext(vipContacts: vipContacts) }
+    var searchContext: MailSearchContext { MailSearchContext(vipContacts: vipContacts, labelIDsByName: labelIDsByName) }
     var parsedSearchQuery: MailSearchQuery { parsedQuery(searchText, field: searchField) }
     var searchTokens: [MailSearchToken] { parsedSearchQuery.tokens }
     var searchIssues: [MailSearchIssue] { parsedSearchQuery.issues }

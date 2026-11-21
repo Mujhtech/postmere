@@ -148,6 +148,10 @@ struct MessageLabelsView: View {
         guard !requestedName.isEmpty else { return }
         await perform { account, id in
             let label: ProviderLabel = try await runtime.backend.createLabel(name: requestedName, account: account)
+            // The sidebar lists the new label straight away.
+            if runtime.store.labelCatalogs[account.localID]?.contains(where: { $0.id == label.id }) == false {
+                runtime.store.labelCatalogs[account.localID]?.append(label)
+            }
             if var current = selection {
                 current.labels.removeAll { $0.id == label.id }
                 current.labels.append(label)

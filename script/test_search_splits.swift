@@ -39,6 +39,20 @@ func runSearchSplitRegressions(directory: URL) throws {
         let query = MailSearchQuery(source: source, calendar: calendar)
         try check(query.isValid && !query.matches(message, context: context), "search excludes \(source)")
     }
+    // Labels match by catalog name (Gmail IDs), by raw ID, or by Outlook category name.
+    var labelled = message
+    labelled.providerLabelIDs = ["INBOX", "Label_7"]
+    labelled.providerCategories = ["Travel"]
+    var labelContext = context
+    labelContext.labelIDsByName = ["jobs/rejection": ["Label_7"]]
+    for source in [MailSearchQuery.labelCondition("Jobs/Rejection"), "label:label_7", "label:travel", "label:\"jobs/rejection\" OR from:nobody"] {
+        let query = MailSearchQuery(source: source, calendar: calendar)
+        try check(query.isValid && query.matches(labelled, context: labelContext), "label search matches \(source)")
+    }
+    for source in ["label:Jobs", MailSearchQuery.labelCondition("Jobs/Rejection")] {
+        let query = MailSearchQuery(source: source, calendar: calendar)
+        try check(query.isValid && !query.matches(message, context: labelContext), "label search excludes unlabelled mail: \(source)")
+    }
     let malformed = ["from:", "unknown:value", "has:banana", "is:secret", "after:2024-02-30", "before:2024-1-1", "subject:\"unfinished", "()", "(from:clara", "from:clara)", "OR from:clara", "from:clara OR", "from:clara OR OR to:alex", "AND from:clara", "from:clara AND", "NOT", "-", "\"\"", "trailing\\", "filetype:?!"]
     for source in malformed {
         let query = MailSearchQuery(source: source, calendar: calendar)

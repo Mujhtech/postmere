@@ -5,6 +5,7 @@ struct SidebarView: View {
     var onSelect: (() -> Void)?
     @State private var showsViewEditor = false
     @State private var editingSavedView: SavedInboxView?
+    @AppStorage("sidebarLabelsExpanded") private var labelsExpanded = true
     @Environment(MailRuntime.self) private var runtime
     @Environment(\.mailboxTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -24,10 +25,16 @@ struct SidebarView: View {
 
     private var mailboxSelection: Binding<String?> {
         Binding(
-            get: { store.selectedSavedViewID.map { "view:\($0.uuidString)" } ?? store.selectedAccount.map { "account:\($0)" } ?? store.selectedMailbox.rawValue },
+            get: {
+                // While searching nothing else is selected, so choosing any
+                // mailbox, including the one search started from, ends the search.
+                store.shownLabelName.map { "label:\($0)" } ?? (store.isSearchActive ? "search" : nil)
+                    ?? store.selectedSavedViewID.map { "view:\($0.uuidString)" } ?? store.selectedAccount.map { "account:\($0)" } ?? store.selectedMailbox.rawValue
+            },
             set: {
                 guard let value = $0 else { return }
-                if value.hasPrefix("account:") { store.selectAccount(String(value.dropFirst(8))) }
+                if value.hasPrefix("label:") { store.showLabel(String(value.dropFirst(6))) }
+                else if value.hasPrefix("account:") { store.selectAccount(String(value.dropFirst(8))) }
                 else if value.hasPrefix("view:"), let id = UUID(uuidString: String(value.dropFirst(5))) { store.selectSavedView(id) }
                 else if let mailbox = Mailbox(rawValue: value) { store.selectMailbox(mailbox) }
                 onSelect?()
@@ -54,13 +61,14 @@ struct SidebarView: View {
 
                 Section {
                     ForEach(store.savedViews) { view in
+                        let viewSelected = store.selectedSavedViewID == view.id && !store.isSearchActive
                         HStack(spacing: 8) {
-                            navigationIcon("line.3.horizontal.decrease.circle", selected: store.selectedSavedViewID == view.id)
-                            Text(view.name).lineLimit(1).foregroundStyle(rowText(selected: store.selectedSavedViewID == view.id))
+                            navigationIcon("line.3.horizontal.decrease.circle", selected: viewSelected)
+                            Text(view.name).lineLimit(1).foregroundStyle(rowText(selected: viewSelected))
                         }
                             .font(.system(size: 13))
                             .padding(.vertical, 3)
-                            .mailSelection(store.selectedSavedViewID == view.id)
+                            .mailSelection(viewSelected)
                             .tag("view:\(view.id.uuidString)")
                             .contextMenu {
                                 Button("Edit View…") { editView(view) }
@@ -88,6 +96,13 @@ struct SidebarView: View {
                                 .accessibilityLabel("Create saved view")
                         }
                     }
+                }
+
+                let labels = sidebarLabels
+                if !labels.isEmpty {
+                    Section(isExpanded: $labelsExpanded) {
+                        ForEach(labels) { labelRow($0) }
+                    } header: { Text("Labels").foregroundStyle(sidebarSecondary) }
                 }
 
                 Section {
@@ -130,6 +145,98 @@ struct SidebarView: View {
         }
         .background(theme == .native ? Color.clear : theme.colors(for: scheme).sidebar)
         .sheet(isPresented: $showsViewEditor) { SavedInboxViewEditor(store: store, editing: editingSavedView) }
+        .task(id: labelCatalogKey) { await loadLabelCatalogs() }
+    }
+
+    // MARK: Labels
+
+    private struct SidebarLabel: Identifiable {
+        let name: String
+        let title: String
+        let depth: Int
+        let unread: Int
+        let total: Int
+        var id: String { name }
+    }
+
+    /// Labels from the shown accounts' catalogs, nested by "/", with unread
+    /// counts from downloaded mail outside Junk and Trash.
+    private var sidebarLabels: [SidebarLabel] {
+        var names = Set<String>()
+        var nameByID: [String: String] = [:]
+        for (account, labels) in store.labelCatalogs where store.selectedAccount == nil || store.selectedAccount == account {
+            for label in labels {
+                names.insert(label.name)
+                nameByID[label.id] = label.name
+            }
+        }
+        guard !names.isEmpty else { return [] }
+        var unread: [String: Int] = [:]
+        var total: [String: Int] = [:]
+        for message in store.messages where !message.mailbox.isJunkOrTrash {
+            var found = Set<String>()
+            for id in message.providerLabelIDs { if let name = nameByID[id] { found.insert(name) } }
+            for category in message.providerCategories ?? [] where names.contains(category) { found.insert(category) }
+            for name in found {
+                total[name, default: 0] += 1
+                if message.isUnread { unread[name, default: 0] += 1 }
+            }
+        }
+        return names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.map { name in
+            let parts = name.split(separator: "/", omittingEmptySubsequences: true)
+            return SidebarLabel(name: name, title: parts.last.map(String.init) ?? name, depth: max(0, parts.count - 1),
+                                unread: unread[name] ?? 0, total: total[name] ?? 0)
+        }
+    }
+
+    private func labelRow(_ label: SidebarLabel) -> some View {
+        let selected = store.shownLabelName == label.name
+        return HStack(spacing: 8) {
+            PostmereIcon("tag", size: 14)
+                .foregroundStyle(selected ? accent.selectionInk : labelColor(label.name))
+                .frame(width: 18)
+                .accessibilityHidden(true)
+            Text(label.title).lineLimit(1).foregroundStyle(rowText(selected: selected))
+            Spacer(minLength: 4)
+            if label.unread > 0 {
+                Text(label.unread, format: .number)
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(rowDetail(selected: selected))
+            }
+        }
+        .font(.system(size: 13))
+        .padding(.vertical, 3)
+        .padding(.leading, CGFloat(min(label.depth, 4)) * 14)
+        .mailSelection(selected)
+        .tag("label:\(label.name)")
+        .help("\(label.name) · \(label.total.formatted()) downloaded messages")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Label \(label.name)")
+        .accessibilityValue(label.unread > 0 ? "\(label.unread) unread" : "")
+    }
+
+    /// A stable colour per label name, so a label is recognisable at a glance.
+    private func labelColor(_ name: String) -> Color {
+        let hash = name.lowercased().unicodeScalars.reduce(UInt32(5381)) { ($0 &* 33) &+ $1.value }
+        return Color(hue: Double(hash % 360) / 360, saturation: scheme == .dark ? 0.45 : 0.6,
+                     brightness: scheme == .dark ? 0.9 : 0.62)
+    }
+
+    private var labelCatalogKey: String {
+        accounts.filter(\.isConnected).map(\.rawValue).joined(separator: ",") + "|\(runtime.backend.canAccessWorkspace)"
+    }
+
+    /// Accounts without label permission are skipped; they still sync mail.
+    private func loadLabelCatalogs() async {
+        guard runtime.backend.canAccessWorkspace else { store.labelCatalogs = [:]; return }
+        var catalogs: [String: [ProviderLabel]] = [:]
+        for account in accounts where account.isConnected {
+            guard let remote = account.remote,
+                  let labels = try? await runtime.backend.labelCatalog(account: remote) else { continue }
+            catalogs[account.rawValue] = labels
+        }
+        if !Task.isCancelled, catalogs != store.labelCatalogs { store.labelCatalogs = catalogs }
     }
 
     private func editView(_ view: SavedInboxView?) {
@@ -138,7 +245,7 @@ struct SidebarView: View {
     }
 
     private func mailboxRow(_ mailbox: Mailbox, count: Int?) -> some View {
-        let selected = store.selectedMailbox == mailbox && store.selectedAccount == nil && store.selectedSavedViewID == nil
+        let selected = store.selectedMailbox == mailbox && store.selectedAccount == nil && store.selectedSavedViewID == nil && !store.isSearchActive
         return HStack(spacing: 8) {
             navigationIcon(mailbox.systemImage, selected: selected)
             Text(mailbox == .inbox ? "All Inboxes" : mailbox.title).lineLimit(1).foregroundStyle(rowText(selected: selected))
@@ -160,7 +267,7 @@ struct SidebarView: View {
     }
 
     private func accountRow(_ account: MailAccount, unread: Int?) -> some View {
-        let selected = store.selectedSavedViewID == nil && store.selectedAccount == account.rawValue
+        let selected = store.selectedSavedViewID == nil && store.selectedAccount == account.rawValue && !store.isSearchActive
         return HStack(spacing: 8) {
             navigationIcon("envelope", selected: selected)
             VStack(alignment: .leading, spacing: 2) {

@@ -51,6 +51,16 @@ final class MailStore {
     @ObservationIgnored var searchGeneration = 0
     var searchResultScope: MailboxViewScope?
     @ObservationIgnored var watchingSearchAccounts = false
+    /// Each account's Gmail labels or Outlook categories, keyed by account.
+    var labelCatalogs: [String: [ProviderLabel]] = [:] {
+        didSet {
+            var index: [String: Set<String>] = [:]
+            for label in labelCatalogs.values.joined() { index[label.name.lowercased(), default: []].insert(label.id) }
+            labelIDsByName = index
+            if isSearchActive && searchText.hasPrefix("label:") { refreshSearch() }
+        }
+    }
+    @ObservationIgnored private(set) var labelIDsByName: [String: Set<String>] = [:]
     var searchText = "" {
         didSet { if searchText != oldValue { searchFiltersChanged() } }
     }
@@ -239,6 +249,20 @@ final class MailStore {
 
     var searchesAllMailboxes: Bool {
         searchScope == .allMailboxes && (isSearchActive || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    /// Shows every downloaded message with this label, as a search the user can refine.
+    func showLabel(_ name: String) {
+        if !isSearchActive { beginSearch() }
+        searchScope = .allMailboxes
+        searchText = MailSearchQuery.labelCondition(name)
+    }
+
+    /// The label whose messages are showing, when the search is exactly one label.
+    var shownLabelName: String? {
+        guard isSearchActive else { return nil }
+        let names = labelCatalogs.values.joined().map(\.name)
+        return names.first { MailSearchQuery.labelCondition($0) == searchText }
     }
 
     func beginSearch() {

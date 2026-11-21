@@ -170,9 +170,13 @@ extension BackendMailMessage {
     }
 }
 
-nonisolated struct ProviderLabel: Decodable, Identifiable, Sendable {
+nonisolated struct ProviderLabel: Decodable, Identifiable, Sendable, Equatable {
     let id: String
     let name: String
+}
+
+nonisolated struct ProviderLabelCatalog: Decodable, Sendable {
+    let labels: [ProviderLabel]
 }
 
 nonisolated struct MessageLabelSelection: Decodable, Sendable {

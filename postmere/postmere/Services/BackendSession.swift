@@ -554,6 +554,14 @@ final class BackendSession {
         return lastLabelCatalog?.labels
     }
 
+    /// The account's Gmail labels or Outlook categories.
+    func labelCatalog(account: RemoteAccountIdentity) async throws -> [ProviderLabel] {
+        try requireConnected(account)
+        let catalog: ProviderLabelCatalog = try await request("GET", "/v1/mail/accounts/\(account.accountID)/labels")
+        try requireConnected(account)
+        return catalog.labels
+    }
+
     func labelSelection(account: RemoteAccountIdentity, messageID: UUID) async throws -> MessageLabelSelection {
         try requireConnected(account)
         let requestGeneration = generation

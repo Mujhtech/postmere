@@ -21,6 +21,8 @@ nonisolated struct MailSearchIssue: Identifiable, Equatable {
 nonisolated struct MailSearchContext {
     var vipContacts: [VIPContact] = []
     var referenceDate: Date?
+    /// Lowercased Gmail label names to their IDs, from each account's catalog.
+    var labelIDsByName: [String: Set<String>] = [:]
 
     func matchingVIPs(for message: MailMessage) -> [VIPContact] {
         vipContacts.filter { $0.matches(message) }
@@ -96,6 +98,12 @@ nonisolated struct MailSearchQuery: Sendable {
         return MailSearchQuery(source: remainder).isValid ? remainder : removingToken(id: token.id)
     }
 
+    /// Messages with a Gmail label or Outlook category of this name.
+    static func labelCondition(_ name: String) -> String {
+        let escaped = name.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        return "label:\"\(escaped)\""
+    }
+
     static func senderCondition(_ value: String) -> String {
         let escaped = value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         return "from:\"\(escaped)\""
@@ -108,7 +116,7 @@ nonisolated struct MailSearchQuery: Sendable {
         return replacingToken(id: id, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static let syntaxHelp = "Combine terms with spaces (AND), OR, parentheses, or a leading minus to exclude. Use from:, to:, subject:, date:this-week, before:YYYY-MM-DD, after:YYYY-MM-DD, has:attachment, is:unread, is:starred, filetype:pdf, or quoted phrases. Dates use your Mac’s time zone; after includes that day and before excludes it. Search covers downloaded mail only."
+    static let syntaxHelp = "Combine terms with spaces (AND), OR, parentheses, or a leading minus to exclude. Use from:, to:, subject:, date:this-week, before:YYYY-MM-DD, after:YYYY-MM-DD, has:attachment, is:unread, is:starred, label:name, filetype:pdf, or quoted phrases. Dates use your Mac’s time zone; after includes that day and before excludes it. Search covers downloaded mail only."
 }
 
 private nonisolated struct MailSearchLexeme {
@@ -289,7 +297,7 @@ private nonisolated struct MailSearchParser {
             issue(token.field.map { "Add a value after \($0):." } ?? "Add text inside this search term.", at: token)
             return nil
         }
-        let supported = ["from", "to", "cc", "bcc", "subject", "body", "before", "after", "date", "has", "is", "filetype", "filename", "domain", "account", "category"]
+        let supported = ["from", "to", "cc", "bcc", "subject", "body", "before", "after", "date", "has", "is", "filetype", "filename", "domain", "account", "category", "label"]
         if let field = token.field, !supported.contains(field) {
             issue("Unknown operator “\(field):”. Use from:, to:, subject:, before:, after:, has:, is:, filetype:, filename:, domain:, account:, or category:. Quote literal text containing a colon.", at: token)
             return nil
@@ -442,6 +450,10 @@ private nonisolated struct MailSearchTerm: Sendable {
             default: return false
             }
         case "filetype": return message.attachments.contains { matchesFile($0, type: lower) }
+        case "label":
+            let ids = context.labelIDsByName[lower] ?? []
+            return message.providerLabelIDs.contains { ids.contains($0) || $0.caseInsensitiveCompare(value) == .orderedSame }
+                || message.providerCategories?.contains { $0.caseInsensitiveCompare(value) == .orderedSame } == true
         case "category":
             let category = lower.hasPrefix("category_") ? String(lower.dropFirst(9)) : lower
             return message.providerLabelIDs.contains { $0.caseInsensitiveCompare("CATEGORY_\(category)") == .orderedSame }
@@ -461,6 +473,7 @@ private nonisolated struct MailSearchTerm: Sendable {
             return context.matchingVIPs(for: message).map { "VIP \($0.kind == .person ? "sender" : "domain"): \($0.value)" }.joined(separator: "; ")
         }
         if token.field == "category" { return "Gmail category: \(token.value)" }
+        if token.field == "label" { return "Label: \(token.value)" }
         if token.field == "has" && token.value.lowercased() == "unsubscribe" { return "The message includes a List-Unsubscribe header" }
         if let field = token.field { return "Matches \(field):\(token.value)" }
         return "Contains “\(token.value)”"
