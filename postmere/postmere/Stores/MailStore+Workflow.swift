@@ -42,7 +42,7 @@ extension MailStore {
         selectedAccount = nil
         clearFilters()
         selectedSavedViewID = view.id
-        selectFirstMailboxRow(markRead: false)
+        showMailboxOverview()
     }
 
     func selectSavedView(_ id: UUID) {

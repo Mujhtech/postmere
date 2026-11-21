@@ -221,29 +221,20 @@ extension MailStore {
         reconcileSelection(in: data.messages)
     }
 
-    func selectFirstMailboxRow(markRead: Bool, keepReader: Bool = false) {
-        if usesMailboxViewData || needsBackgroundSearch {
-            let scope = mailboxViewKey.scope
-            if let data = preparedInboxTab(in: scope) {
-                mailboxViewTask?.cancel()
-                mailboxViewTask = nil
-                loadingMailboxKey = nil
-                pendingMailboxSelection = nil
-                loadedMailboxView = data
-                selectedMessageID = data.messages.first?.id
-                if markRead { markSelectedRead() }
-                return
-            }
-            // A cold switch within the same account can keep the open reader mounted until its successor is ready.
-            if !keepReader { selectedMessageID = nil }
-            pendingMailboxSelection = (scope, selectedMessageID, markRead)
-            startMailboxViewLoad()
-        } else {
-            pendingMailboxSelection = nil
-            selectedMessageID = nil
-            selectedMessageID = filteredMessages.first?.id
-            if markRead { markSelectedRead() }
+    /// Switching mailboxes, tabs, saved views or accounts lands on the
+    /// mailbox overview; the reader opens only when a conversation is chosen.
+    func showMailboxOverview() {
+        pendingMailboxSelection = nil
+        selectedMessageID = nil
+        guard usesMailboxViewData || needsBackgroundSearch else { return }
+        if let data = preparedInboxTab(in: mailboxViewKey.scope) {
+            mailboxViewTask?.cancel()
+            mailboxViewTask = nil
+            loadingMailboxKey = nil
+            loadedMailboxView = data
+            return
         }
+        startMailboxViewLoad()
     }
 
     private func preparedInboxTab(in scope: MailboxViewScope) -> MailboxViewData? {

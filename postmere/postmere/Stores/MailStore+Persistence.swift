@@ -58,7 +58,7 @@ extension MailStore {
             }
             guard let self else { return }
             self.applyPersistentState(result)
-            self.selectFirstMailboxRow(markRead: false)
+            self.showMailboxOverview()
             self.persistenceReady = true
             self.schedulePersistence()
             self.isOpeningMailbox = false

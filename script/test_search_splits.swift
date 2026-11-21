@@ -316,9 +316,10 @@ private func runSearchSessionRegressions() throws {
     store.updateSearchText("memo")
     store.selectMailbox(.archive)
     store.endSearch()
-    try check(!store.isSearchActive && store.searchText.isEmpty && store.selectedMailbox == .archive && store.selectedMessageID == latest.id,
+    try check(!store.isSearchActive && store.searchText.isEmpty && store.selectedMailbox == .archive && store.selectedMessageID == nil,
               "explicit mailbox navigation leaves search and cannot resurrect its old selection")
     store.selectedAccount = nil
+    store.select(latest)
     store.beginSearch()
     store.updateSearchText("budget")
     store.setSelection([older.id])
@@ -399,19 +400,19 @@ func runBackgroundSearchRegressions() async throws {
     await store.loadMailboxView()
     let current = store.mailboxViewData
     try PostmereBackendRegression.check(current?.messages.count == 90 && current?.messages.allSatisfy { $0.subject == "Beta" } == true
-                                        && current?.sections.first?.messages.count == 90 && store.selectedMessageID == current?.messages.first?.id,
-                                        "only the latest tab publishes rows, grouping and its initial selection")
+                                        && current?.sections.first?.messages.count == 90 && store.selectedMessageID == nil,
+                                        "only the latest tab publishes rows and grouping, and it opens on the overview")
     let badges = await store.loadInboxTabCounts()
     try PostmereBackendRegression.check(badges.all == 179 && badges.splits[alpha.id] == 90 && badges.splits[beta.id] == 89,
                                         "independent tab badges use current read state and matching rules")
     let previousScope = store.mailboxViewKey.scope
-    let previousLead = store.selectedMessageID
+    store.select(current!.messages[0])
     store.selectInboxSplit(alpha.id)
     let selecting = store.mailboxViewTask
     store.setSelection([], in: previousScope)
     store.selectAdjacent(1)
-    try PostmereBackendRegression.check(store.navigableMessages == nil && store.selectedMessageID == previousLead,
-                                        "old list callbacks and keyboard navigation preserve the reader while the next tab has no rows")
+    try PostmereBackendRegression.check(store.navigableMessages == nil && store.selectedMessageID == nil,
+                                        "switching tabs closes the reader; old list callbacks and keyboard navigation wait for the next tab's rows")
     store.select(messages[2])
     await selecting?.value
     await store.loadMailboxView()
@@ -423,13 +424,13 @@ func runBackgroundSearchRegressions() async throws {
     await store.prepareInboxTabs()
     store.selectInboxSplit(beta.id)
     try PostmereBackendRegression.check(store.mailboxViewData?.messages.count == 90
-                                        && store.selectedMessageID == messages[1].id
+                                        && store.selectedMessageID == nil
                                         && store.startMailboxViewLoad() == nil,
-                                        "a prepared tab switches its rows and reader together without a second grouping pass")
+                                        "a prepared tab switches its rows without a second grouping pass and opens on the overview")
     store.messages[0].subject = "Beta"
     store.selectInboxSplit(beta.id)
     await store.loadMailboxView()
-    try PostmereBackendRegression.check(store.selectedMessageID == messages[0].id && store.mailboxViewData?.messages.count == 91,
+    try PostmereBackendRegression.check(store.selectedMessageID == nil && store.mailboxViewData?.messages.count == 91,
                                         "a message update invalidates prepared tabs before the next switch")
     store.selectAccount("Personal")
     try PostmereBackendRegression.check(store.mailboxViewData == nil, "switching accounts hides the previous mailbox snapshot immediately")

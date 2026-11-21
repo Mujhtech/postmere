@@ -217,7 +217,7 @@ final class MailStore {
             return
         }
         loadPersistentState()
-        selectFirstMailboxRow(markRead: false)
+        showMailboxOverview()
         persistenceReady = true
         if !persistenceBlocked { persistState() }
     }
@@ -478,7 +478,7 @@ final class MailStore {
         selectedMailbox = mailbox
         selectedAccount = nil
         clearFilters()
-        selectFirstMailboxRow(markRead: true)
+        showMailboxOverview()
     }
 
     func selectAccount(_ account: String?) {
@@ -486,7 +486,7 @@ final class MailStore {
         selectedMailbox = .inbox
         selectedAccount = account
         clearFilters()
-        selectFirstMailboxRow(markRead: true)
+        showMailboxOverview()
     }
 
     func clearFilters() {

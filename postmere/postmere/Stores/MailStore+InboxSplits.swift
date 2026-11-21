@@ -88,16 +88,13 @@ extension MailStore {
 
     func selectInboxSplit(_ id: UUID?) {
         guard id == nil || visibleInboxSplits.contains(where: { $0.id == id }) else { return }
-        let current = loadedMailboxView?.key.scope
-        let keepReader = !isSearchActive && current?.mailbox == .inbox && current?.savedViewID == nil
-            && current?.account == selectedAccount && current?.accounts == searchableAccounts && selectedMessageIDs.count == 1
         isSelectingInboxTab = true
         selectedSavedViewID = nil
         selectedMailbox = .inbox
         selectedInboxSplitID = id
         clearFilters()
         isSelectingInboxTab = false
-        selectFirstMailboxRow(markRead: false, keepReader: keepReader)
+        showMailboxOverview()
     }
 
     private var splitCandidates: [MailMessage] {
