@@ -13,5 +13,16 @@
 			<array><string>mailto</string></array>
 		</dict>
 	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>mujhtech.postmere.messages</string>
+			<key>UTTypeDescription</key>
+			<string>Postmere messages</string>
+			<key>UTTypeConformsTo</key>
+			<array><string>public.data</string></array>
+		</dict>
+	</array>
 </dict>
 </plist>

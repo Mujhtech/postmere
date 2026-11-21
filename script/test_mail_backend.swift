@@ -95,6 +95,30 @@ enum RegressionFailure: Error { case failed(String) }
                   "the background fill restores every body")
     }
 
+    /// Dragging rows onto sidebar mailboxes moves, stars or flags them, and a
+    /// mailbox never takes mail it cannot hold.
+    @MainActor static func dropOnSidebar() throws {
+        var first = MailMessage(sender: "Pat", senderEmail: "pat@example.org", initials: "P", subject: "One",
+                                preview: "One", paragraphs: ["One"], timeLabel: "9:00", isUnread: true)
+        first.mailbox = .inbox
+        var second = first
+        second.id = UUID(); second.subject = "Two"
+        var sent = first
+        sent.id = UUID(); sent.subject = "Sent"; sent.isOutgoing = true; sent.mailbox = .sent
+        let store = MailStore(messages: [first, second, sent])
+        store.selectedMessageIDs = [first.id, second.id]
+        try check(Set(store.draggedMessageIDs(from: first.id)) == [first.id, second.id] && store.draggedMessageIDs(from: sent.id) == [sent.id],
+                  "dragging a selected row drags the whole selection; another row drags alone")
+        try check(store.drop([first.id], on: .starred) && store.messages.first { $0.id == first.id }?.isStarred == true,
+                  "dropping on Starred stars the message")
+        try check(!store.drop([sent.id], on: .junk) && store.messages.first { $0.id == sent.id }?.mailbox == .sent,
+                  "your own sent mail is not moved to Junk")
+        try check(!store.drop([first.id], on: .sent) && !store.drop([first.id], on: .snoozed),
+                  "mailboxes that cannot take mail refuse the drop")
+        try check(store.drop([first.id, second.id], on: .archive)
+                  && store.messages.filter { $0.mailbox == .archive }.count == 2, "dropping on Archive moves every dragged message")
+    }
+
     @MainActor static func readerPersistence(directory: URL) async throws {
         let file = directory.appendingPathComponent("reader.json")
         let message = MailMessage(sender: "Pat", senderEmail: "pat@example.org", initials: "P",
@@ -306,6 +330,7 @@ enum RegressionFailure: Error { case failed(String) }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PostmereRegression-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
+        try dropOnSidebar()
         try separateBodyStorage(directory: directory)
         try await lazyBodyOpening(directory: directory)
         try await readerPersistence(directory: directory)

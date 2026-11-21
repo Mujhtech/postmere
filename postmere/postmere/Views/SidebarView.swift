@@ -5,6 +5,8 @@ struct SidebarView: View {
     var onSelect: (() -> Void)?
     @State private var showsViewEditor = false
     @State private var editingSavedView: SavedInboxView?
+    /// The sidebar row messages are being dragged over.
+    @State private var dropHover: String?
     @AppStorage("sidebarLabelsExpanded") private var labelsExpanded = true
     @Environment(MailRuntime.self) private var runtime
     @Environment(\.mailboxTheme) private var theme
@@ -210,6 +212,13 @@ struct SidebarView: View {
         .padding(.vertical, 3)
         .padding(.leading, CGFloat(min(label.depth, 4)) * 14)
         .mailSelection(selected)
+        .dropHighlight(dropHover == "label:\(label.name)", accent: accent)
+        .dropDestination(for: DraggedMessages.self) { items, _ in
+            let ids = items.flatMap(\.ids)
+            guard !ids.isEmpty else { return false }
+            Task { await applyLabel(label.name, to: ids) }
+            return true
+        } isTargeted: { hovering in updateDropHover("label:\(label.name)", hovering) }
         .tag("label:\(label.name)")
         .help("\(label.name) · \(label.total.formatted()) downloaded messages")
         .accessibilityElement(children: .combine)
@@ -222,6 +231,32 @@ struct SidebarView: View {
         let hash = name.lowercased().unicodeScalars.reduce(UInt32(5381)) { ($0 &* 33) &+ $1.value }
         return Color(hue: Double(hash % 360) / 360, saturation: scheme == .dark ? 0.45 : 0.6,
                      brightness: scheme == .dark ? 0.9 : 0.62)
+    }
+
+    private func updateDropHover(_ key: String, _ hovering: Bool) {
+        if hovering { dropHover = key } else if dropHover == key { dropHover = nil }
+    }
+
+    /// Applies a label to dropped messages in each one's own account, using
+    /// that account's label of this name.
+    private func applyLabel(_ name: String, to ids: [UUID]) async {
+        let dropped = Set(ids)
+        var applied = 0
+        for message in store.messages where dropped.contains(message.id) {
+            guard let account = message.mailAccount.remote, let backendID = message.backendMessageID,
+                  let label = store.labelCatalogs[account.localID]?.first(where: { $0.name == name }),
+                  !message.providerLabelIDs.contains(label.id),
+                  !(message.providerCategories ?? []).contains(name) else { continue }
+            do {
+                let updated = try await runtime.backend.setLabel(label.id, applied: true, account: account, messageID: backendID)
+                store.applyProviderLabels(updated, messageID: message.id, account: account)
+                applied += 1
+            } catch {
+                store.operationError = "Couldn’t add “\(name)”: \(error.localizedDescription)"
+                return
+            }
+        }
+        if applied > 0 { store.lastAction = applied == 1 ? "Labeled “\(name)”" : "Labeled \(applied) messages “\(name)”" }
     }
 
     private var labelCatalogKey: String {
@@ -261,6 +296,8 @@ struct SidebarView: View {
         .font(.system(size: 13))
         .padding(.vertical, 3)
         .mailSelection(selected)
+        .modifier(MailboxDropTarget(mailbox: mailbox, store: store, hovering: dropHover == "mailbox:\(mailbox.rawValue)",
+                                    accent: accent) { updateDropHover("mailbox:\(mailbox.rawValue)", $0) })
         .tag(mailbox.rawValue)
         .help(mailbox == .inbox ? "Inbox messages from all accounts" : "\(mailbox.title) across all accounts")
         .accessibilityElement(children: .combine)
@@ -303,6 +340,43 @@ struct SidebarView: View {
             .foregroundStyle(selected ? accent.selectionInk : sidebarSecondary)
             .frame(width: 18)
             .accessibilityHidden(true)
+    }
+}
+
+/// Accepts dropped messages on the mailboxes that can take them.
+private struct MailboxDropTarget: ViewModifier {
+    let mailbox: Mailbox
+    let store: MailStore
+    let hovering: Bool
+    let accent: PostmereAccent
+    let onHover: (Bool) -> Void
+
+    func body(content: Content) -> some View {
+        if MailStore.dropMailboxes.contains(mailbox) {
+            content
+                .dropHighlight(hovering, accent: accent)
+                .dropDestination(for: DraggedMessages.self) { items, _ in
+                    store.drop(items.flatMap(\.ids), on: mailbox)
+                } isTargeted: { onHover($0) }
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    /// A soft accent fill and a slight lift while messages hover over a row.
+    func dropHighlight(_ active: Bool, accent: PostmereAccent) -> some View {
+        background {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(accent.accent.opacity(active ? 0.18 : 0))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(accent.accent.opacity(active ? 0.5 : 0), lineWidth: 1))
+                .padding(.horizontal, -6)
+                .padding(.vertical, -1)
+        }
+        .scaleEffect(active ? 1.03 : 1, anchor: .leading)
+        .animation(.spring(duration: 0.25, bounce: 0.3), value: active)
     }
 }
 

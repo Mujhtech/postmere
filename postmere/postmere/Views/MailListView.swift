@@ -200,6 +200,11 @@ struct MailListView: View {
                                joinsBelow: selected && index + 1 < messages.endIndex && store.selectedMessageIDs.contains(messages[index + 1].id),
                                horizontalInset: 10) // Match the inset list’s native context-menu outline.
                 .tag(message.id)
+                // Drop on a sidebar mailbox or label to move, star, flag or label.
+                .draggable(DraggedMessages(ids: store.draggedMessageIDs(from: message.id))) {
+                    MailDragPreview(subject: message.displaySubject, sender: message.sender,
+                                    count: store.draggedMessageIDs(from: message.id).count)
+                }
                 .listRowInsets(EdgeInsets(top: 11, leading: 10, bottom: 11, trailing: 10))
                 .swipeActions(edge: .leading, allowsFullSwipe: false) {
                     if message.mailbox == .drafts {
@@ -655,3 +660,47 @@ private struct MailRow: View {
         return descriptions.joined(separator: ", ")
     }
 }
+
+/// What follows the pointer while messages are dragged to the sidebar.
+private struct MailDragPreview: View {
+    let subject: String
+    let sender: String
+    let count: Int
+    @Environment(\.postmereAccent) private var palette
+
+    var body: some View {
+        HStack(spacing: 10) {
+            PostmereIcon("envelope", size: 15)
+                .foregroundStyle(palette.accentInk)
+                .frame(width: 30, height: 30)
+                .background(palette.accentInk.opacity(0.12), in: Circle())
+            VStack(alignment: .leading, spacing: 1) {
+                Text(count > 1 ? "\(count) messages" : subject)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .lineLimit(1)
+                Text(count > 1 ? "Including “\(subject)”" : sender)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 280, alignment: .leading)
+        .background(.regularMaterial, in: .rect(cornerRadius: 12, style: .continuous))
+        .overlay(alignment: .topTrailing) {
+            if count > 1 {
+                Text(count.formatted())
+                    .font(.system(size: 10.5, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .frame(minWidth: 20, minHeight: 20)
+                    .background(palette.accent, in: Capsule())
+                    .offset(x: 6, y: -6)
+            }
+        }
+    }
+}
+
