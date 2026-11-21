@@ -8,6 +8,93 @@ enum RegressionFailure: Error { case failed(String) }
         print("PASS \(description)")
     }
 
+    /// Bodies live in their own files: the snapshot stays small, unchanged bodies
+    /// are not rewritten, removed messages lose their body file, and format 1
+    /// snapshots (bodies inline) still open.
+    @MainActor static func separateBodyStorage(directory: URL) throws {
+        let file = directory.appendingPathComponent("bodies.json")
+        let persistence = MailPersistence(fileURL: file)
+        let html = "<p>" + String(repeating: "Long body ", count: 2_000) + "</p>"
+        var first = MailMessage(sender: "Pat", senderEmail: "pat@example.org", initials: "P", subject: "One",
+                                preview: "Example", paragraphs: ["Plain body text"], timeLabel: "9:00", isUnread: true)
+        first.bodyHTML = html
+        let second = MailMessage(sender: "Lee", senderEmail: "lee@example.org", initials: "L", subject: "Two",
+                                 preview: "Second", paragraphs: ["Second body"], timeLabel: "9:05", isUnread: false)
+        let store = MailStore(messages: [first, second], persistenceURL: file)
+        try check(store.flushPersistence(), "a mailbox with bodies saves")
+        let snapshotText = try String(contentsOf: file, encoding: .utf8)
+        try check(!snapshotText.contains("Long body") && !snapshotText.contains("Plain body text"),
+                  "the snapshot holds metadata only; bodies are stored separately")
+        let loaded = try persistence.load()
+        try check(loaded?.messages.first { $0.id == first.id }?.bodyHTML == html
+                  && loaded?.messages.first { $0.id == second.id }?.paragraphs == ["Second body"],
+                  "bodies are restored on load")
+
+        let bodyFile = persistence.bodyDirectory.appendingPathComponent(first.id.uuidString.lowercased() + ".json")
+        let writtenAt = try FileManager.default.attributesOfItem(atPath: bodyFile.path)[.modificationDate] as? Date
+        Thread.sleep(forTimeInterval: 0.02)
+        store.messages[0].isStarred = true
+        try check(store.flushPersistence(), "a metadata change saves")
+        let rewrittenAt = try FileManager.default.attributesOfItem(atPath: bodyFile.path)[.modificationDate] as? Date
+        try check(writtenAt != nil && writtenAt == rewrittenAt, "an unchanged body is not rewritten")
+
+        store.messages.removeAll { $0.id == first.id }
+        try check(store.flushPersistence() && !FileManager.default.fileExists(atPath: bodyFile.path),
+                  "removing a message removes its body file")
+
+        // A format 1 snapshot keeps bodies inline and is upgraded on the next save.
+        let legacyFile = directory.appendingPathComponent("format1-bodies.json")
+        let legacy = MailPersistence(fileURL: legacyFile)
+        var inline = try persistence.load()!
+        inline.schemaVersion = 1
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        inline.messages[0].paragraphs = ["Inline legacy body"]
+        try encoder.encode(inline).write(to: legacyFile)
+        let opened = try legacy.load()
+        try check(opened?.messages.first?.paragraphs == ["Inline legacy body"], "format 1 snapshots still open")
+    }
+
+    /// The mailbox opens on metadata; bodies arrive afterwards. A save made in
+    /// between must keep every body file, and opening a message loads its body.
+    @MainActor static func lazyBodyOpening(directory: URL) async throws {
+        let file = directory.appendingPathComponent("lazy-bodies.json")
+        var messages: [MailMessage] = []
+        for index in 0..<650 {
+            var message = MailMessage(sender: "Sender \(index)", senderEmail: "s\(index)@example.org", initials: "S",
+                                      subject: "Subject \(index)", preview: "Preview \(index)",
+                                      paragraphs: ["Body number \(index)"], timeLabel: "9:00", isUnread: true)
+            message.sentAt = Date(timeIntervalSince1970: 1_700_000_000 + Double(index))
+            messages.append(message)
+        }
+        let seed = MailStore(messages: messages, persistenceURL: file)
+        try check(seed.flushPersistence(), "a large mailbox saves")
+
+        let store = MailStore(messages: [], persistenceURL: file, openInBackground: true)
+        await store.openingTask?.value
+        try check(!store.isOpeningMailbox && store.messages.count == 650, "the mailbox opens before its bodies are read")
+        // Cancel the fill so the next save certainly runs with bodies missing.
+        store.bodyFillTask?.cancel()
+        store.messages[0].isStarred = true
+        try check(store.flushPersistence(), "a save while bodies are missing succeeds")
+        let reread = try MailPersistence(fileURL: file).load()
+        try check(reread?.messages.count == 650 && reread?.messages.allSatisfy { $0.paragraphs.first?.hasPrefix("Body number") == true } == true,
+                  "a save before bodies load keeps every stored body")
+
+        let reopened = MailStore(messages: [], persistenceURL: file, openInBackground: true)
+        await reopened.openingTask?.value
+        let oldest = reopened.messages.min { $0.sentAt < $1.sentAt }!
+        reopened.bodyFillTask?.cancel()
+        reopened.select(oldest)
+        try check(reopened.messages.first { $0.id == oldest.id }?.paragraphs == ["Body number 0"],
+                  "opening a message before the background fill reaches it loads its body")
+        let filling = MailStore(messages: [], persistenceURL: file, openInBackground: true)
+        await filling.openingTask?.value
+        await filling.bodyFillTask?.value
+        try check(filling.messages.allSatisfy { $0.paragraphs.first?.hasPrefix("Body number") == true },
+                  "the background fill restores every body")
+    }
+
     @MainActor static func readerPersistence(directory: URL) async throws {
         let file = directory.appendingPathComponent("reader.json")
         let message = MailMessage(sender: "Pat", senderEmail: "pat@example.org", initials: "P",
@@ -219,6 +306,8 @@ enum RegressionFailure: Error { case failed(String) }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PostmereRegression-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
+        try separateBodyStorage(directory: directory)
+        try await lazyBodyOpening(directory: directory)
         try await readerPersistence(directory: directory)
         try await dockUnreadCounts()
         try await menuBarInboxData()

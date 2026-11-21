@@ -1,5 +1,14 @@
 import Foundation
 
+struct PersistenceFingerprint: Equatable {
+    let mailboxRevision: Int
+    let replyIndexVersion: Int
+    let spamCheckResults: [String: StoredSpamCheck]
+    let syncCursors: [String: String]
+    let notificationCutoffs: [String: Date]
+    let recoveredDraft: ActiveMailDraft?
+}
+
 private nonisolated struct MailboxSave: Sendable {
     let destination: MailPersistence
     let snapshot: MailStateSnapshot
@@ -54,21 +63,74 @@ extension MailStore {
         let queue = saveQueue
         openingTask = Task { [weak self] in
             let result = await withCheckedContinuation { continuation in
-                queue.async { continuation.resume(returning: Result { try persistence.load() }) }
+                // Metadata only: the mailbox opens as soon as its list can be shown.
+                queue.async { continuation.resume(returning: Result { try persistence.load(bodies: false) }) }
             }
             guard let self else { return }
             self.applyPersistentState(result)
             self.showMailboxOverview()
             self.persistenceReady = true
             self.schedulePersistence()
+            if self.preparesListWhileOpening, !self.searchableAccounts.isEmpty {
+                await self.loadMailboxView()
+            }
             self.isOpeningMailbox = false
             self.openingTask = nil
+            self.fillStoredBodies(from: persistence)
+        }
+    }
+
+    /// Reads message bodies after the mailbox is showing, newest first, off the
+    /// main thread. Reply detection, which reads bodies, runs once they are in.
+    private func fillStoredBodies(from persistence: MailPersistence) {
+        let waiting = messages.filter { StoredMessageBody($0).isEmpty }.sorted { $0.sentAt > $1.sentAt }
+        bodySource = persistence
+        bodyFillTask = Task { [weak self] in
+            // The first list comes first; bodies must not compete with it.
+            await self?.mailboxViewTask?.value
+            var start = 0
+            while start < waiting.count {
+                let batch = Array(waiting[start..<min(start + 300, waiting.count)])
+                start += batch.count
+                let restored = await Task.detached(priority: .userInitiated) { persistence.loadBodies(for: batch) }.value
+                guard let self, !Task.isCancelled else { return }
+                self.applyStoredBodies(restored)
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.bodyFillTask = nil
+            self.bodySource = nil
             // Publish the cached inbox before the first on-device reply analysis.
             // New sync pages classify themselves while this migration runs.
             if self.replyIndexVersion < MailStateSnapshot.currentReplyIndexVersion {
                 Task { await self.indexSavedReplyRequests() }
             }
         }
+    }
+
+    /// Fills bodies into messages that still lack one. Nothing here needs
+    /// saving or syncing: the bodies came from disk unchanged.
+    func applyStoredBodies(_ restored: [UUID: MailMessage]) {
+        guard !restored.isEmpty else { return }
+        var updated = messages
+        var changed = false
+        for index in updated.indices {
+            guard let body = restored[updated[index].id], StoredMessageBody(updated[index]).isEmpty else { continue }
+            StoredMessageBody(body).apply(to: &updated[index])
+            updated[index].preview = body.preview
+            changed = true
+        }
+        guard changed else { return }
+        applyingStoredBodies = true
+        messages = updated
+        applyingStoredBodies = false
+    }
+
+    /// Opening a conversation before its bodies arrived reads them right away.
+    func loadBodiesNow(forConversationOf id: UUID) {
+        guard let bodySource, let selected = messages.first(where: { $0.id == id }) else { return }
+        let waiting = messages.filter { $0.conversationID == selected.conversationID && StoredMessageBody($0).isEmpty }
+        guard !waiting.isEmpty else { return }
+        applyStoredBodies(bodySource.loadBodies(for: waiting))
     }
 
     private func applyPersistentState(_ result: Result<MailStateSnapshot?, Error>) {
@@ -124,6 +186,7 @@ extension MailStore {
         pendingSave?.cancel()
         pendingSave = nil
         saveRevision += 1
+        lastQueuedFingerprint = persistenceFingerprint
         return MailboxSave(destination: persistence, snapshot: mailboxSnapshot, revision: saveRevision)
     }
 
@@ -186,6 +249,22 @@ extension MailStore {
 
     @discardableResult
     func flushPersistence() -> Bool { persistState() }
+
+    /// Values that change without queueing a save themselves. Everything else
+    /// queues one on every change, so an unchanged fingerprint means the
+    /// newest state is already written or on its way.
+    var persistenceFingerprint: PersistenceFingerprint {
+        PersistenceFingerprint(mailboxRevision: mailboxDataRevision, replyIndexVersion: replyIndexVersion,
+                               spamCheckResults: spamCheckResults, syncCursors: backendSyncCursors,
+                               notificationCutoffs: backendNotificationCutoffs, recoveredDraft: recoveredDraft)
+    }
+
+    /// Queues a final save only if something changed since the last one, then
+    /// calls `done` on the main actor once every queued write is on disk.
+    func finishPersistenceForQuit(_ done: @escaping @MainActor @Sendable () -> Void) {
+        if persistenceFingerprint != lastQueuedFingerprint || isComposing { schedulePersistence() }
+        saveQueue.async { Task { @MainActor in done() } }
+    }
 
     func retryPersistence() {
         if persistenceBlocked {

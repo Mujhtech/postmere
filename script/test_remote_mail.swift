@@ -756,7 +756,12 @@ import Foundation
 
     // Model an older snapshot which never ran detection. The other account's
     // open request must be discovered without pulling these messages again.
-    var disk = try JSONSerialization.jsonObject(with: Data(contentsOf: storage)) as! [String: Any]
+    // Older builds wrote format 1, with bodies inline in the snapshot.
+    var inline = try MailPersistence(fileURL: storage).load()!
+    inline.schemaVersion = 1
+    let legacyEncoder = JSONEncoder()
+    legacyEncoder.dateEncodingStrategy = .millisecondsSince1970
+    var disk = try JSONSerialization.jsonObject(with: legacyEncoder.encode(inline)) as! [String: Any]
     disk["replyIndexVersion"] = nil
     var oldMessages = disk["messages"] as! [[String: Any]]
     for index in oldMessages.indices {

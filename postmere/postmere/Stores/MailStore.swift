@@ -7,7 +7,9 @@ import Observation
 final class MailStore {
     var messages: [MailMessage] {
         didSet {
-            guard !updatingSenderArtwork else { return }
+            // Stored bodies change neither rows nor grouping, so filling them in
+            // must not invalidate the mailbox list being built.
+            guard !updatingSenderArtwork, !applyingStoredBodies else { return }
             mailboxDataRevision &+= 1
             guard !updatingReaderMessage else { return }
             schedulePersistence()
@@ -33,6 +35,7 @@ final class MailStore {
     var selectedMessageID: UUID? {
         didSet {
             if !isUpdatingSelection { selectedMessageIDs = selectedMessageID.map { [$0] } ?? [] }
+            if bodySource != nil, let selectedMessageID, selectedMessageID != oldValue { loadBodiesNow(forConversationOf: selectedMessageID) }
         }
     }
     var selectedMessageIDs: Set<UUID> = [] {
@@ -165,7 +168,12 @@ final class MailStore {
     var saveQueue: DispatchQueue { Self.persistenceQueue }
     @ObservationIgnored var pendingSave: DispatchWorkItem?
     @ObservationIgnored var saveRevision = 0
+    @ObservationIgnored var lastQueuedFingerprint: PersistenceFingerprint?
     @ObservationIgnored private var updatingReaderMessage = false
+    @ObservationIgnored var applyingStoredBodies = false
+    @ObservationIgnored var bodyFillTask: Task<Void, Never>?
+    @ObservationIgnored var preparesListWhileOpening = false
+    @ObservationIgnored var bodySource: MailPersistence?
     @ObservationIgnored private var updatingSenderArtwork = false
     private var recentSenderMarks: [UUID: MailVerifiedSenderMark] = [:]
     @ObservationIgnored var searchQueryCache: [String: MailSearchQuery] = [:]
