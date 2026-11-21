@@ -12,6 +12,9 @@ struct ReaderView: View {
     @AppStorage(MailReadingFont.preference) private var readingFont = MailReadingFont.original
     @State private var presentedSheet: ReaderSheet?
     @State private var trashKick = 0
+    @State private var archiveKick = 0
+    @State private var starKick = 0
+    @State private var snoozeKick = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var noteDrafts: [UUID: String] = [:]
     @State private var attachmentError: String?
@@ -88,9 +91,19 @@ struct ReaderView: View {
         }
         .animation(reduceMotion ? .easeOut(duration: 0.2) : .spring(duration: 0.5, bounce: 0.1), value: store.departure?.id)
         .onChange(of: store.departure?.id) {
-            guard store.departure?.destination == .trash else { return }
-            trashKick += 1
-            NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+            // The button that caused the move reacts, with a light tap for removals.
+            guard let departure = store.departure else { return }
+            switch departure.destination {
+            case .trash, .junk:
+                trashKick += 1
+                NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+            case .archive, .inbox, nil:
+                archiveKick += 1
+                NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+            case .snoozed:
+                snoozeKick += 1
+            default: break
+            }
         }
     }
 
@@ -191,7 +204,7 @@ struct ReaderView: View {
         // Identity changes only when a message leaves or returns, so
         // ordinary navigation keeps the same reader and web view.
         .id(store.departure?.id)
-        .transition(reduceMotion ? .opacity : .asymmetric(insertion: .readerArrival, removal: .readerDeparture))
+        .transition(reduceMotion ? .opacity : .asymmetric(insertion: .readerArrival, removal: .readerDeparture(store)))
     }
 
     private func readerWithActions(_ message: MailMessage) -> some View {
@@ -812,11 +825,15 @@ struct ReaderView: View {
             let starred = message?.isStarred == true
             let starTitle = starred ? "Remove Star" : "Star Message"
             Button {
-                if let selected = toolbarMessage { store.toggleStar(selected.id) }
+                if let selected = toolbarMessage {
+                    store.toggleStar(selected.id)
+                    if !selected.isStarred { starKick += 1 }
+                }
             } label: {
                 PostmereLabel(starTitle, symbol: starred ? "star.fill" : "star", size: 17)
                     .labelStyle(.iconOnly)
                     .foregroundStyle(starred ? palette.accentInk : PostmereTheme.icon)
+                    .actionKick(.star, trigger: starKick, enabled: !reduceMotion)
             }
             .help(starTitle)
             .accessibilityValue(starred ? "On" : "Off")
@@ -827,6 +844,7 @@ struct ReaderView: View {
                 PostmereLabel(snoozeTitle, symbol: "moon.zzz", size: 17)
                     .labelStyle(.iconOnly)
                     .foregroundStyle(runtime.readerPanel?.action == .snooze ? palette.accentInk : PostmereTheme.icon)
+                    .actionKick(.snooze, trigger: snoozeKick, enabled: !reduceMotion)
             }
             .help(snoozeTitle)
             .accessibilityValue(runtime.readerPanel?.action == .snooze ? "Shown" : "Hidden")
@@ -843,6 +861,7 @@ struct ReaderView: View {
                 PostmereLabel(moveActionTitle, symbol: returnsToInbox ? "tray.and.arrow.down" : "archivebox", size: 17)
                     .labelStyle(.iconOnly)
                     .foregroundStyle(PostmereTheme.icon)
+                    .actionKick(returnsToInbox ? .restore : .archive, trigger: archiveKick, enabled: !reduceMotion)
             }
             .help(returnsToInbox ? moveActionTitle : "\(moveActionTitle) · ⇧⌘A")
             .disabled(store.selectedMessage == nil || (store.selectedMessage?.mailbox != .trash && !store.canMoveSelected(to: returnsToInbox ? .inbox : .archive)))

@@ -97,7 +97,12 @@ extension MailStore {
 
     func snoozeMessage(_ id: UUID, until date: Date) {
         guard date > .now else { unsnoozeMessage(id); return }
+        let open = selectedMessage
+        let conversation = messages.first { $0.id == id }?.conversationID
         updateConversation(containing: id) { $0.workflow.snoozedUntil = date }
+        if let open, open.conversationID == conversation, selectedMessageID != open.id {
+            departure = MailDeparture(messageID: open.id, destination: .snoozed, subject: open.displaySubject)
+        }
         lastAction = "Conversation snoozed"
     }
 
