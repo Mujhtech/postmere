@@ -17,94 +17,127 @@ struct MailAppearanceSettings: View {
     private var selection: Binding<MailboxTheme> { previewScheme == .dark ? $darkTheme : $lightTheme }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 21) {
-                HStack {
-                    Text("Color mode").font(.headline)
-                    Spacer()
+        Form {
+            Section {
+                SettingsRow("Appearance", symbol: "paintpalette", tint: SettingsTint.indigo) {
                     Picker("Appearance", selection: $appearance) {
                         ForEach(MailAppearance.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
                     }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
-                Divider()
+            }
+            Section {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 3), spacing: 14) {
+                    ForEach(MailboxTheme.allCases) { option in
+                        ThemeCard(theme: option, scheme: previewScheme, accent: accent,
+                                  selected: selection.wrappedValue == option) {
+                            withAnimation(.snappy(duration: 0.2)) { selection.wrappedValue = option }
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+                if appearance == .system, previewScheme != scheme {
+                    Text("Applies when your Mac is in \(previewScheme == .dark ? "dark" : "light") mode.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
                 HStack {
-                    Text("Theme").font(.headline)
+                    Text("Theme")
                     Spacer()
                     if appearance == .system {
                         Picker("Edit theme for", selection: Binding(
                             get: { previewScheme },
                             set: { editingScheme = $0 == scheme ? nil : $0 }
                         )) {
-                            Text("When light").tag(ColorScheme.light)
-                            Text("When dark").tag(ColorScheme.dark)
+                            Text("Light").tag(ColorScheme.light)
+                            Text("Dark").tag(ColorScheme.dark)
                         }
                         .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
                     }
                 }
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16), count: 3),
-                          alignment: .leading, spacing: 16) {
-                    ForEach(MailboxTheme.allCases) { option in
-                        let selected = selection.wrappedValue == option
-                        Button { selection.wrappedValue = option } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                MailboxThemePreview(theme: option, scheme: previewScheme, accent: accent)
-                                    .aspectRatio(2.4, contentMode: .fit)
-                                    .clipShape(.rect(cornerRadius: 7))
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 7).strokeBorder(
-                                            selected ? accent.accentInk : Color.primary.opacity(0.16), lineWidth: selected ? 2 : 1)
-                                    }
-                                HStack(spacing: 5) {
-                                    Text(option.title).font(.callout.weight(selected ? .semibold : .regular))
-                                    if selected { Image(systemName: "checkmark").font(.caption.bold()).foregroundStyle(accent.accentInk) }
-                                }
-                                .frame(height: 18, alignment: .leading)
-                            }
-                            .contentShape(.rect)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(option.title), \(previewScheme == .dark ? "dark" : "light") theme")
-                        .accessibilityAddTraits(selected ? .isSelected : [])
-                    }
-                }
-                if appearance == .system, previewScheme != scheme {
-                    Text("\(selection.wrappedValue.title) will apply when your Mac switches to \(previewScheme == .dark ? "dark" : "light") appearance.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                Divider()
-                HStack(spacing: 10) {
-                    Text("Primary color").font(.headline)
-                    Spacer()
+            }
+            Section("Accent") {
+                HStack(spacing: 12) {
                     ForEach(Self.swatches, id: \.1) { name, rgb in
                         let swatch = PostmereAccent(rgb: rgb)
-                        Button { primary = rgb } label: {
-                            ZStack {
-                                Circle().fill(swatch.swatch).padding(3)
-                                if primary == rgb {
-                                    Circle().strokeBorder(.primary, lineWidth: 1.5)
+                        let selected = primary == rgb
+                        Button { withAnimation(.snappy(duration: 0.2)) { primary = rgb } } label: {
+                            Circle().fill(swatch.swatch.gradient)
+                                .frame(width: 22, height: 22)
+                                .padding(3)
+                                .overlay(Circle().strokeBorder(selected ? swatch.swatch : .clear, lineWidth: 2))
+                                .overlay {
+                                    if selected { PostmereIcon("checkmark", size: 10).foregroundStyle(.white) }
                                 }
-                            }
-                            .frame(width: 24, height: 24).contentShape(.rect)
+                                .contentShape(Circle())
                         }
-                        .buttonStyle(.plain).help(name).accessibilityLabel(name)
-                        .accessibilityAddTraits(primary == rgb ? .isSelected : [])
+                        .buttonStyle(.plain)
+                        .help(name)
+                        .accessibilityLabel(name)
+                        .accessibilityAddTraits(selected ? .isSelected : [])
                     }
-                    Divider().frame(height: 18)
-                    ColorPicker("Custom primary color", selection: Binding(
+                    Spacer()
+                    ColorPicker("Custom accent", selection: Binding(
                         get: { accent.swatch },
                         set: { if let rgb = PostmereAccent.rgbValue(of: $0) { primary = rgb } }
                     ), supportsOpacity: false)
-                    .labelsHidden().help("Choose a custom primary color")
+                    .labelsHidden()
+                    .help("Choose any color")
                 }
+                .padding(.vertical, 2)
             }
-            .frame(maxWidth: 660, alignment: .leading)
-            .padding(28)
-            .frame(maxWidth: .infinity)
         }
+        .formStyle(.grouped)
         .onChange(of: appearance) { editingScheme = nil }
         .onChange(of: scheme) { if editingScheme == scheme { editingScheme = nil } }
+    }
+}
+
+/// A theme choice: a miniature of the mail window with its name.
+private struct ThemeCard: View {
+    let theme: MailboxTheme
+    let scheme: ColorScheme
+    let accent: PostmereAccent
+    let selected: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 7) {
+                MailboxThemePreview(theme: theme, scheme: scheme, accent: accent)
+                    .aspectRatio(1.9, contentMode: .fit)
+                    .clipShape(.rect(cornerRadius: 9, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
+                    .padding(3)
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(selected ? accent.accent : .clear, lineWidth: 2))
+                    .overlay(alignment: .topTrailing) {
+                        if selected {
+                            PostmereIcon("checkmark", size: 9)
+                                .foregroundStyle(.white)
+                                .frame(width: 18, height: 18)
+                                .background(accent.accent, in: Circle())
+                                .offset(x: 4, y: -4)
+                                .transition(.scale.combined(with: .opacity))
+                        }
+                    }
+                    .shadow(color: .black.opacity(hovering ? 0.12 : 0.05), radius: hovering ? 8 : 3, y: hovering ? 4 : 1)
+                    .offset(y: hovering ? -1.5 : 0)
+                Text(theme.title)
+                    .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? .primary : .secondary)
+                    .padding(.leading, 3)
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.15), value: hovering)
+        .accessibilityLabel("\(theme.title), \(scheme == .dark ? "dark" : "light") theme")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

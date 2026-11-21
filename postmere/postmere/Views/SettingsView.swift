@@ -4,6 +4,7 @@ import UserNotifications
 struct SettingsView: View {
     @Environment(\.postmereAccent) private var palette
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
     @Bindable var store: MailStore
     @Bindable var runtime: MailRuntime
     @AppStorage("markdownSubstitutions") private var markdownSubstitutions = true
@@ -24,18 +25,19 @@ struct SettingsView: View {
 
     var body: some View {
         TabView(selection: $settingsTab) {
-            readingSettings.tabItem { PostmereLabel("General", symbol: "gearshape", size: 18) }.tag("general")
+            generalSettings.tabItem { PostmereLabel("General", symbol: "gearshape", size: 18) }.tag("general")
             MailAppearanceSettings().tabItem { PostmereLabel("Appearance", symbol: "paintpalette", size: 18) }.tag("appearance")
             composingSettings.tabItem { PostmereLabel("Composing", symbol: "square.and.pencil", size: 18) }.tag("composing")
             accountSettings.tabItem { PostmereLabel("Accounts", symbol: "person.crop.circle", size: 18) }.tag("accounts")
+            aiSettings.tabItem { PostmereLabel("AI", symbol: "sparkles", size: 18) }.tag("ai")
             privacySettings.tabItem { PostmereLabel("Privacy", symbol: "shield", size: 18) }.tag("privacy")
             notificationSettings.tabItem { PostmereLabel("Notifications", symbol: "bell", size: 18) }.tag("notifications")
-            screeningSettings.tabItem { PostmereLabel("Rules", symbol: "line.3.horizontal.decrease.circle", size: 18) }.tag("rules")
+            rulesSettings.tabItem { PostmereLabel("Rules", symbol: "line.3.horizontal.decrease.circle", size: 18) }.tag("rules")
             shortcutSettings.tabItem { PostmereLabel("Shortcuts", symbol: "keyboard", size: 18) }.tag("shortcuts")
         }
         .scrollContentBackground(theme == .native ? .automatic : .hidden)
         .padding(.top, 8)
-        .frame(width: 720, height: 590)
+        .frame(width: 740, height: 600)
         .background { SettingsTabForeground(palette: palette, selection: settingsTab).frame(width: 0, height: 0) }
         .mailboxWindowSurface()
         .sheet(isPresented: $showsInboxManager) { InboxManagementView(store: store) }
@@ -46,46 +48,34 @@ struct SettingsView: View {
         }
     }
 
-    private var readingSettings: some View {
+    // MARK: General
+
+    private var generalSettings: some View {
         Form {
-            defaultMailSettings
-            Section("Menu bar") {
-                Toggle("Show Postmere in the menu bar", isOn: $showsMenuBarInbox)
+            Section {
+                defaultMailRow
+                SettingsToggle("Menu bar inbox", symbol: "desktopcomputer", tint: SettingsTint.gray,
+                               subtitle: "Glance at new mail from the menu bar", isOn: $showsMenuBarInbox)
             }
             Section("Reading") {
-                Toggle("Show message previews", isOn: $showMessagePreviews)
-                Picker("Message font", selection: $readingFont) {
-                    ForEach(MailReadingFont.allCases, id: \.self) { font in
-                        Text(font.title).tag(font)
+                SettingsToggle("Message previews", symbol: "eye", tint: SettingsTint.teal,
+                               subtitle: "Show the first lines in the list", isOn: $showMessagePreviews)
+                SettingsRow("Font", symbol: "textformat", tint: SettingsTint.indigo) {
+                    Picker("Font", selection: $readingFont) {
+                        ForEach(MailReadingFont.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                SettingsRow("Text size", symbol: "textformat", tint: SettingsTint.indigo) {
+                    HStack(spacing: 8) {
+                        Text("A").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Slider(value: $readingFontSize, in: 12...20, step: 1) { Text("Text size") }
+                            .labelsHidden().frame(width: 140).controlSize(.small)
+                            .accessibilityValue("\(Int(readingFontSize)) points")
+                        Text("A").font(.system(size: 16)).foregroundStyle(.secondary)
                     }
                 }
-                HStack(spacing: 10) {
-                    Text("Message text size")
-                        .accessibilityHidden(true)
-                    Spacer()
-                    Slider(value: $readingFontSize, in: 12...20, step: 1) {
-                        Text("Reading text size")
-                    }
-                    .labelsHidden()
-                    .frame(width: 150)
-                    .accessibilityValue("\(Int(readingFontSize)) points")
-                    Text("\(Int(readingFontSize)) pt")
-                        .monospacedDigit().foregroundStyle(.secondary).frame(width: 38)
-                        .accessibilityHidden(true)
-                }
-                .accessibilityElement(children: .contain)
-                Text("The quick brown fox jumps over the lazy dog.")
-                    .font(readingFont.font(size: readingFontSize))
-                    .padding(.vertical, 8)
-                    .accessibilityLabel("Reading font preview")
-            }
-            Section("Calendar") { CalendarIntegrationSettingsView() }
-            Section("AI assistance") { MailAISettingsView(session: runtime.backend) }
-            Section {
-                Text("Messages, drafts, attachments, notes, and preferences are saved on this Mac. Add Google and Outlook accounts to your workspace in Accounts.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                readingPreview
             }
         }
         .formStyle(.grouped)
@@ -95,90 +85,79 @@ struct SettingsView: View {
         }
     }
 
-    private var defaultMailSettings: some View {
+    private var defaultMailRow: some View {
         let service = runtime.defaultMail
-        return Section("Default mail app") {
-            LabeledContent("Current default") {
-                if service.isRequesting {
-                    ProgressView("Waiting for macOS…").controlSize(.small)
+        let subtitle: String? = switch service.status {
+        case .other(let name): "Currently \(name ?? "another app")"
+        case .postmere: "Links and emails open here"
+        case nil: nil
+        }
+        return VStack(alignment: .leading, spacing: 6) {
+            SettingsRow("Default mail app", symbol: "envelope", tint: SettingsTint.blue, subtitle: subtitle) {
+                if service.isRequesting || service.status == nil {
+                    ProgressView().controlSize(.small)
+                } else if case .postmere = service.status {
+                    SettingsPill(title: "Postmere")
                 } else {
-                    switch service.status {
-                    case nil:
-                        ProgressView("Checking…").controlSize(.small)
-                    case .postmere:
-                        Label("Postmere", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(palette.accentInk)
-                    case let .other(name):
-                        HStack(spacing: 12) {
-                            Text(name ?? "Unknown").foregroundStyle(.secondary)
-                            Button {
-                                Task { await service.makeDefault() }
-                            } label: {
-                                Text("Make Postmere default").foregroundStyle(palette.accentInk)
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                    }
+                    Button("Make Default") { Task { await service.makeDefault() } }
+                        .controlSize(.small)
                 }
             }
             if let error = service.errorMessage {
-                Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                Text(error).font(.system(size: 11.5)).foregroundStyle(.red).textSelection(.enabled)
             }
         }
     }
 
-    private var privacySettings: some View {
-        Form {
-            Section("Incoming mail") {
-                privacyToggle("Load remote images automatically", isOn: $loadRemoteMailImagesAutomatically,
-                              detail: "Image hosts can see your IP address. Turn this off to choose which messages can load images.")
-                privacyToggle("Block sender tracking pixels", isOn: $blockSenderTrackingPixels,
-                              detail: "Keeps detected trackers from loading and shows the blocked count beside the recipients.")
-            }
-            Section("Profile photos") {
-                LabeledContent("Photos from Contacts") { ContactPhotoAccess() }
-                privacyToggle("Show website icons for organizations", isOn: Bindable(MailRemoteParticipantImages.websiteIcons).enabled,
-                              detail: "Bitwarden receives the website’s domain and your IP address. It can fetch the icon from the website.")
-                privacyToggle("Use Gravatar for missing photos", isOn: Bindable(MailRemoteParticipantImages.gravatar).enabled,
-                              detail: "Gravatar receives a hash of the email address and can recognize that address and see your IP address.")
-            }
+    /// The chosen font and size, as a message would show it.
+    private var readingPreview: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Re: Friday’s review")
+                .font(readingFont.font(size: readingFontSize).weight(.semibold))
+            Text("Thanks — the draft reads well. One small note on the timeline, then we’re good to go.")
+                .font(readingFont.font(size: readingFontSize))
+                .foregroundStyle(.primary.opacity(0.8))
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .formStyle(.grouped)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PostmereTheme.paper, in: .rect(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(PostmereTheme.rule))
+        .animation(.snappy(duration: 0.2), value: readingFontSize)
+        .accessibilityLabel("Reading font preview")
     }
 
-    private func privacyToggle(_ title: String, isOn: Binding<Bool>, detail: String) -> some View {
-        Toggle(isOn: isOn) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .accessibilityLabel(title)
-        .accessibilityHint(detail)
-    }
+    // MARK: Composing
 
     private var composingSettings: some View {
         Form {
-            Section("Sending") {
-                Picker("Default account", selection: $defaultSendingAccount) {
-                    if !MailAccount.allCases.contains(where: { $0.rawValue == defaultSendingAccount }) {
-                        Text(MailAccount.allCases.isEmpty ? "No accounts connected" : "Choose an account").tag(defaultSendingAccount)
+            Section {
+                SettingsRow("Send from", symbol: "paperplane", tint: SettingsTint.blue,
+                            subtitle: "Replies use the account that received the message") {
+                    if MailAccount.sendingAccounts.isEmpty {
+                        AccountSettingsButton(title: MailAccount.allCases.isEmpty ? "Add Account" : "Reconnect")
+                            .controlSize(.small)
+                    } else {
+                        Picker("Send from", selection: $defaultSendingAccount) {
+                            if !MailAccount.allCases.contains(where: { $0.rawValue == defaultSendingAccount }) {
+                                Text("Choose").tag(defaultSendingAccount)
+                            }
+                            ForEach(MailAccount.allCases, id: \.self) { account in
+                                Text(account.email).tag(account.rawValue).disabled(!account.isConnected)
+                            }
+                        }
+                        .labelsHidden().fixedSize()
                     }
-                    ForEach(MailAccount.allCases, id: \.self) { account in
-                        Text(account.email).tag(account.rawValue).disabled(!account.isConnected)
+                }
+                SettingsRow("Undo Send", symbol: "arrow.uturn.backward", tint: SettingsTint.orange,
+                            subtitle: "Time to take a message back") {
+                    Picker("Undo Send", selection: $undoSendDelay) {
+                        ForEach([5.0, 10.0, 20.0, 30.0, 60.0], id: \.self) { Text("\(Int($0)) s").tag($0) }
                     }
+                    .labelsHidden().fixedSize()
                 }
-                .disabled(MailAccount.sendingAccounts.isEmpty)
-                if MailAccount.sendingAccounts.isEmpty {
-                    AccountSettingsButton(title: MailAccount.allCases.isEmpty ? "Add an Account" : "Reconnect an Account")
-                }
-                Picker("Undo Send delay", selection: $undoSendDelay) {
-                    ForEach([5.0, 10.0, 20.0, 30.0, 60.0], id: \.self) { Text("\(Int($0)) seconds").tag($0) }
-                }
-                Toggle("Format Markdown as you type", isOn: $markdownSubstitutions)
-                Text("Use **bold**, *italic*, `code`, and Markdown lists in the composer.").font(.caption).foregroundStyle(.secondary)
-                Text("Replies use the account that received the original message.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                SettingsToggle("Markdown shortcuts", symbol: "bold", tint: SettingsTint.purple,
+                               subtitle: "**bold**, *italic*, `code` and lists as you type", isOn: $markdownSubstitutions)
             }
             Section("Signature") {
                 SignatureEditorView(accounts: MailAccount.allCases.filter { !$0.email.isEmpty }.map {
@@ -189,9 +168,43 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
+    // MARK: Accounts and AI
+
     private var accountSettings: some View {
         BackendConnectionView(session: runtime.backend, store: store, onSync: runtime.sync)
     }
+
+    private var aiSettings: some View {
+        MailAISettingsView(session: runtime.backend)
+    }
+
+    // MARK: Privacy
+
+    private var privacySettings: some View {
+        Form {
+            Section("Incoming mail") {
+                SettingsToggle("Load remote images", symbol: "eye", tint: SettingsTint.blue,
+                               subtitle: "Image hosts can see your IP address", isOn: $loadRemoteMailImagesAutomatically)
+                SettingsToggle("Block tracking pixels", symbol: "shield", tint: SettingsTint.green,
+                               subtitle: "Stops senders seeing when you open mail", isOn: $blockSenderTrackingPixels)
+            }
+            Section("Sender photos") {
+                SettingsRow("Contacts", symbol: "person.crop.circle", tint: SettingsTint.gray,
+                            subtitle: "Use photos from your address book") {
+                    ContactPhotoAccess().controlSize(.small)
+                }
+                SettingsToggle("Organization icons", symbol: "building.2", tint: SettingsTint.indigo,
+                               subtitle: "Sends the sender’s domain to Bitwarden",
+                               isOn: Bindable(MailRemoteParticipantImages.websiteIcons).enabled)
+                SettingsToggle("Gravatar", symbol: "at", tint: SettingsTint.teal,
+                               subtitle: "Sends a hash of the address to Gravatar",
+                               isOn: Bindable(MailRemoteParticipantImages.gravatar).enabled)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: Notifications
 
     private var notificationProfile: Binding<NotificationProfile> {
         Binding(get: {
@@ -209,94 +222,117 @@ struct SettingsView: View {
     private var notificationSettings: some View {
         Form {
             Section {
-                LabeledContent("Notifications on this Mac") {
-                    notificationPermissionControl
+                SettingsRow("Notifications", symbol: "bell", tint: SettingsTint.red) { notificationPermissionControl }
+                SettingsToggle("Dock badge", symbol: "tray", tint: SettingsTint.red,
+                               subtitle: "Unread count on the Dock icon", isOn: Bindable(runtime.mailboxCounts).showsUnreadInDock)
+                if let error = runtime.notifications.authorizationError {
+                    Text(error).font(.system(size: 11.5)).foregroundStyle(.red)
                 }
-                if let error = runtime.notifications.authorizationError { Text(error).font(.caption).foregroundStyle(.red) }
-                Toggle("Show unread count on Dock icon", isOn: Bindable(runtime.mailboxCounts).showsUnreadInDock)
             }
-            Section("Account notifications") {
+            Section("Per account") {
                 if MailAccount.allCases.isEmpty {
-                    LabeledContent("No accounts connected") { AccountSettingsButton(title: "Add an Account…") }
+                    SettingsRow("No accounts yet", symbol: "envelope", tint: SettingsTint.gray) {
+                        AccountSettingsButton(title: "Add Account").controlSize(.small)
+                    }
                 } else {
-                    Picker("Account", selection: $selectedNotificationAccount) {
-                        ForEach(MailAccount.allCases) { Text($0.email).tag($0.rawValue) }
+                    SettingsRow("Account", symbol: "envelope", tint: SettingsTint.blue) {
+                        Picker("Account", selection: $selectedNotificationAccount) {
+                            ForEach(MailAccount.allCases) { Text($0.email).tag($0.rawValue) }
+                        }
+                        .labelsHidden().fixedSize()
                     }
                     if let account = MailAccount(rawValue: selectedNotificationAccount), !account.isConnected {
-                        LabeledContent("Reconnect to receive notifications") {
-                            AccountSettingsButton(title: "Open Accounts…")
+                        SettingsRow("Reconnect to get alerts", symbol: "exclamationmark.circle", tint: SettingsTint.orange) {
+                            AccountSettingsButton(title: "Open Accounts").controlSize(.small)
                         }
                     }
-                    Toggle("Notify me about this account", isOn: notificationProfile.enabled)
+                    SettingsToggle("Alerts", symbol: "bell.badge", tint: SettingsTint.red, isOn: notificationProfile.enabled)
                     if notificationProfile.wrappedValue.enabled {
-                        Toggle("Show message subject", isOn: notificationProfile.showPreview)
-                        Toggle("Only during these hours", isOn: notificationProfile.scheduleEnabled)
+                        SettingsToggle("Show subject", symbol: "doc.text", tint: SettingsTint.gray, isOn: notificationProfile.showPreview)
+                        SettingsToggle("Quiet hours", symbol: "moon.zzz", tint: SettingsTint.indigo,
+                                       subtitle: "Only alert during a schedule", isOn: notificationProfile.scheduleEnabled)
                         if notificationProfile.wrappedValue.scheduleEnabled { notificationSchedule }
                     }
                 }
-                if let error = runtime.notifications.lastError { Text(error).font(.caption).foregroundStyle(.red) }
+                if let error = runtime.notifications.lastError {
+                    Text(error).font(.system(size: 11.5)).foregroundStyle(.red)
+                }
             }
-            Section("Focus") {
-                Text("To limit alerts to specific accounts during a Focus, add a Postmere filter in System Settings → Focus.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Section {
+                SettingsRow("Focus filters", symbol: "moon.zzz", tint: SettingsTint.purple,
+                            subtitle: "Choose which accounts can alert during a Focus") {
+                    Button("Open Focus") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.Focus-Settings.extension") { openURL(url) }
+                    }
+                    .controlSize(.small)
+                }
+                SettingsRow("While closed", symbol: "desktopcomputer", tint: SettingsTint.gray,
+                            subtitle: runtime.push.lastError ?? runtime.push.statusText) { EmptyView() }
             }
-            Section("While Postmere is closed") {
-                Text(runtime.push.statusText).font(.caption).foregroundStyle(.secondary)
-                if let error = runtime.push.lastError { Text(error).font(.caption).foregroundStyle(.secondary) }
-            }
-        }.formStyle(.grouped)
-            .task { await runtime.notifications.refreshAuthorization() }
+        }
+        .formStyle(.grouped)
+        .task { await runtime.notifications.refreshAuthorization() }
     }
 
     @ViewBuilder
     private var notificationPermissionControl: some View {
         let notifications = runtime.notifications
         if !notifications.hasCheckedAuthorization || notifications.isRequestingAuthorization {
-            ProgressView(notifications.isRequestingAuthorization ? "Waiting for permission…" : "Checking permission…")
-                .controlSize(.small)
+            ProgressView().controlSize(.small)
         } else {
             switch notifications.authorizationStatus {
             case .notDetermined:
-                Button("Enable Notifications…") { Task { await notifications.requestAuthorization() } }
+                Button("Turn On") { Task { await notifications.requestAuthorization() } }.controlSize(.small)
             case .authorized:
-                Label {
-                    Text("Allowed")
-                } icon: {
-                    PostmereIcon("checkmark.circle", size: 15).foregroundStyle(palette.accentInk)
-                }
-                .labelStyle(.titleAndIcon)
+                SettingsPill(title: "On")
             case .provisional:
-                HStack {
-                    Text("Delivered quietly")
-                    SystemNotificationSettingsButton()
+                HStack(spacing: 8) {
+                    SettingsPill(title: "Quiet", tint: SettingsTint.orange, symbol: nil)
+                    SystemNotificationSettingsButton(title: "Change").controlSize(.small)
                 }
             case .denied:
-                HStack {
-                    Text("Off")
-                    SystemNotificationSettingsButton()
+                HStack(spacing: 8) {
+                    SettingsPill(title: "Off", tint: SettingsTint.gray, symbol: nil)
+                    SystemNotificationSettingsButton(title: "Turn On").controlSize(.small)
                 }
             @unknown default:
-                SystemNotificationSettingsButton()
+                SystemNotificationSettingsButton(title: "Settings").controlSize(.small)
             }
         }
     }
 
-    @ViewBuilder
     private var notificationSchedule: some View {
-        DatePicker("From", selection: minuteBinding(notificationProfile.startMinute), displayedComponents: .hourAndMinute)
-        DatePicker("Until", selection: minuteBinding(notificationProfile.endMinute), displayedComponents: .hourAndMinute)
-        HStack(spacing: 6) {
-            ForEach(1...7, id: \.self) { day in
-                Toggle(Calendar.current.shortWeekdaySymbols[day - 1], isOn: Binding(get: {
-                    notificationProfile.wrappedValue.weekdays.contains(day)
-                }, set: { enabled in
-                    if enabled { notificationProfile.wrappedValue.weekdays.insert(day) }
-                    else { notificationProfile.wrappedValue.weekdays.remove(day) }
-                })).toggleStyle(.button)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                DatePicker("From", selection: minuteBinding(notificationProfile.startMinute), displayedComponents: .hourAndMinute)
+                    .labelsHidden()
+                Text("to").foregroundStyle(.secondary)
+                DatePicker("Until", selection: minuteBinding(notificationProfile.endMinute), displayedComponents: .hourAndMinute)
+                    .labelsHidden()
+                Spacer()
+            }
+            HStack(spacing: 6) {
+                ForEach(1...7, id: \.self) { day in
+                    let on = notificationProfile.wrappedValue.weekdays.contains(day)
+                    Button {
+                        if on { notificationProfile.wrappedValue.weekdays.remove(day) }
+                        else { notificationProfile.wrappedValue.weekdays.insert(day) }
+                    } label: {
+                        Text(Calendar.current.veryShortWeekdaySymbols[day - 1])
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(on ? Color.white : Color.secondary)
+                            .frame(width: 26, height: 26)
+                            .background(on ? palette.accent : PostmereTheme.rule.opacity(0.6), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Calendar.current.weekdaySymbols[day - 1])
+                    .accessibilityAddTraits(on ? .isSelected : [])
+                    .animation(.snappy(duration: 0.15), value: on)
+                }
             }
         }
-        Text("Times use your Mac’s time zone. Overnight schedules continue into the next morning.")
-            .font(.caption).foregroundStyle(.secondary)
+        .padding(.leading, 35)
+        .help("Uses your Mac’s time zone; overnight schedules run into the next morning.")
     }
 
     private func minuteBinding(_ minutes: Binding<Int>) -> Binding<Date> {
@@ -307,84 +343,128 @@ struct SettingsView: View {
         })
     }
 
-    private var screeningSettings: some View {
-        Form {
-            Section("Inbox organization") {
-                Button("Manage Inbox Tabs and VIPs…") { showsInboxManager = true }
-                Text("Group related mail with editable rules, and keep important senders together.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Sender screening") {
-                Toggle("Screen unfamiliar senders", isOn: $store.senderScreeningEnabled)
-                Text("New incoming senders wait in New Senders until you accept or block them. Existing mail stays where it is.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Sender rules") {
-                HStack {
-                    TextField("sender@example.com", text: $senderEmail)
-                    Picker("Route", selection: $senderRoute) {
-                        ForEach(SenderRoute.allCases) { Text($0.title).tag($0) }
-                    }.labelsHidden().frame(width: 130)
-                    Button("Add") {
-                        guard let address = MailAddressList(senderEmail).addresses.first else { return }
-                        store.saveSenderRule(SenderRule(email: address, route: senderRoute))
-                        senderEmail = ""
-                    }.disabled(MailAddressList(senderEmail).addresses.count != 1 || !MailAddressList(senderEmail).invalid.isEmpty)
-                }
-                ForEach(store.senderRules) { rule in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(rule.email).lineLimit(1)
-                            Text("\(MailAccount.scopeLabel(for: rule.account, providerEmail: rule.providerAccountEmail)) · \(rule.route.title)").font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Remove") { store.deleteSenderRule(rule.id) }.controlSize(.small)
-                    }
-                }
-                if store.senderRules.isEmpty { Text("No sender rules yet.").foregroundStyle(.secondary) }
-            }
-        }.formStyle(.grouped)
+    // MARK: Rules
+
+    private var canAddSenderRule: Bool {
+        let list = MailAddressList(senderEmail)
+        return list.addresses.count == 1 && list.invalid.isEmpty
     }
 
-    private var shortcutSettings: some View {
+    private var rulesSettings: some View {
         Form {
-            Section("Messages") {
-                shortcut("New message", "⌘N")
-                shortcut("Reply / Edit draft", "⌘R")
-                shortcut("Reply all", "⇧⌘R")
-                shortcut("Forward", "⇧⌘F")
-                shortcut("Archive", "⇧⌘A")
-                shortcut("Move to Trash", "⌘⌫")
-                shortcut("Mark read / unread", "⇧⌘U")
-                shortcut("Star / unstar", "⇧⌘L")
+            Section {
+                SettingsRow("Inbox tabs and VIPs", symbol: "tray", tint: SettingsTint.blue,
+                            subtitle: "Group mail with rules and keep key people together") {
+                    Button("Manage…") { showsInboxManager = true }.controlSize(.small)
+                }
+                SettingsToggle("Screen new senders", symbol: "person.crop.circle.badge.questionmark", tint: SettingsTint.orange,
+                               subtitle: "First-time senders wait in New Senders", isOn: $store.senderScreeningEnabled)
             }
-            Section("List triage") {
-                shortcut("Next / previous message", "J / K")
-                shortcut("Archive / trash", "E / #")
-                shortcut("Reply / star", "R / S")
-                Text("Single-letter shortcuts apply only while the message list has focus. Use Shift-click or Command-click to select several messages.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Navigation and composing") {
-                shortcut("Select inbox tab", "⌘1 … ⌘9")
-                shortcut("Search messages", "⌘F")
-                shortcut("Show mailboxes", "⌃⌘S")
-                shortcut("Save draft", "⌘S")
-                shortcut("Send / queue message", "⌘↩")
-                shortcut("Command palette", "⌘K")
-                shortcut("Attachment library", "⌥⌘A")
-                shortcut("Close composer", "Esc")
+            Section("Sender rules") {
+                HStack(spacing: 8) {
+                    TextField("Sender", text: $senderEmail, prompt: Text("name@example.com"))
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(addSenderRule)
+                    Picker("Route", selection: $senderRoute) {
+                        ForEach(SenderRoute.allCases) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
+                    Button("Add", action: addSenderRule).disabled(!canAddSenderRule)
+                }
+                ForEach(store.senderRules) { rule in
+                    HStack(spacing: 10) {
+                        ParticipantPhoto(address: rule.email, name: rule.email, size: 26, verifiedMark: nil)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(rule.email).font(.system(size: 13)).lineLimit(1).truncationMode(.middle)
+                            Text(MailAccount.scopeLabel(for: rule.account, providerEmail: rule.providerAccountEmail))
+                                .font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                        SettingsPill(title: rule.route.title, tint: routeTint(rule.route), symbol: nil)
+                        Button { store.deleteSenderRule(rule.id) } label: {
+                            PostmereIcon("xmark", size: 10).foregroundStyle(.secondary)
+                                .frame(width: 20, height: 20)
+                                .background(PostmereTheme.rule.opacity(0.5), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove rule")
+                        .accessibilityLabel("Remove rule for \(rule.email)")
+                    }
+                }
+                if store.senderRules.isEmpty {
+                    Text("Route a sender straight to a mailbox, or block them.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
     }
 
-    private func shortcut(_ title: String, _ keys: String) -> some View {
-        LabeledContent(title) {
-            Text(keys).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
+    private func addSenderRule() {
+        guard canAddSenderRule, let address = MailAddressList(senderEmail).addresses.first else { return }
+        store.saveSenderRule(SenderRule(email: address, route: senderRoute))
+        senderEmail = ""
+    }
+
+    private func routeTint(_ route: SenderRoute) -> Color {
+        switch route {
+        case .inbox: SettingsTint.blue
+        case .archive: SettingsTint.gray
+        case .needsReply: SettingsTint.orange
+        case .blocked: SettingsTint.red
+        }
+    }
+
+    // MARK: Shortcuts
+
+    private var shortcutSettings: some View {
+        Form {
+            Section("Messages") {
+                shortcut("New message", ["⌘", "N"])
+                shortcut("Reply", ["⌘", "R"])
+                shortcut("Reply all", ["⇧", "⌘", "R"])
+                shortcut("Forward", ["⇧", "⌘", "F"])
+                shortcut("Archive", ["⇧", "⌘", "A"])
+                shortcut("Move to Trash", ["⌘", "⌫"])
+                shortcut("Mark read or unread", ["⇧", "⌘", "U"])
+                shortcut("Star", ["⇧", "⌘", "L"])
+            }
+            Section("In the message list") {
+                shortcut("Next or previous", ["J"], or: ["K"])
+                shortcut("Archive or trash", ["E"], or: ["#"])
+                shortcut("Reply or star", ["R"], or: ["S"])
+            }
+            Section("Getting around") {
+                shortcut("Inbox tabs", ["⌘", "1"], or: ["⌘", "9"], joiner: "–")
+                shortcut("Search", ["⌘", "F"])
+                shortcut("Command palette", ["⌘", "K"])
+                shortcut("Show mailboxes", ["⌃", "⌘", "S"])
+                shortcut("Attachment library", ["⌥", "⌘", "A"])
+            }
+            Section("Composing") {
+                shortcut("Send", ["⌘", "↩"])
+                shortcut("Save draft", ["⌘", "S"])
+                shortcut("Write with AI", ["⌘", "J"])
+                shortcut("Close", ["esc"])
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func shortcut(_ title: String, _ keys: [String], or alternate: [String]? = nil, joiner: String = "or") -> some View {
+        HStack {
+            Text(title).font(.system(size: 13))
+            Spacer()
+            HStack(spacing: 3) {
+                ForEach(Array(keys.enumerated()), id: \.offset) { SettingsKeyCap($0.element) }
+                if let alternate {
+                    Text(joiner).font(.system(size: 11)).foregroundStyle(.tertiary).padding(.horizontal, 3)
+                    ForEach(Array(alternate.enumerated()), id: \.offset) { SettingsKeyCap($0.element) }
+                }
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
-        .accessibilityValue(keys)
+        .accessibilityValue((keys + (alternate.map { [joiner] + $0 } ?? [])).joined(separator: " "))
     }
 }

@@ -78,7 +78,7 @@ run_suite() {
         calendar)
             flags=(-swift-version 5 -parse-as-library)
             sources=("${theme[@]}" Models/BackendCalendar.swift Support/MailCalendar.swift Support/MailCalendarInvitation.swift
-                     Services/MailCalendarService.swift Views/CalendarViews.swift Views/CalendarInvitationView.swift)
+                     Services/MailCalendarService.swift Views/CalendarViews.swift Views/CalendarInvitationView.swift Views/SettingsComponents.swift)
             ;;
         notifications)
             flags=(-swift-version 5 "${mac_target[@]}")

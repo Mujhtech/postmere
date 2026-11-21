@@ -146,7 +146,7 @@ struct SenderContextView: View {
             stateMessage("Enable sender research", detail: "AI assistance researches public sources using the sender’s name and email address. Message content is not included.", symbol: "sparkles")
             Button(isEnabling ? "Enabling…" : "Enable AI & Find Details", action: onEnable)
                 .controlSize(.small).buttonStyle(.borderedProminent).disabled(isEnabling)
-            Button("AI Settings") { settingsTab = "general"; openSettings() }.controlSize(.small)
+            Button("AI Settings") { settingsTab = "ai"; openSettings() }.controlSize(.small)
             if let enableError { Text(enableError).font(.system(size: 11)).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
         case .unconfigured:
             stateMessage("Sender research isn’t available", detail: "AI assistance needs to be configured for this workspace. Ask your workspace administrator to enable it.", symbol: "sparkles")

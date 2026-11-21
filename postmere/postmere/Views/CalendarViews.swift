@@ -59,29 +59,31 @@ struct CalendarIntegrationSettingsView: View {
     init(service: MailCalendarService? = nil) { self.service = service ?? .shared }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Calendar agenda and availability").font(.system(size: 13, weight: .semibold))
-            Text("Connect calendars on this Mac to see upcoming events and check times before sharing availability.")
-                .font(.system(size: 12)).foregroundStyle(.secondary)
-            if service.isEnabled && service.access.canRead {
-                HStack {
-                    Text("Calendar connected").font(.system(size: 12)).foregroundStyle(palette.accentInk)
-                    Spacer()
-                    Button("Disconnect") { service.disconnectAgenda() }
-                }
-            } else {
-                HStack {
-                    Button("Connect Calendar") {
+        let connected = service.isEnabled && service.access.canRead
+        let blocked = service.access == .denied || service.access == .restricted
+        VStack(alignment: .leading, spacing: 6) {
+            SettingsRow("Calendar", symbol: "calendar", tint: SettingsTint.red,
+                        subtitle: blocked ? "Allow access in System Settings › Privacy › Calendars"
+                                          : "See your agenda and check times before sharing them") {
+                if connected {
+                    HStack(spacing: 8) {
+                        SettingsPill(title: "Connected")
+                        Button("Disconnect") { service.disconnectAgenda() }.controlSize(.small)
+                    }
+                } else if isConnecting {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Connect") {
                         isConnecting = true
                         Task { await service.connectAgenda(); isConnecting = false }
-                    }.disabled(isConnecting || service.access == .restricted)
-                    if isConnecting { ProgressView().controlSize(.small) }
-                }
-                if service.access == .denied || service.access == .restricted {
-                    Text("Manage access in System Settings → Privacy & Security → Calendars.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .controlSize(.small)
+                    .disabled(service.access == .restricted)
                 }
             }
-            if let error = service.errorMessage { Text(error).font(.caption).foregroundStyle(.red) }
+            if let error = service.errorMessage {
+                Text(error).font(.system(size: 11.5)).foregroundStyle(.red)
+            }
         }
     }
 }

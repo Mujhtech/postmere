@@ -23,7 +23,7 @@ struct SignatureEditorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if accounts.isEmpty {
-                Text("Add an account to set its signature.").foregroundStyle(.secondary)
+                Text("Add an account to set a signature.").font(.system(size: 12)).foregroundStyle(.secondary)
             } else {
                 Picker("Account", selection: Binding(get: { selectedAccountID }, set: selectAccount)) {
                     ForEach(accounts) { account in
@@ -48,12 +48,11 @@ struct SignatureEditorView: View {
                 .background(inset, in: .rect(cornerRadius: PostmereTheme.cardRadius))
                 .overlay { RoundedRectangle(cornerRadius: PostmereTheme.cardRadius).strokeBorder(PostmereTheme.rule) }
                 HStack(spacing: 18) {
+                    Text("Add to").font(.system(size: 12)).foregroundStyle(.secondary)
                     Toggle("New messages", isOn: binding(\.includeInNewMessages))
                     Toggle("Replies", isOn: binding(\.includeInReplies))
                     Toggle("Forwards", isOn: binding(\.includeInForwards))
                 }.toggleStyle(.checkbox).font(.system(size: 12))
-                Text("Added when you start a message from this account. Leave blank for no signature.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
                 if let error = saveError ?? preferences.loadError {
                     Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                 }
