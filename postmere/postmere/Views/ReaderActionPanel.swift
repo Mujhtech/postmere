@@ -82,7 +82,8 @@ struct ReaderActionPanel: View {
         case .details:
             MessageEnvelopeDetailsView(message: message)
         case .suggestions:
-            MailAIAssistantView(runtime: runtime, mode: .suggestions, messages: runtime.store.conversationMessages(for: message))
+            MailSuggestionsView(runtime: runtime, messages: runtime.store.conversationMessages(for: message))
+                .id(message.id)
         case .share:
             ShareThreadView(runtime: runtime, message: message)
         case .calendar(let draft):
