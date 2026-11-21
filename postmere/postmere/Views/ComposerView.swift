@@ -55,6 +55,7 @@ struct ComposerView: View {
                               onCaptureAttachments: { try store.addDraftAttachments(from: $0) },
                               onCaptureError: showAttachmentError)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .bottom) { aiWriting }
             if !store.draftAttachments.isEmpty { attachmentList }
         }
         .background(canvas)
@@ -71,6 +72,8 @@ struct ComposerView: View {
                 .keyboardShortcut("a", modifiers: [.command, .shift]).hidden()
             Button("Queue Message", action: store.sendDraft)
                 .keyboardShortcut(.return, modifiers: .command).disabled(!store.canSendDraft).hidden()
+            Button("Write with AI", action: toggleAIWriting)
+                .keyboardShortcut("j", modifiers: .command).hidden()
         }
         .toolbar { composeToolbar }
         .toolbar(removing: .title)
@@ -104,11 +107,6 @@ struct ComposerView: View {
                 SharedTemplatesView(runtime: runtime)
             }.frame(width: 760, height: 570)
                 .mailPanelSurface()
-        }
-        .sheet(isPresented: $showsAIWriting) {
-            MailAIAssistantView(runtime: runtime, mode: .draft,
-                messages: store.messages.filter { $0.conversationID == store.draftConversationID && $0.account == store.draftAccount.rawValue },
-                draftText: store.draftBody, onApplyText: formatting.replaceBodyWithSuggestion)
         }
         .onAppear {
             if !store.isComposing { store.beginCompose() }
@@ -174,6 +172,14 @@ struct ComposerView: View {
                     .foregroundStyle(PostmereTheme.icon)
             }
             .help("Emoji & Symbols")
+            if runtime.backend.canAccessWorkspace {
+                Button(action: toggleAIWriting) {
+                    PostmereLabel("Write with AI", symbol: "sparkles", size: 17)
+                        .foregroundStyle(palette.accentInk)
+                }
+                .help("Write or edit with AI · ⌘J")
+                .accessibilityValue(showsAIWriting ? "Open" : "Closed")
+            }
             Menu {
                 Button("Insert Snippet or Template…") { showsSnippets = true }
                 Button("Insert Availability…") { showsAvailability = true }
@@ -181,8 +187,6 @@ struct ComposerView: View {
                     Button("Insert Booking Link…") { showsBookingLinks = true }
                     Button("Team Templates…") { showsTeamTemplates = true }
                 }
-                Divider()
-                Button("AI Writing Assistant…") { showsAIWriting = true }
             } label: {
                 PostmereLabel("Snippets", symbol: "text.badge.plus", size: 17)
                     .foregroundStyle(PostmereTheme.icon)
@@ -233,6 +237,31 @@ struct ComposerView: View {
             }
             .disabled(!store.draftAccount.isConnected)
             .help(store.draftValidationMessage ?? "Queue email for delivery · ⌘Return")
+        }
+    }
+
+    private func toggleAIWriting() {
+        guard runtime.backend.canAccessWorkspace else { return }
+        withAnimation(.spring(duration: 0.4, bounce: 0.15)) { showsAIWriting.toggle() }
+    }
+
+    /// The inline writer floats over the bottom of the body; an empty body shows an invitation.
+    @ViewBuilder private var aiWriting: some View {
+        if showsAIWriting {
+            ComposeAIWriter(runtime: runtime, store: store, formatting: formatting) {
+                withAnimation(.spring(duration: 0.35, bounce: 0.1)) { showsAIWriting = false }
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 16)
+            .transition(.move(edge: .bottom).combined(with: .opacity).combined(with: .scale(scale: 0.98, anchor: .bottom)))
+        } else if runtime.backend.canAccessWorkspace,
+                  store.draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            HStack {
+                Spacer()
+                ComposeAIHint(action: toggleAIWriting)
+            }
+            .padding(20)
+            .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .bottomTrailing)))
         }
     }
 
