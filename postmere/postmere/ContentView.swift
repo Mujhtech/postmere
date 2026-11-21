@@ -76,15 +76,15 @@ struct ContentView: View {
                 if !showsSearchButton {
                     Color.clear
                         .frame(width: 0, height: 0)
-                        .searchable(text: Binding(get: { store.searchText }, set: store.updateSearchText),
+                        .searchable(text: Binding(get: { store.searchText }, set: store.searchFieldChanged),
                                     isPresented: $searchPresented, placement: .toolbar, prompt: "Search mail")
                         .searchFocused($searchFocused)
                         .onSubmit(of: .search, openSearchResult)
                 }
             }
+        // Clicking into the field only focuses it; typing starts the search.
         .onChange(of: searchPresented) {
-            if searchPresented { store.beginSearch() }
-            else if store.isSearchActive && !showsSearchButton { store.endSearch() }
+            if !searchPresented && store.isSearchActive && !showsSearchButton { store.endSearch() }
         }
         .onChange(of: editingCompactSearch ? store.selectedMessageID : nil) { _, selected in
             if selected != nil { editingCompactSearch = false }
@@ -100,9 +100,11 @@ struct ContentView: View {
                 preSearchVisibility = isCompact ? wideColumnVisibility : columnVisibility
                 columnVisibility = .doubleColumn
             } else {
-                searchPresented = false
-                searchFocused = false
-                editingCompactSearch = false
+                // Deleting back to an empty field leaves search but keeps typing there.
+                if !searchFocused {
+                    searchPresented = false
+                    editingCompactSearch = false
+                }
                 if let previous = preSearchVisibility {
                     wideColumnVisibility = previous
                     columnVisibility = isCompact ? .doubleColumn : previous
@@ -250,7 +252,6 @@ struct ContentView: View {
 
     private func focusSearch() {
         editingCompactSearch = isCompact
-        store.beginSearch()
         searchPresented = true
         searchFocused = true
         DispatchQueue.main.async {

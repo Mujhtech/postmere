@@ -297,6 +297,16 @@ final class MailStore {
         if isSearchActive { refreshSearch() } else { reconcileSelection() }
     }
 
+    /// The toolbar field: search starts with the first character typed and
+    /// ends when the field is emptied, so focusing the field alone changes nothing.
+    func searchFieldChanged(_ text: String) {
+        if isSearchActive, text.isEmpty, searchText != text {
+            endSearch()
+            return
+        }
+        updateSearchText(text)
+    }
+
     func updateSearchText(_ text: String) {
         if !isSearchActive {
             guard !text.isEmpty else { return }

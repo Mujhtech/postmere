@@ -95,6 +95,18 @@ enum RegressionFailure: Error { case failed(String) }
                   "the background fill restores every body")
     }
 
+    /// Focusing the search field changes nothing; typing starts search and
+    /// emptying the field ends it.
+    @MainActor static func searchStartsWithTyping() throws {
+        let store = MailStore(messages: [])
+        store.searchFieldChanged("")
+        try check(!store.isSearchActive, "an empty search field does not open search")
+        store.searchFieldChanged("i")
+        try check(store.isSearchActive && store.searchText == "i", "the first typed character opens search")
+        store.searchFieldChanged("")
+        try check(!store.isSearchActive, "clearing the field leaves search")
+    }
+
     /// Dragging rows onto sidebar mailboxes moves, stars or flags them, and a
     /// mailbox never takes mail it cannot hold.
     @MainActor static func dropOnSidebar() throws {
@@ -330,6 +342,7 @@ enum RegressionFailure: Error { case failed(String) }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PostmereRegression-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
+        try searchStartsWithTyping()
         try dropOnSidebar()
         try separateBodyStorage(directory: directory)
         try await lazyBodyOpening(directory: directory)
