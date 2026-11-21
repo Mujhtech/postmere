@@ -2117,6 +2117,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "postmere-plugins"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "postmere-core",
+ "postmere-mail",
+ "postmere-providers",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "postmere-providers"
 version = "0.1.0"
 dependencies = [
@@ -2191,6 +2207,7 @@ dependencies = [
  "postmere-mcp",
  "postmere-mcp-auth",
  "postmere-mcp-operations",
+ "postmere-plugins",
  "postmere-providers",
  "postmere-push",
  "postmere-realtime",

@@ -24,6 +24,7 @@ pub fn feature_routes() -> Router<AppState> {
         .merge(postmere_realtime::router())
         .merge(postmere_push::router())
         .merge(postmere_webhooks::router())
+        .merge(postmere_plugins::router())
 }
 
 pub fn router() -> Router<AppState> {

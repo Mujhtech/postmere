@@ -3,7 +3,7 @@ set -euo pipefail
 
 suites=(mail_backend notifications composer attachment_types templates signatures
         backend_events backend_push
-        unsubscribe calendar sender_context sender_profile backend_client backend_session)
+        unsubscribe calendar sender_context sender_profile backend_client backend_session plugins)
 
 usage() {
     printf 'Usage: %s [suite ...]\nRun all native suites by default. Available suites:\n' "${0##*/}"
@@ -65,6 +65,10 @@ run_suite() {
         backend_session)
             flags=(-swift-version 6 -parse-as-library -O)
             sources=("${store_sources[@]}" "${summary_sources[@]}" Services/BackendHTTPClient.swift Services/BackendEvents.swift Services/BackendKeychain.swift Services/BackendSession.swift Services/MailSpamChecks.swift)
+            ;;
+        plugins)
+            flags=(-swift-version 6 -parse-as-library)
+            sources=(Models/BackendPlugins.swift Services/BackendHTTPClient.swift)
             ;;
         backend_events)
             flags=(-swift-version 6 -parse-as-library -O)

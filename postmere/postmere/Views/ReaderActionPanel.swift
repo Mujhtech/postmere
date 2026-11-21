@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum ReaderPanelAction: Equatable {
-    case labels, snooze, followUp, privateNote, share, suggestions, details
+    case labels, snooze, followUp, privateNote, share, suggestions, details, plugins
     case calendar(MailCalendarEventDraft)
 
     func title(for message: MailMessage) -> String {
@@ -13,6 +13,7 @@ enum ReaderPanelAction: Equatable {
         case .share: "Share conversation"
         case .suggestions: "Suggested next steps"
         case .details: "Message details"
+        case .plugins: "Plugins"
         case .calendar: "Review event"
         }
     }
@@ -88,6 +89,8 @@ struct ReaderActionPanel: View {
             ShareThreadView(runtime: runtime, message: message)
         case .calendar(let draft):
             ScrollView { CalendarEventDraftView(draft: draft) }
+        case .plugins:
+            PluginPanelView(message: message)
         }
     }
 

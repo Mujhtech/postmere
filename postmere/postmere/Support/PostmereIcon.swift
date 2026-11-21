@@ -331,6 +331,54 @@ enum PostmereSymbols {
             d.circle(12, 12, 9); d.line([12, 7, 12, 12]); d.disc(12, 16, 1)
         case "externaldrive.badge.exclamationmark":
             d.rect(3, 5, 18, 15, radius: 2.5); d.line([3, 15, 21, 15]); d.line([12, 8, 12, 10]); d.disc(12, 12.5, 0.7); d.disc(17, 17.5, 0.6)
+        case "chevron.left.forwardslash.chevron.right":
+            d.line([7.5, 7, 2.5, 12, 7.5, 17]); d.line([16.5, 7, 21.5, 12, 16.5, 17]); d.line([14, 4.5, 10, 19.5])
+        case "bell.slash":
+            d.curve(from: [5, 15], to: [12, 4], c1: [7, 13], c2: [4, 4])
+            d.curve(from: [12, 4], to: [19, 15], c1: [20, 4], c2: [17, 13])
+            d.line([5, 15, 3.5, 18, 20.5, 18, 19, 15]); d.line([12, 2, 12, 4])
+            d.curve(from: [9.5, 21], to: [14.5, 21], c1: [10.5, 22], c2: [13.5, 22])
+            d.line([3, 3, 21, 21])
+        case "checklist":
+            d.line([3.5, 6.5, 5, 8, 8, 5]); d.line([11, 6.5, 20.5, 6.5])
+            d.line([3.5, 12.5, 5, 14, 8, 11]); d.line([11, 12.5, 20.5, 12.5])
+            d.circle(5.5, 18.5, 1.6); d.line([11, 18.5, 20.5, 18.5])
+        case "ladybug":
+            d.curve(from: [6, 11], to: [18, 11], c1: [6, 6.5], c2: [18, 6.5])
+            d.line([18, 11, 18, 14]); d.curve(from: [18, 14], to: [6, 14], c1: [18, 22.5], c2: [6, 22.5]); d.line([6, 14, 6, 11])
+            d.line([12, 8, 12, 20.5]); d.line([9, 7.5, 7.5, 4.5]); d.line([15, 7.5, 16.5, 4.5])
+            d.line([6, 12.5, 2.5, 11]); d.line([18, 12.5, 21.5, 11]); d.line([6, 17, 3, 19]); d.line([18, 17, 21, 19])
+        case "icloud.and.arrow.up":
+            d.curve(from: [7, 19], to: [6.5, 10], c1: [2, 19], c2: [2, 10.5])
+            d.curve(from: [6.5, 10], to: [17.5, 9.5], c1: [7.5, 3.5], c2: [16.5, 3.5])
+            d.curve(from: [17.5, 9.5], to: [17, 19], c1: [22.5, 10], c2: [22.5, 19])
+            d.line([7, 19, 9.5, 19]); d.line([14.5, 19, 17, 19])
+            d.line([12, 20, 12, 12]); d.line([9, 15, 12, 12, 15, 15])
+        case "flame":
+            d.curve(from: [12, 21.5], to: [12, 2.5], c1: [3, 21.5], c2: [4, 11])
+            d.curve(from: [12, 2.5], to: [12, 21.5], c1: [14, 8], c2: [21, 12])
+            d.curve(from: [12, 21.5], to: [12, 13], c1: [9, 21.5], c2: [9, 16])
+            d.curve(from: [12, 13], to: [12, 21.5], c1: [13, 15.5], c2: [15, 17])
+        case "lock":
+            d.rect(5, 10.5, 14, 10.5, radius: 2.5)
+            d.line([8, 10.5, 8, 7.5]); d.curve(from: [8, 7.5], to: [16, 7.5], c1: [8, 2.5], c2: [16, 2.5]); d.line([16, 7.5, 16, 10.5])
+            d.line([12, 14.5, 12, 16.5])
+        case "shippingbox":
+            d.line([12, 2.5, 20.5, 7, 20.5, 17, 12, 21.5, 3.5, 17, 3.5, 7], close: true)
+            d.line([3.5, 7, 12, 11.5, 20.5, 7]); d.line([12, 11.5, 12, 21.5])
+            d.line([7.75, 4.75, 16.25, 9.25, 16.25, 13])
+        case "creditcard":
+            d.rect(2.5, 5, 19, 14, radius: 2.5)
+            d.line([2.5, 10, 21.5, 10]); d.line([6, 15, 10, 15])
+        case "doc.on.doc":
+            d.rect(8, 8, 12, 13, radius: 2)
+            d.line([8, 16, 6, 16]); d.curve(from: [6, 16], to: [4, 14], c1: [4.9, 16], c2: [4, 15.1])
+            d.line([4, 14, 4, 5]); d.curve(from: [4, 5], to: [6, 3], c1: [4, 3.9], c2: [4.9, 3])
+            d.line([6, 3, 14, 3]); d.curve(from: [14, 3], to: [16, 5], c1: [15.1, 3], c2: [16, 3.9]); d.line([16, 5, 16, 8])
+        case "puzzlepiece":
+            d.line([4, 8, 9.5, 8]); d.curve(from: [9.5, 8], to: [14.5, 8], c1: [8.5, 3], c2: [15.5, 3])
+            d.line([14.5, 8, 20, 8, 20, 11.5]); d.curve(from: [20, 11.5], to: [20, 16.5], c1: [25, 10.5], c2: [25, 17.5])
+            d.line([20, 16.5, 20, 20, 4, 20, 4, 8])
         default:
             // Deliberately visible in development: every application symbol
             // should be added to this family, never silently fall back to SF.

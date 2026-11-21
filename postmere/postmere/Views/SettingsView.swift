@@ -30,6 +30,7 @@ struct SettingsView: View {
             composingSettings.tabItem { PostmereLabel("Composing", symbol: "square.and.pencil", size: 18) }.tag("composing")
             accountSettings.tabItem { PostmereLabel("Accounts", symbol: "person.crop.circle", size: 18) }.tag("accounts")
             aiSettings.tabItem { PostmereLabel("AI", symbol: "sparkles", size: 18) }.tag("ai")
+            PluginSettingsView(session: runtime.backend).tabItem { PostmereLabel("Plugins", symbol: "puzzlepiece", size: 18) }.tag("plugins")
             privacySettings.tabItem { PostmereLabel("Privacy", symbol: "shield", size: 18) }.tag("privacy")
             notificationSettings.tabItem { PostmereLabel("Notifications", symbol: "bell", size: 18) }.tag("notifications")
             rulesSettings.tabItem { PostmereLabel("Rules", symbol: "line.3.horizontal.decrease.circle", size: 18) }.tag("rules")
@@ -37,7 +38,7 @@ struct SettingsView: View {
         }
         .scrollContentBackground(theme == .native ? .automatic : .hidden)
         .padding(.top, 8)
-        .frame(width: 740, height: 600)
+        .frame(width: 790, height: 600)
         .background { SettingsTabForeground(palette: palette, selection: settingsTab).frame(width: 0, height: 0) }
         .mailboxWindowSurface()
         .sheet(isPresented: $showsInboxManager) { InboxManagementView(store: store) }

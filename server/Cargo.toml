@@ -55,6 +55,7 @@ postmere-mcp = { path = "crates/postmere-mcp" }
 postmere-realtime = { path = "crates/postmere-realtime" }
 postmere-push = { path = "crates/postmere-push" }
 postmere-webhooks = { path = "crates/postmere-webhooks" }
+postmere-plugins = { path = "crates/postmere-plugins" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -79,6 +80,7 @@ postmere-mcp-auth.workspace = true
 postmere-realtime.workspace = true
 postmere-push.workspace = true
 postmere-webhooks.workspace = true
+postmere-plugins.workspace = true
 axum.workspace = true
 serde.workspace = true
 sqlx.workspace = true

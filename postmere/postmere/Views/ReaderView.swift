@@ -545,6 +545,7 @@ struct ReaderView: View {
     private func messageContents(_ message: MailMessage, trackerCount: Binding<Int>, quoteContext: MailQuoteContext? = nil) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             SpamCheckView(message: message, store: store)
+            PluginBanner(message: message)
             if !message.isDraft && message.mailbox != .outbox {
                 MailMessageInvitation(message: message, runtime: runtime) { event in
                     presentedSheet = .invitation(event, message.mailAccount)
@@ -978,6 +979,7 @@ struct ReaderView: View {
         if let message = store.selectedMessage {
             if store.selectedMessageIDs.count <= 1 && message.allowsWorkflowActions {
                 spamCheckAction(message)
+                pluginActions(message)
                 Button(message.needsReply ? "Mark Conversation Done" : "Needs Reply") { store.setNeedsReply(!message.needsReply, for: message.id) }
                 if toolbarMessage == nil {
                     Button("Snooze…") { runtime.openReaderPanel(.snooze) }
@@ -1015,6 +1017,22 @@ struct ReaderView: View {
                 }
             }
             Button("Message Details") { runtime.openReaderPanel(.details) }.disabled(store.selectedMessageIDs.count > 1)
+        }
+    }
+
+    /// Actions plugins offer for this message, under the plugin's own icon.
+    @ViewBuilder private func pluginActions(_ message: MailMessage) -> some View {
+        if let actions = runtime.plugins.plugins(for: message)?.actions, !actions.isEmpty {
+            Divider()
+            ForEach(actions) { action in
+                Button {
+                    runtime.plugins.perform(action, message: message, session: runtime.backend)
+                } label: {
+                    PostmereLabel(action.title, symbol: action.icon)
+                }
+                .disabled(runtime.plugins.isRunning(plugin: action.pluginId, tool: action.tool))
+            }
+            Divider()
         }
     }
 

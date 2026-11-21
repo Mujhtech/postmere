@@ -14,6 +14,8 @@ final class MailRuntime {
     }()
     let store: MailStore
     let spamChecks: MailSpamChecks
+    /// First-party plugins: cards and actions on messages.
+    let plugins: MailPlugins
     let mailLinks = MailLinkDrafts()
     let backend = BackendSession()
     let defaultMail: DefaultMailAppService
@@ -88,6 +90,7 @@ final class MailRuntime {
             return opening
         }()
         spamChecks = MailSpamChecks(store: self.store)
+        plugins = MailPlugins(store: self.store)
         mailboxCounts = MailboxCounts(store: self.store, dockAccounts: { [backend] in
             guard backend.canAccessWorkspace, let scope = backend.scope else { return [] }
             let disconnecting = backend.disconnectingAccountIDs
@@ -145,6 +148,7 @@ final class MailRuntime {
         let generation = backend.realtimeGeneration
         if mailSyncGeneration != generation {
             spamChecks.cancelPending()
+            plugins.reset()
             mailSyncGeneration = generation
             pendingMailSync = []
             nextMailCacheCheck = .distantPast
