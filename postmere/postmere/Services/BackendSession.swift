@@ -16,6 +16,21 @@ final class BackendSession {
     private(set) var credential: BackendCredential?
     private(set) var isBusy = false
     private(set) var isRestoring = false
+    /// The workspace last verified on this Mac. While its saved session is
+    /// checked, the window shows that workspace's local mailbox instead of
+    /// sign-in. Nothing reaches the server until the session is verified.
+    private(set) var provisionalScope: String?
+    /// True while the cached mailbox stands in for a session being verified,
+    /// including offline retries. A rejected session clears it.
+    var showsCachedWorkspace: Bool {
+        // Not tied to a missing credential: restore sets the verified credential
+        // before the account list arrives, and the window must not drop to
+        // sign-in in between.
+        provisionalScope != nil && (awaitingFirstRestore || isRestoring || isWaitingForSavedSession)
+    }
+    /// From launch until restore begins, so the window never shows sign-in
+    /// to a returning user while startup work runs first.
+    private var awaitingFirstRestore = false
     private(set) var isWaitingForSavedSession = false
     var isWaitingForSignOut: Bool { preferences.bool(forKey: "postmerePendingSignOut.v1") }
     var errorMessage: String?
@@ -76,19 +91,54 @@ final class BackendSession {
         self.configuration = configuration.copy() as! URLSessionConfiguration
         self.preferences = preferences
         baseURL = preferences.string(forKey: "postmereServerURL") ?? ""
+        if let data = preferences.data(forKey: "postmereFocusAccountCatalog.v1"),
+           let cached = try? JSONDecoder().decode([RemoteAccountIdentity].self, from: data),
+           let scope = cached.first?.scope, cached.allSatisfy({ $0.scope == scope }) {
+            provisionalScope = scope
+            RemoteAccountRegistry.accounts = cached
+            awaitingFirstRestore = true
+        }
     }
 
     func restore() async {
         guard credential == nil, !isBusy else { return }
-        if isWaitingForSignOut { await logout(); return }
+        if isWaitingForSignOut {
+            awaitingFirstRestore = false
+            dropProvisionalWorkspace()
+            await logout()
+            return
+        }
         // A persisted Focus catalog is descriptive metadata, not proof that the
         // saved workspace session is still valid. Rebuild it after verification.
         let previousFailures = savedSessionFailures
+        // An offline retry reuses the workspace already on screen.
+        let cachedCatalog = preferences.data(forKey: "postmereFocusAccountCatalog.v1")
+            ?? (provisionalScope != nil ? try? JSONEncoder().encode(RemoteAccountRegistry.accounts) : nil)
+        let cachedAccounts = cachedCatalog.flatMap { try? JSONDecoder().decode([RemoteAccountIdentity].self, from: $0) } ?? []
         clearSession()
+        awaitingFirstRestore = false
         savedSessionFailures = previousFailures
         isBusy = true
         isRestoring = true
-        defer { isRestoring = false; isBusy = false }
+        // Open on the last verified workspace's local mail. The catalog holds no
+        // credentials and only maps cached messages to their accounts.
+        if let scope = cachedAccounts.first?.scope, cachedAccounts.allSatisfy({ $0.scope == scope }) {
+            provisionalScope = scope
+            RemoteAccountRegistry.accounts = cachedAccounts
+            // Kept until the session is rejected, so quitting before
+            // verification still opens on this mailbox next time.
+            preferences.set(cachedCatalog, forKey: "postmereFocusAccountCatalog.v1")
+            onAccountCatalogChanged?()
+        }
+        defer {
+            isRestoring = false
+            isBusy = false
+            if credential != nil {
+                provisionalScope = nil
+            } else if !isWaitingForSavedSession {
+                dropProvisionalWorkspace()
+            }
+        }
         let requestGeneration = generation
         var savedWasLoaded = false
         do {
@@ -275,8 +325,18 @@ final class BackendSession {
         }
     }
 
+    /// Leaves the cached workspace when its saved session is rejected or missing.
+    private func dropProvisionalWorkspace() {
+        guard provisionalScope != nil else { return }
+        provisionalScope = nil
+        RemoteAccountRegistry.accounts = []
+        preferences.removeObject(forKey: "postmereFocusAccountCatalog.v1")
+        onAccountCatalogChanged?()
+    }
+
     func clearSession() {
         generation = UUID()
+        provisionalScope = nil
         lastLabelCatalog = nil
         credential = nil
         transport = nil

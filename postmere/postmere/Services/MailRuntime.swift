@@ -77,7 +77,12 @@ final class MailRuntime {
 
     init(store: MailStore? = nil, defaultMail: DefaultMailAppService? = nil) {
         self.defaultMail = defaultMail ?? DefaultMailAppService()
-        self.store = store ?? MailStore(openInBackground: true)
+        self.store = store ?? {
+            let opening = MailStore(openInBackground: true)
+            // The window goes from "Opening mailbox" straight to a filled list.
+            opening.preparesListWhileOpening = true
+            return opening
+        }()
         spamChecks = MailSpamChecks(store: self.store)
         mailboxCounts = MailboxCounts(store: self.store, dockAccounts: { [backend] in
             guard backend.canAccessWorkspace, let scope = backend.scope else { return [] }
@@ -175,7 +180,10 @@ final class MailRuntime {
             store.saveDraft()
             if !store.isComposing { suspendedComposerScope = nil }
         } else {
-            store.flushPersistence()
+            // The snapshot is taken now; encoding and writing run on the save
+            // queue. Session restore passes through here at every launch, and a
+            // synchronous write of the whole mailbox froze the window for seconds.
+            store.schedulePersistence()
         }
 
         // Native attachment and formatting panels are not owned by a SwiftUI

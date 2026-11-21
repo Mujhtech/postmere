@@ -22,6 +22,16 @@ final class PostmereAppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.registerForRemoteNotifications()
     }
 
+    /// Quits at once when everything is already saved. Otherwise the last
+    /// write finishes off the main thread, so the app never stops responding.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let store = runtime?.store else { return .terminateNow }
+        store.finishPersistenceForQuit {
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         runtime?.registeredForPush(token: deviceToken)
     }

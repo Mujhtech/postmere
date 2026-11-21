@@ -79,7 +79,7 @@ private struct WorkspaceSceneGate<Content: View>: View {
                     .controlSize(.small)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .mailboxWindowSurface()
-            } else if !runtime.backend.canAccessWorkspace || finishingSetup {
+            } else if !(runtime.backend.canAccessWorkspace || runtime.backend.showsCachedWorkspace) || finishingSetup {
                 WorkspaceOnboardingView(session: runtime.backend, notifications: runtime.notifications,
                                         defaultMail: runtime.defaultMail,
                                         offersInboxSetup: offersInboxSetup,
@@ -96,7 +96,9 @@ private struct WorkspaceSceneGate<Content: View>: View {
                         .frame(minWidth: 540, minHeight: 520)
                         .mailboxWindowSurface()
                 } else {
-                    content().id(runtime.backend.scope)
+                    // Verifying the cached workspace keeps the same identity, so
+                    // the window does not rebuild when the session is confirmed.
+                    content().id(runtime.backend.scope ?? runtime.backend.provisionalScope)
                 }
             }
         }
@@ -120,9 +122,6 @@ private struct WorkspaceSceneGate<Content: View>: View {
             } else {
                 runtime.store.schedulePersistence()
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-            runtime.store.flushPersistence()
         }
     }
 }
