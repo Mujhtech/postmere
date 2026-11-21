@@ -278,6 +278,51 @@ struct BackendClientFixtures {
         check(request.value(forHTTPHeaderField: "Cookie") == nil && request.value(forHTTPHeaderField: "X-Ambient") == nil, "Stream included ambient headers")
         check(chunks.joined() == result.text && result.items.first?.sourceIds == [accountID] && result.sources.first?.id == accountID, "Completed summary and citations")
 
+        let item = "{\"kind\":\"suggestion\",\"text\":\"Reply soon\",\"source_ids\":[\"\(accountID)\"],\"action\":\"needs_reply\",\"message_id\":\"\(accountID)\",\"due_at\":null}"
+        let suggestionRequest = reset { _, fixture in
+            fixture.response(200, headers: ["Content-Type": "text/event-stream"], body: Data("""
+                data: {"type":"delta","text":"Needs you."}
+
+                data: {"type":"item","item":\(item)}
+
+                data: {"type":"done","result":\(json)}
+
+
+                """.utf8))
+        }
+        var suggestionOrder: [String] = []
+        _ = try await stream.generate(path: "/v1/ai/suggestions", messageIDs: [accountID], token: "fixture",
+                                      onDelta: { suggestionOrder.append("delta:" + $0) },
+                                      onItem: { suggestionOrder.append("item:" + ($0.action ?? "")) })
+        check(suggestionRequest.last?.url?.path == "/v1/ai/suggestions", "Suggestions must stream from their own endpoint")
+        check(suggestionOrder == ["delta:Needs you.", "item:needs_reply"], "Suggestion prose and items must arrive in order")
+
+        let source = "{\"id\":\"\(accountID)\",\"account_id\":\"\(accountID)\",\"subject\":\"Invoice\",\"sender\":\"Billing\",\"sent_at\":\"2026-11-20T06:30:00Z\"}"
+        let askRequest = reset { _, fixture in
+            fixture.response(200, headers: ["Content-Type": "text/event-stream"], body: Data("""
+                data: {"type":"sources","sources":[\(source)]}
+
+                data: {"type":"delta","text":"Due Friday."}
+
+                data: {"type":"done","result":\(json)}
+
+
+                """.utf8))
+        }
+        var askOrder: [String] = []
+        _ = try await stream.generate(path: "/v1/ai/ask", body: MailAIAskInput(question: "When is it due?", accountIds: []),
+                                      token: "fixture", onSources: { askOrder.append("sources:\($0.count)") },
+                                      onDelta: { askOrder.append("delta:" + $0) })
+        let askBody = askRequest.last?.httpBodyStream.map { stream -> Data in
+            stream.open(); defer { stream.close() }
+            var data = Data(); var buffer = [UInt8](repeating: 0, count: 1024)
+            while stream.hasBytesAvailable { let n = stream.read(&buffer, maxLength: 1024); if n <= 0 { break }; data.append(buffer, count: n) }
+            return data
+        } ?? askRequest.last?.httpBody
+        check(askRequest.last?.url?.path == "/v1/ai/ask" && askBody.map { String(decoding: $0, as: UTF8.self).contains("When is it due?") } == true,
+              "Questions must stream from the ask endpoint with the question body")
+        check(askOrder == ["sources:1", "delta:Due Friday."], "Retrieved sources must arrive before the answer prose")
+
         let openRequest = reset { _, fixture in
             fixture.response(200, headers: ["Content-Type": "text/event-stream"],
                              body: Data("data: {\"type\":\"delta\",\"text\":\"Pending\"}\n\n".utf8), finish: false)

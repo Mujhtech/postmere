@@ -595,13 +595,64 @@ final class BackendSession {
     }
 
     func summarize(messageIDs: [UUID], onDelta: @MainActor @Sendable (String) throws -> Void) async throws -> MailAIResult {
+        try await streamAI("/v1/ai/summary", messageIDs: messageIDs, onDelta: onDelta, onItem: nil)
+    }
+
+    /// Streams the assistant's overview, then each suggested action as it is validated.
+    func suggest(messageIDs: [UUID], onDelta: @MainActor @Sendable (String) throws -> Void,
+                 onItem: @MainActor @Sendable @escaping (MailAIItem) throws -> Void) async throws -> MailAIResult {
+        try await streamAI("/v1/ai/suggestions", messageIDs: messageIDs, onDelta: onDelta, onItem: onItem)
+    }
+
+    /// Streams proposed email body text for the composer.
+    func draft(_ input: MailAIDraftInput, onDelta: @MainActor @Sendable (String) throws -> Void) async throws -> MailAIResult {
+        try await streamAI("/v1/ai/draft", body: input, onSources: nil, onDelta: onDelta, onItem: nil)
+    }
+
+    /// Streams an answer over indexed mail: the retrieved sources first, then the prose.
+    func ask(question: String, accountIDs: [UUID],
+             onSources: @MainActor @Sendable @escaping ([MailAISource]) throws -> Void,
+             onDelta: @MainActor @Sendable (String) throws -> Void) async throws -> MailAIResult {
+        try await streamAI("/v1/ai/ask", body: MailAIAskInput(question: question, accountIds: accountIDs),
+                           onSources: onSources, onDelta: onDelta, onItem: nil)
+    }
+
+    private func streamAI(_ path: String, messageIDs: [UUID], onDelta: @MainActor @Sendable (String) throws -> Void,
+                          onItem: (@MainActor @Sendable (MailAIItem) throws -> Void)?) async throws -> MailAIResult {
+        try await streamAI(path, body: MailAISourceInput(messageIds: messageIDs), onSources: nil, onDelta: onDelta, onItem: onItem)
+    }
+
+    private func streamAI<Body: Encodable & Sendable>(
+        _ path: String, body: Body,
+        onSources: (@MainActor @Sendable ([MailAISource]) throws -> Void)?,
+        onDelta: @MainActor @Sendable (String) throws -> Void,
+        onItem: (@MainActor @Sendable (MailAIItem) throws -> Void)?
+    ) async throws -> MailAIResult {
         guard let requestGeneration = realtimeGeneration, let credential, let transport else { throw BackendError.notConnected }
         let stream = BackendSummaryStream(baseURL: transport.baseURL, configuration: configuration)
-        do {
-            let result = try await stream.generate(messageIDs: messageIDs, token: credential.token) { text in
-                guard !Task.isCancelled, self.realtimeGeneration == requestGeneration else { throw CancellationError() }
-                try onDelta(text)
+        let isCurrent: @MainActor @Sendable () -> Bool = {
+            !Task.isCancelled && self.realtimeGeneration == requestGeneration
+        }
+        var forwardItem: (@MainActor @Sendable (MailAIItem) throws -> Void)?
+        if let onItem {
+            forwardItem = { item in
+                guard isCurrent() else { throw CancellationError() }
+                try onItem(item)
             }
+        }
+        var forwardSources: (@MainActor @Sendable ([MailAISource]) throws -> Void)?
+        if let onSources {
+            forwardSources = { sources in
+                guard isCurrent() else { throw CancellationError() }
+                try onSources(sources)
+            }
+        }
+        do {
+            let result = try await stream.generate(path: path, body: body, token: credential.token,
+                                                   onSources: forwardSources, onDelta: { text in
+                guard isCurrent() else { throw CancellationError() }
+                try onDelta(text)
+            }, onItem: forwardItem)
             try Task.checkCancellation()
             guard realtimeGeneration == requestGeneration else { throw BackendError.notConnected }
             return result

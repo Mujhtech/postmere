@@ -17,6 +17,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 sqlx.workspace = true
 tokio.workspace = true
 tokio-util = { version = "0.7", features = ["io"] }
+tracing.workspace = true
 uuid.workspace = true
 
 [lints]

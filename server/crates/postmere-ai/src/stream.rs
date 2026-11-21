@@ -1,8 +1,12 @@
-//! Only the summary prose is streamed. Details and citations are exposed after
-//! the completed response has passed the same checks as a regular summary.
+//! Streams the leading prose of a summary, suggestion or question response.
+//! Answers to questions first list the retrieved messages they draw on.
+//! Suggested actions are sent as each one completes and passes the per-item
+//! checks; other details and citations wait for the completed response. The
+//! final event always carries the result validated as a whole.
 use super::{
-    API_URL, AiFailure, AppError, AppState, OutputMode, Source, parse_response,
+    API_URL, AiFailure, AppError, AppState, Generated, Item, OutputMode, Source, parse_response,
     provider_response_failure, provider_status_error, provider_transport_error, result,
+    withhold_invalid_items,
 };
 use axum::{
     http::{HeaderValue, header},
@@ -20,34 +24,52 @@ use tokio_util::io::StreamReader;
 const STREAM_LIMIT: u64 = 4 * 1024 * 1024;
 const IDLE_LIMIT: Duration = Duration::from_secs(60);
 
-pub(super) async fn summary(
+pub(super) async fn generate(
     state: AppState,
     sources: Vec<Source>,
     request: Value,
+    mode: OutputMode,
+    announce_sources: bool,
 ) -> Result<Response, AppError> {
+    let options = StreamOptions {
+        mode,
+        announce_sources,
+    };
     let key = state
         .config
         .ai_api_key
         .as_deref()
         .ok_or_else(|| AiFailure::NotConfigured.error())?;
-    request_summary(
+    request_stream(
         &state.http,
         API_URL,
         key,
         state.config.ai_model.clone(),
         sources,
         request,
+        options,
     )
     .await
 }
 
-async fn request_summary(
+#[derive(Clone, Copy)]
+struct StreamOptions {
+    mode: OutputMode,
+    /// Lists the retrieved messages before the answer (questions only).
+    announce_sources: bool,
+}
+
+async fn request_stream(
     client: &reqwest::Client,
     url: &str,
     key: &str,
     model: String,
     sources: Vec<Source>,
     mut request: Value,
+    StreamOptions {
+        mode,
+        announce_sources,
+    }: StreamOptions,
 ) -> Result<Response, AppError> {
     request["stream"] = true.into();
     let call = client
@@ -68,8 +90,24 @@ async fn request_summary(
     // cancels generation locally without leaving a detached forwarding task.
     let reader = StreamReader::new(response.bytes_stream().map_err(io::Error::other));
     let mut lines = BufReader::new(reader.take(STREAM_LIMIT)).lines();
+    // Retrieved messages are announced before generation starts; like the
+    // final result, they carry citation metadata only.
+    let retrieved: Option<Value> = announce_sources.then(|| {
+        sources
+            .iter()
+            .map(|source| {
+                json!({"id":source.id,"account_id":source.account_id,"subject":source.subject,
+                "sender":source.sender,"sent_at":source.sent_at})
+            })
+            .collect()
+    });
     let events = async_stream::try_stream! {
+        if let Some(retrieved) = retrieved {
+            yield Event::default().data(json!({"type":"sources","sources":retrieved}).to_string());
+        }
         let mut prose = SummaryProse::default();
+        let mut items = ItemScanner::default();
+        let mut sent_items = 0;
         let mut text_bytes = 0;
         loop {
             let event = next_event(&mut lines).await?;
@@ -82,9 +120,21 @@ async fn request_summary(
                     if !text.is_empty() {
                         yield Event::default().data(json!({"type":"delta", "text":text}).to_string());
                     }
+                    if mode == OutputMode::Suggestions {
+                        for raw in items.push(delta) {
+                            // Items that fail validation are withheld here and from
+                            // the final result, using the same rule.
+                            let Ok(item) = serde_json::from_str::<Item>(&raw) else { continue };
+                            let mut single = Generated { text: String::new(), items: vec![item] };
+                            withhold_invalid_items(&mut single, &sources, mode);
+                            if sent_items >= 20 || single.items.is_empty() { continue; }
+                            sent_items += 1;
+                            yield Event::default().data(json!({"type":"item", "item":single.items[0]}).to_string());
+                        }
+                    }
                 }
                 Some("response.completed" | "response.incomplete" | "response.failed") => {
-                    let generated = parse_response(&event["response"], &sources, OutputMode::Summary)?;
+                    let generated = parse_response(&event["response"], &sources, mode)?;
                     let summary = result(&model, generated, sources);
                     yield Event::default().data(json!({"type":"done","result":summary}).to_string());
                     break;
@@ -224,6 +274,64 @@ impl SummaryProse {
     }
 }
 
+/// Finds each completed object in the response's `items` array. The root
+/// object is depth 1, the array depth 2 and each item depth 3; `text` is a
+/// string, so it never changes the depth.
+#[derive(Default)]
+struct ItemScanner {
+    raw: String,
+    depth: u32,
+    in_string: bool,
+    escaped: bool,
+    start: Option<usize>,
+}
+
+impl ItemScanner {
+    fn push(&mut self, chunk: &str) -> Vec<String> {
+        let offset = self.raw.len();
+        self.raw.push_str(chunk);
+        let mut complete = vec![];
+        for (index, byte) in chunk.bytes().enumerate() {
+            let position = offset + index;
+            if self.in_string {
+                match byte {
+                    _ if self.escaped => self.escaped = false,
+                    b'\\' => self.escaped = true,
+                    b'"' => self.in_string = false,
+                    _ => {}
+                }
+                continue;
+            }
+            match byte {
+                b'"' => self.in_string = true,
+                b'{' | b'[' => {
+                    self.depth += 1;
+                    if byte == b'{' && self.depth == 3 {
+                        self.start = Some(position);
+                    }
+                }
+                b'}' | b']' => {
+                    if byte == b'}'
+                        && self.depth == 3
+                        && let Some(start) = self.start.take()
+                    {
+                        complete.push(self.raw[start..=position].to_owned());
+                    }
+                    self.depth = self.depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+        }
+        // Text before the current item is no longer needed.
+        let keep = self.start.unwrap_or(self.raw.len());
+        self.raw.drain(..keep);
+        if let Some(start) = &mut self.start {
+            *start = 0;
+        }
+        complete
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +359,23 @@ mod tests {
                 .push(r#"{"items":[{"text":"nested"}]}"#)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn finds_each_completed_item_across_chunk_boundaries() {
+        let encoded = r#"{"text":"Has } and { and \"]\"","items":[{"kind":"suggestion","text":"Reply {soon}","source_ids":["a"]},{"text":"b","source_ids":[]}]}"#;
+        let mut scanner = ItemScanner::default();
+        let mut found = vec![];
+        for c in encoded.chars() {
+            found.extend(scanner.push(&c.to_string()));
+        }
+        assert_eq!(
+            found,
+            [
+                r#"{"kind":"suggestion","text":"Reply {soon}","source_ids":["a"]}"#,
+                r#"{"text":"b","source_ids":[]}"#
+            ]
         );
     }
 
@@ -312,13 +437,17 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let fixture = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let response = request_summary(
+        let response = request_stream(
             &reqwest::Client::new(),
             &format!("http://{address}/responses"),
             "test-key",
             "fixture".into(),
             vec![source.clone()],
             json!({"store":false}),
+            StreamOptions {
+                mode: OutputMode::Summary,
+                announce_sources: false,
+            },
         )
         .await
         .unwrap();
@@ -344,6 +473,148 @@ mod tests {
         );
         assert_eq!(last["result"]["sources"][0]["text"], "");
         assert_eq!(count.load(Ordering::SeqCst), 1);
+        fixture.abort();
+    }
+
+    #[tokio::test]
+    async fn suggestions_arrive_one_by_one_and_forged_items_are_withheld() {
+        let source = Source {
+            id: Uuid::new_v4(),
+            account_id: Uuid::new_v4(),
+            subject: "Fixture".into(),
+            sender: "sender@example.test".into(),
+            sent_at: Utc::now(),
+            text: "Can you confirm by Friday?".into(),
+        };
+        let id = source.id;
+        let forged = Uuid::new_v4();
+        let release = Arc::new(Notify::new());
+        let app = Router::new().route("/responses", post({
+            let release = release.clone();
+            move || {
+                let release = release.clone();
+                async move {
+                    let item = json!({"kind":"suggestion","text":"They asked for a reply.","source_ids":[id],
+                        "action":"needs_reply","message_id":id,"due_at":null});
+                    let bad = json!({"kind":"suggestion","text":"Forged.","source_ids":[forged],
+                        "action":"archive","message_id":forged,"due_at":null});
+                    let first = format!("{{\"text\":\"Needs you.\",\"items\":[{item}");
+                    let events = async_stream::stream! {
+                        yield Ok::<_, Infallible>(Event::default().json_data(json!({
+                            "type":"response.output_text.delta","delta":first})).unwrap());
+                        yield Ok(Event::default().json_data(json!({
+                            "type":"response.output_text.delta","delta":format!(",{bad}")})).unwrap());
+                        release.notified().await;
+                        let full = json!({"text":"Needs you.","items":[item]});
+                        yield Ok(Event::default().json_data(json!({"type":"response.completed","response":{
+                            "status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":full.to_string()}]}]
+                        }})).unwrap());
+                    };
+                    Sse::new(events)
+                }
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let fixture = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = request_stream(
+            &reqwest::Client::new(),
+            &format!("http://{address}/responses"),
+            "test-key",
+            "fixture".into(),
+            vec![source],
+            json!({"store":false}),
+            StreamOptions {
+                mode: OutputMode::Suggestions,
+                announce_sources: false,
+            },
+        )
+        .await
+        .unwrap();
+        let reader = StreamReader::new(
+            response
+                .into_body()
+                .into_data_stream()
+                .map_err(io::Error::other),
+        );
+        let mut lines = BufReader::new(reader).lines();
+        let mut next = async || {
+            tokio::time::timeout(Duration::from_secs(5), next_event(&mut lines))
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(next().await, json!({"type":"delta","text":"Needs you."}));
+        let item = next().await;
+        assert_eq!(item["type"], "item");
+        assert_eq!(item["item"]["action"], "needs_reply");
+        assert_eq!(item["item"]["message_id"], id.to_string());
+        release.notify_one();
+        let done = next().await;
+        assert_eq!(done["type"], "done", "the forged item was not forwarded");
+        assert_eq!(done["result"]["items"].as_array().unwrap().len(), 1);
+        fixture.abort();
+    }
+
+    #[tokio::test]
+    async fn answers_list_retrieved_sources_before_prose_without_bodies() {
+        let source = Source {
+            id: Uuid::new_v4(),
+            account_id: Uuid::new_v4(),
+            subject: "Invoice".into(),
+            sender: "billing@example.test".into(),
+            sent_at: Utc::now(),
+            text: "Private body text".into(),
+        };
+        let id = source.id;
+        let app = Router::new().route("/responses", post(move || async move {
+            let full = json!({"text":"It is due Friday.","items":[{"kind":"fact","text":"Due Friday","source_ids":[id],
+                "action":null,"message_id":null,"due_at":null}]});
+            let events = async_stream::stream! {
+                yield Ok::<_, Infallible>(Event::default().json_data(json!({
+                    "type":"response.output_text.delta","delta":"{\"text\":\"It is due"})).unwrap());
+                yield Ok(Event::default().json_data(json!({"type":"response.completed","response":{
+                    "status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":full.to_string()}]}]
+                }})).unwrap());
+            };
+            Sse::new(events)
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let fixture = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = request_stream(
+            &reqwest::Client::new(),
+            &format!("http://{address}/responses"),
+            "test-key",
+            "fixture".into(),
+            vec![source],
+            json!({"store":false}),
+            StreamOptions {
+                mode: OutputMode::Assistance,
+                announce_sources: true,
+            },
+        )
+        .await
+        .unwrap();
+        let reader = StreamReader::new(
+            response
+                .into_body()
+                .into_data_stream()
+                .map_err(io::Error::other),
+        );
+        let mut lines = BufReader::new(reader).lines();
+        let first = next_event(&mut lines).await.unwrap();
+        assert_eq!(first["type"], "sources");
+        assert_eq!(first["sources"][0]["id"], id.to_string());
+        assert!(
+            first["sources"][0].get("text").is_none(),
+            "retrieved bodies are not echoed"
+        );
+        assert_eq!(
+            next_event(&mut lines).await.unwrap(),
+            json!({"type":"delta","text":"It is due"})
+        );
+        assert_eq!(next_event(&mut lines).await.unwrap()["type"], "done");
         fixture.abort();
     }
 }
