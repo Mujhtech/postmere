@@ -229,12 +229,15 @@ nonisolated struct InboxOverview: Sendable {
         let title: String
         let count: Int
         let messages: [MailMessage]
+        /// Every conversation in the section, in order, for triage.
+        let allIDs: [UUID]
         let mailbox: Mailbox?
         var id: String { title }
 
         init(title: String, messages: [MailMessage], mailbox: Mailbox?) {
             self.title = title
             self.count = messages.count
+            self.allIDs = messages.map(\.id)
             self.messages = Array(messages.prefix(3))
             self.mailbox = mailbox
         }

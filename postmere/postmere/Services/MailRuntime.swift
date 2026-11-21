@@ -32,6 +32,8 @@ final class MailRuntime {
     var showsInboxManager = false
     var showsCalendar = false
     var showsAIQuestion = false
+    /// The focused triage pass, shown over the mail window while it runs.
+    var triage: TriageSession?
     /// Connected MCP assistants and whether one is working right now.
     let assistants = AssistantActivityMonitor()
     /// A question typed elsewhere (such as the home page) for the Ask panel to start with.
@@ -172,6 +174,7 @@ final class MailRuntime {
         showsCalendar = false
         showsAIQuestion = false
         pendingAIQuestion = nil
+        triage = nil
         showsWorkspace = false
         readerPanel = nil
         activeSharedReplyID = nil

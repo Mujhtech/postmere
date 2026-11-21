@@ -88,15 +88,7 @@ private struct OverviewContent: View {
 
     @ViewBuilder private var primaryAction: some View {
         if let section = overview.sections.first, section.messages.first != nil {
-            Button { startTriage(section) } label: {
-                Label(overview.isInbox && section.mailbox != nil ? "Start triage" : "Open latest", systemImage: "arrow.right")
-                    .labelStyle(TrailingIconLabel())
-            }
-            .buttonStyle(.borderedProminent)
-            .buttonBorderShape(.capsule)
-            .controlSize(.large)
-            .tint(palette.accent)
-            .help("Open the first conversation and work through the list with J and K")
+            TriageLaunchButton(store: store, section: section) { startTriage(section) }
         } else if !MailAccount.sendingAccounts.isEmpty && !store.isComposing {
             Button { store.beginCompose() } label: { Label("New message", systemImage: "square.and.pencil") }
                 .buttonStyle(.borderedProminent)
@@ -224,13 +216,12 @@ private struct OverviewContent: View {
         }
     }
 
+    /// Works through every conversation in the section one at a time.
     private func startTriage(_ section: InboxOverview.Section) {
-        guard let first = section.messages.first else { return }
-        if overview.isInbox, let mailbox = section.mailbox {
-            store.selectedMailbox = mailbox
-            if mailbox == .inbox { store.unreadOnly = true }
+        guard !section.allIDs.isEmpty else { return }
+        withAnimation(.spring(duration: 0.5, bounce: 0.12)) {
+            runtime.triage = TriageSession(title: section.title, ids: section.allIDs)
         }
-        open(first, in: section.mailbox)
     }
 
     private func showAll(_ section: InboxOverview.Section) {
@@ -378,15 +369,6 @@ private struct OverviewTileStyle: ButtonStyle {
     }
 }
 
-private struct TrailingIconLabel: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 6) {
-            configuration.title
-            configuration.icon.font(.system(size: 12, weight: .semibold))
-        }
-    }
-}
-
 private extension View {
     /// Fades and rises into place, each block slightly after the one above.
     func entrance(_ appeared: Bool, order: Int) -> some View {
@@ -395,3 +377,102 @@ private extension View {
             .animation(.smooth(duration: 0.55).delay(0.06 * Double(order)), value: appeared)
     }
 }
+
+// MARK: - Triage launch
+
+/// The home page's main call to action: who is waiting, how many, and
+/// roughly how long a pass will take.
+private struct TriageLaunchButton: View {
+    let store: MailStore
+    let section: InboxOverview.Section
+    let action: () -> Void
+
+    @Environment(\.postmereAccent) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovering = false
+    @State private var sheen = false
+
+    /// About fifteen seconds a conversation, rounded up to whole minutes.
+    private var minutes: Int { max(1, Int((Double(section.count) * 15 / 60).rounded(.up))) }
+    private var senders: [MailMessage] {
+        var seen = Set<String>()
+        return section.messages.filter { seen.insert($0.senderEmail.lowercased()).inserted }
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                HStack(spacing: -9) {
+                    ForEach(Array(senders.prefix(3).enumerated()), id: \.element.id) { index, message in
+                        ParticipantPhoto(address: message.senderEmail, name: message.sender, size: 28, verifiedMark: nil)
+                            .overlay(Circle().strokeBorder(palette.accent, lineWidth: 2))
+                            .zIndex(Double(3 - index))
+                            .offset(x: hovering && !reduceMotion ? CGFloat(index) * 2 : 0)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Start triage")
+                        .font(.system(size: 14.5, weight: .semibold))
+                    Text("\(section.count.formatted()) \(section.count == 1 ? "conversation" : "conversations") · about \(minutes) min")
+                        .font(.system(size: 12))
+                        .opacity(0.82)
+                        .contentTransition(.numericText(value: Double(section.count)))
+                }
+                .foregroundStyle(.white)
+                Spacer(minLength: 6)
+                PostmereIcon("arrow.right", size: 13)
+                    .foregroundStyle(.white)
+                    .frame(width: 30, height: 30)
+                    .background(.white.opacity(hovering ? 0.28 : 0.18), in: Circle())
+                    .offset(x: hovering && !reduceMotion ? 3 : 0)
+            }
+            .padding(.leading, 12)
+            .padding(.trailing, 12)
+            .frame(height: 56)
+            .frame(minWidth: 300, maxWidth: 380)
+            .background { surface }
+            .contentShape(.rect(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(TriageLaunchPressStyle())
+        .offset(y: hovering && !reduceMotion ? -2 : 0)
+        .onHover { inside in
+            hovering = inside
+            guard inside, !reduceMotion else { return }
+            sheen = false
+            withAnimation(.easeInOut(duration: 0.9)) { sheen = true }
+        }
+        .animation(.spring(duration: 0.35, bounce: 0.3), value: hovering)
+        .help("Go through each conversation one at a time, deciding with a single key")
+        .accessibilityLabel("Start triage, \(section.count) conversations, about \(minutes) minutes")
+    }
+
+    private var surface: some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        return shape
+            .fill(LinearGradient(colors: [palette.accent, palette.accentInk], startPoint: .topLeading, endPoint: .bottomTrailing))
+            // A soft highlight along the top edge gives the surface some depth.
+            .overlay(shape.fill(LinearGradient(colors: [.white.opacity(0.22), .clear], startPoint: .top, endPoint: .center)))
+            .overlay(shape.strokeBorder(.white.opacity(0.18), lineWidth: 1))
+            .overlay {
+                GeometryReader { proxy in
+                    LinearGradient(colors: [.clear, .white.opacity(0.35), .clear], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: proxy.size.width * 0.35)
+                        .rotationEffect(.degrees(18))
+                        .offset(x: sheen ? proxy.size.width * 1.2 : -proxy.size.width * 0.5)
+                }
+                .clipShape(shape)
+                .allowsHitTesting(false)
+            }
+            .shadow(color: palette.accent.opacity(hovering ? 0.45 : 0.3), radius: hovering ? 20 : 14, y: hovering ? 10 : 7)
+    }
+}
+
+private struct TriageLaunchPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .brightness(configuration.isPressed ? -0.04 : 0)
+            .animation(.snappy(duration: 0.18), value: configuration.isPressed)
+    }
+}
+

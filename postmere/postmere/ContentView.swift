@@ -139,6 +139,20 @@ struct ContentView: View {
         .focusedSceneValue(\.mailStore, store)
         .focusedSceneValue(\.isComposerWindow, false)
         .onAppear { runtime.openMailWindow = { openWindow(id: "mail") } }
+        .overlay {
+            // Triage takes over the window in place, not as a separate sheet.
+            if let session = runtime.triage {
+                TriageView(session: session, store: store) {
+                    withAnimation(.spring(duration: 0.45, bounce: 0.1)) {
+                        runtime.triage = nil
+                        // Back to the home page, not the last conversation triaged.
+                        store.showMailboxOverview()
+                    }
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+            }
+        }
+        .animation(.spring(duration: 0.45, bounce: 0.1), value: runtime.triage == nil)
         .overlay(alignment: .bottomTrailing) {
             MailStatusNotices(store: store, pendingMailLinks: runtime.mailLinks)
         }
