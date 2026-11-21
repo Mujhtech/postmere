@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Mailbox surfaces are separate from the user's primary color and from received HTML.
 nonisolated enum MailboxTheme: String, CaseIterable, Identifiable {
-    case native, cappuccino, velvet, lavender, glacier
+    case native, cappuccino, velvet, lavender, glacier, neonCoast
 
     static let lightPreference = "mailboxThemeLight"
     static let darkPreference = "mailboxThemeDark"
@@ -15,6 +15,7 @@ nonisolated enum MailboxTheme: String, CaseIterable, Identifiable {
         case .velvet: "Velvet"
         case .lavender: "Lavender"
         case .glacier: "Glacier"
+        case .neonCoast: "Neon Coast"
         }
     }
 
@@ -43,6 +44,8 @@ nonisolated enum MailboxTheme: String, CaseIterable, Identifiable {
         case .velvet: return dark ? Colors(0x302332, 0x251D27, 0x413044) : Colors(0xE8D7DD, 0xFBF4F6, 0xF0E3E9)
         case .lavender: return dark ? Colors(0x2C283B, 0x23202F, 0x3C364F) : Colors(0xE3DCF0, 0xF8F5FD, 0xEBE5F5)
         case .glacier: return dark ? Colors(0x20313B, 0x19262F, 0x2E424F) : Colors(0xD7E7ED, 0xF3F9FB, 0xE4EFF3)
+        // Sunset pink by day, violet neon night after dark.
+        case .neonCoast: return dark ? Colors(0x2B1838, 0x1E1229, 0x40214F) : Colors(0xF7D3DC, 0xFFF6F1, 0xFCE2E0)
         }
     }
 }
