@@ -386,7 +386,7 @@ extension MailStore {
                     message.workflow = context.workflow
                 }
                 if !message.isOutgoing && message.mailbox != .junk {
-                    if let rule = inputs.rules.first(where: { matchesRule($0, message: message) }) { applyRule(rule, to: &message) }
+                    if let rule = SenderRule.first(in: inputs.rules, where: { matchesRule($0, message: message) }) { applyRule(rule, to: &message) }
                     else if inputs.screening { message.workflow.screeningState = .pending }
                 }
                 messagesChanged = true

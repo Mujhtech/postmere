@@ -146,10 +146,38 @@ enum SenderRoute: String, Codable, CaseIterable, Identifiable {
 
 struct SenderRule: Codable, Equatable, Identifiable {
     var id = UUID()
+    /// An address, or "*@domain" for everyone at a domain and its subdomains,
+    /// which the person chooses explicitly.
     var email: String
     var account: String?
     var route: SenderRoute
     var providerAccountEmail: String? = nil
+
+    static func domain(_ domain: String, account: String?, route: SenderRoute, providerAccountEmail: String?) -> Self {
+        SenderRule(email: "*@\(domain.lowercased())", account: account, route: route, providerAccountEmail: providerAccountEmail)
+    }
+
+    nonisolated var domain: String? {
+        email.hasPrefix("*@") ? String(email.dropFirst(2)) : nil
+    }
+
+    nonisolated var displayName: String {
+        domain.map { "Everyone at \($0)" } ?? email
+    }
+
+    nonisolated func matches(senderEmail: String) -> Bool {
+        guard let domain else { return email.caseInsensitiveCompare(senderEmail) == .orderedSame }
+        guard let at = senderEmail.lastIndex(of: "@") else { return false }
+        let host = senderEmail[senderEmail.index(after: at)...].lowercased()
+        return host == domain || host.hasSuffix(".\(domain)")
+    }
+
+    /// A rule naming the address wins over one naming its domain, so a blocked
+    /// address stays blocked after its domain is allowed. Otherwise the first
+    /// matching rule wins.
+    nonisolated static func first(in rules: [SenderRule], where matches: (SenderRule) -> Bool) -> SenderRule? {
+        rules.first { $0.domain == nil && matches($0) } ?? rules.first { $0.domain != nil && matches($0) }
+    }
 }
 
 struct OutgoingMailItem: Codable, Equatable, Identifiable {

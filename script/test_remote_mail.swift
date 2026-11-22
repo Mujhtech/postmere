@@ -288,6 +288,7 @@ import Foundation
               && receiptStore.messages[0].mailbox == .sent && receiptStore.flushPersistence()
               && (try MailPersistence(fileURL: receiptFile).load())?.messages.map(\.id) == [queuedID],
               "a late send receipt unifies the earlier Sent delivery and persists one row under its original outgoing ID")
+    try await checkScreenedSenderApproval(first, directory: directory)
 }
 
 @MainActor private func checkJunkMailbox(_ source: MailMessage, directory: URL) async throws {
@@ -775,7 +776,61 @@ import Foundation
     try check(migrated.count(for: .needsReply) == 1 && migrated.messages.contains {
         $0.id == unrelated.id && $0.replyRequestText == ask.paragraphs.first
     }, "saved mail from older builds gains reply requests without a provider refresh")
+}
 
+/// Approving a new sender from one message approves every message from that
+/// address, across threads, including mail that syncs afterwards.
+@MainActor private func checkScreenedSenderApproval(_ identity: RemoteAccountIdentity, directory: URL) async throws {
+    func check(_ condition: Bool, _ description: String) throws { try PostmereBackendRegression.check(condition, description) }
+    func payload(_ subject: String, from: String = "news@sender.test", read: Bool = false, offset: TimeInterval = 0, id: UUID = UUID()) -> BackendMailMessage {
+        return BackendMailMessage(id: id, accountId: identity.accountID, providerMessageId: id.uuidString,
+            providerThreadId: id.uuidString, subject: subject, from: BackendAddress(name: "Sender", email: from),
+            to: [BackendAddress(email: identity.email)], cc: [], bcc: [], textBody: subject, htmlBody: nil, preview: subject,
+            sentAt: Date.now.addingTimeInterval(-3600 + offset), isRead: read, isStarred: false, mailbox: "inbox",
+            providerLabels: ["INBOX"], attachments: [], listUnsubscribe: [], listUnsubscribePost: [])
+    }
+    let url = directory.appendingPathComponent("screened-approval.json")
+    let store = MailStore(messages: [], persistenceURL: url)
+    store.remoteMutation = { _, _ in }
+    store.senderScreeningEnabled = true
+    let rows = [payload("One"), payload("Two", from: "News@Sender.test", offset: 10), payload("Three", offset: 20)]
+    try check(await store.applyBackendPage(BackendMailPage(messages: rows, nextCursor: "s1", hasMore: false), identity: identity),
+              "screened mail syncs")
+    func states() -> [String] { store.messages.filter { $0.senderEmail.lowercased() == "news@sender.test" }
+        .sorted { $0.sentAt < $1.sentAt }.map { "\($0.subject):\($0.workflow.screeningState.rawValue)" } }
+    try check(states() == ["One:pending", "Two:pending", "Three:pending"], "every message from a new sender waits: \(states())")
+    store.acceptSender(of: store.messages.first { $0.subject == "Two" }!)
+    try check(states() == ["One:accepted", "Two:accepted", "Three:accepted"], "one approval accepts every message from the address: \(states())")
+    let replay = [payload("One", read: true, id: rows[0].id), payload("Two", from: "News@Sender.test", read: true, offset: 10, id: rows[1].id),
+                  payload("Three", read: true, offset: 20, id: rows[2].id)]
+    try check(await store.applyBackendPage(BackendMailPage(messages: replay + [payload("Four", offset: 30)], nextCursor: "s2", hasMore: false),
+                                           identity: identity), "later sync applies")
+    try check(states() == ["One:accepted", "Two:accepted", "Three:accepted", "Four:accepted"],
+              "approval survives later syncs and covers new mail: \(states())")
+    // Allow in Inbox is for one address; everyone at the domain only when chosen.
+    try check(await store.applyBackendPage(BackendMailPage(messages: [payload("Jobs", from: "jobs-noreply@linkedin.com", offset: 40),
+        payload("Alerts", from: "jobalerts-noreply@linkedin.com", offset: 50), payload("Ads", from: "ads@linkedin.com", offset: 60),
+        payload("Lookalike", from: "jobs@linkedin.com.evil.test", offset: 70)], nextCursor: "s3", hasMore: false),
+        identity: identity), "company mail syncs")
+    func screening(_ subject: String) -> SenderScreeningState? { store.messages.first { $0.subject == subject }?.workflow.screeningState }
+    store.acceptSender(of: store.messages.first { $0.subject == "Jobs" }!)
+    try check(screening("Jobs") == .accepted && screening("Alerts") == .pending,
+              "Allow in Inbox accepts only that address, not others at its domain")
+    let suffixes = WebsiteIconDomains(listURL: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .appendingPathComponent("../postmere/postmere/Resources/public_suffix_list.dat").standardizedFileURL)
+    try check(suffixes.organization(for: "jobs-noreply@e.linkedin.com") == "linkedin.com"
+              && suffixes.organization(for: "friend@gmail.com") == nil
+              && suffixes.organization(for: "x_at_shop_g8@privaterelay.appleid.com") == nil
+              && suffixes.organization(for: "writer@substack.com") == nil,
+              "everyone-at is offered for company domains, never personal mailboxes, relays or shared platforms")
+    store.blockSender(of: store.messages.first { $0.subject == "Ads" }!)
+    store.acceptDomain("linkedin.com", of: store.messages.first { $0.subject == "Alerts" }!)
+    try check(screening("Alerts") == .accepted && screening("Ads") == .blocked && screening("Lookalike") == .pending,
+              "choosing everyone at a domain accepts its waiting mail, keeps blocked addresses blocked and ignores lookalikes")
+    try check(store.flushPersistence(), "approval saves")
+    let reopened = MailStore(messages: [], persistenceURL: url)
+    try check(reopened.messages.filter { $0.senderEmail.lowercased() == "news@sender.test" }.allSatisfy { $0.workflow.screeningState == .accepted },
+              "approval survives relaunch")
 }
 
 @MainActor private func checkSpamReviewArrivals(_ identity: RemoteAccountIdentity, directory: URL) async throws {

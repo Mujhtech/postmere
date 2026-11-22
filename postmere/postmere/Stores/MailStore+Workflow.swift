@@ -147,7 +147,14 @@ extension MailStore {
         } else { senderRules.append(normalized) }
         guard applyToExisting else { return }
         var updated = messages
+        let rules = senderRules
         for index in updated.indices where matchesRule(normalized, message: updated[index]) && !updated[index].isOutgoing && !updated[index].isDeletedOnProvider {
+            // A domain rule settles mail still waiting for screening; it never
+            // moves mail already filed, or overrides a rule for one address.
+            if normalized.domain != nil {
+                guard updated[index].workflow.screeningState == .pending,
+                      SenderRule.first(in: rules, where: { matchesRule($0, message: updated[index]) }) == normalized else { continue }
+            }
             applyRule(normalized, to: &updated[index])
         }
         MailReplyQueue.reconcile(&updated)
@@ -158,23 +165,47 @@ extension MailStore {
     func deleteSenderRule(_ id: UUID) { senderRules.removeAll { $0.id == id } }
 
     func acceptSender(of message: MailMessage, route: SenderRoute = .inbox) {
-        saveSenderRule(SenderRule(email: message.senderEmail, account: message.account, route: route, providerAccountEmail: message.providerAccountEmail))
+        decideSender(SenderRule(email: message.senderEmail, account: message.account, route: route, providerAccountEmail: message.providerAccountEmail))
         lastAction = "Sender accepted · \(route.title)"
     }
 
+    /// Saves a screening decision. When it takes the open message out of the
+    /// list (New Senders, or Trash for a block), the reader plays the same
+    /// departure as Archive or Move instead of swapping instantly.
+    private func decideSender(_ rule: SenderRule) {
+        if let open = selectedMessage, selectedMessageIDs.count <= 1,
+           open.workflow.screeningState == .pending, matchesRule(rule, message: open),
+           selectedMailbox == .newSenders || rule.route == .blocked {
+            let destination: Mailbox = switch rule.route {
+            case .inbox, .needsReply: .inbox
+            case .archive: .archive
+            case .blocked: .trash
+            }
+            departure = MailDeparture(messageID: open.id, destination: destination, subject: open.displaySubject)
+        }
+        saveSenderRule(rule)
+    }
+
+    /// Allows every address at the sender's domain, such as jobs-noreply@ and
+    /// jobalerts-noreply@linkedin.com. Only offered when the person asks.
+    func acceptDomain(_ domain: String, of message: MailMessage, route: SenderRoute = .inbox) {
+        decideSender(.domain(domain, account: message.account, route: route, providerAccountEmail: message.providerAccountEmail))
+        lastAction = "Everyone at \(domain) accepted · \(route.title)"
+    }
+
     func blockSender(of message: MailMessage) {
-        saveSenderRule(SenderRule(email: message.senderEmail, account: message.account, route: .blocked, providerAccountEmail: message.providerAccountEmail))
+        decideSender(SenderRule(email: message.senderEmail, account: message.account, route: .blocked, providerAccountEmail: message.providerAccountEmail))
         lastAction = "Sender blocked"
     }
 
     nonisolated func matchesRule(_ rule: SenderRule, message: MailMessage) -> Bool {
-        rule.email.caseInsensitiveCompare(message.senderEmail) == .orderedSame && (rule.account == nil || rule.account == message.account)
+        rule.matches(senderEmail: message.senderEmail) && (rule.account == nil || rule.account == message.account)
             && (rule.providerAccountEmail == nil || rule.providerAccountEmail?.lowercased() == message.providerAccountEmail?.lowercased())
     }
 
     func permitsIncomingNotification(_ message: MailMessage) -> Bool {
         guard message.isUnread, !message.isOutgoing, !message.isDeletedOnProvider, message.mailbox == .inbox else { return false }
-        if let rule = senderRules.first(where: { matchesRule($0, message: message) }) {
+        if let rule = SenderRule.first(in: senderRules, where: { matchesRule($0, message: message) }) {
             return rule.route == .inbox || rule.route == .needsReply
         }
         return !senderScreeningEnabled

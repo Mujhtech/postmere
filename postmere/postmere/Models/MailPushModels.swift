@@ -52,7 +52,8 @@ nonisolated struct MailPushSenderPolicy: Encodable, Sendable, Equatable {
     }
 
     func permits(senderEmail: String) -> Bool {
-        if let rule = rules.first(where: { $0.email.caseInsensitiveCompare(senderEmail) == .orderedSame }) {
+        let matching = { (rule: MailPushSenderRule) in SenderRule(email: rule.email, route: .inbox).matches(senderEmail: senderEmail) }
+        if let rule = rules.first(where: { !$0.email.hasPrefix("*@") && matching($0) }) ?? rules.first(where: matching) {
             return rule.route == "inbox" || rule.route == "needsReply"
         }
         return !screenUnknownSenders

@@ -13,10 +13,10 @@ enum MailSenderDomain {
 nonisolated struct WebsiteIconDomains: Sendable {
     private let rules: Set<String>
 
-    static let bundled = Task.detached(priority: .utility) {
-        let url = Bundle.main.url(forResource: "public_suffix_list", withExtension: "dat")
-        return WebsiteIconDomains(listURL: url)
-    }
+    static let bundled = Task.detached(priority: .utility) { shared }
+
+    /// Loaded on first use; parsing the list takes a few milliseconds.
+    static let shared = WebsiteIconDomains(listURL: Bundle.main.url(forResource: "public_suffix_list", withExtension: "dat"))
 
     init(listURL: URL?) {
         guard let listURL, let list = try? String(contentsOf: listURL, encoding: .utf8) else {
@@ -44,6 +44,28 @@ nonisolated struct WebsiteIconDomains: Sendable {
         "yandex.com", "qq.com", "163.com", "126.com", "zoho.com", "tuta.com", "tuta.io", "tutanota.com",
         "example.com", "example.net", "example.org"
     ]
+
+    /// Relays that give each sender a private address, and platforms that send
+    /// for many unrelated senders. Allowing "everyone at" one of these would
+    /// let in strangers, so they are never offered.
+    private static let sharedSenderDomains: Set<String> = [
+        "appleid.com", "mozmail.com", "duck.com", "passmail.net", "passinbox.com", "simplelogin.com",
+        "simplelogin.co", "anonaddy.me", "anonaddy.com", "addy.io",
+        "substack.com", "beehiiv.com", "ghost.io", "medium.com", "googlegroups.com", "groups.io",
+        "mailchimpapp.com", "mcsv.net", "mcdlv.net", "sendgrid.net", "amazonses.com", "mailgun.org",
+        "convertkit-mail.com", "convertkit-mail2.com", "kit-mail.com", "sendinblue.com", "brevo.com",
+        "hubspotemail.net", "createsend.com", "cmail19.com", "cmail20.com", "constantcontact.com",
+        "salesforce.com", "force.com", "zendesk.com", "freshdesk.com", "intercom-mail.com",
+        "calendly.com", "docusign.net", "typeform.com", "eventbrite.com", "luma-mail.com",
+    ]
+
+    /// The organisation behind an address, such as "linkedin.com" for
+    /// jobs-noreply@linkedin.com, when allowing everyone there makes sense.
+    /// Nil for personal mailboxes, relays and shared sending platforms.
+    func organization(for email: String) -> String? {
+        guard let domain = website(for: email.lowercased()), !Self.sharedSenderDomains.contains(domain) else { return nil }
+        return domain
+    }
 
     /// Expects one normalized address from MailAddressList. Only known public
     /// suffixes qualify, excluding local names, IP literals and reserved TLDs.

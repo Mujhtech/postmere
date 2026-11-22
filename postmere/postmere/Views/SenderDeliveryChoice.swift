@@ -2,9 +2,13 @@ import SwiftUI
 
 struct SenderDeliveryChoice: View {
     let address: String
+    /// Offered as "Allow Everyone at …" when allowing the whole domain makes
+    /// sense; nil for personal mailboxes and shared senders.
+    var organization: String?
     let avatarWidth: CGFloat
     let accept: (SenderRoute) -> Void
     let block: () -> Void
+    var acceptOrganization: (String) -> Void = { _ in }
 
     @Environment(\.postmereAccent) private var palette
 
@@ -52,6 +56,10 @@ struct SenderDeliveryChoice: View {
                 Button("Allow in Inbox", systemImage: "tray") { accept(.inbox) }
                 Button("Route to Needs Reply", systemImage: "arrowshape.turn.up.left") { accept(.needsReply) }
                 Button("Route to Archive", systemImage: "archivebox") { accept(.archive) }
+                if let organization {
+                    Divider()
+                    Button("Allow Everyone at \(organization)", systemImage: "building.2") { acceptOrganization(organization) }
+                }
             } label: {
                 Label("Allow in Inbox", systemImage: "tray.and.arrow.down")
                     .foregroundStyle(palette.accentInk)

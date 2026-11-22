@@ -301,6 +301,13 @@ struct BackendPushFixtures {
         for sender in ["archive@example.test", "blocked@example.test", "unknown@example.test", "other@example.test", "provider@example.test"] {
             try realtimeCheck(!policy.permits(senderEmail: sender), "Screened or routed sender escaped background policy: \(sender)")
         }
+        let organisation = MailPushPreferences.workspace(accounts: [account], profiles: [profile], authorized: true, senderScreeningEnabled: true, senderRules: [
+            SenderRule.domain("LinkedIn.com", account: account.localID, route: .inbox, providerAccountEmail: nil),
+            SenderRule(email: "ads@linkedin.com", account: account.localID, route: .blocked)]).accounts[0].senderPolicy!
+        try realtimeCheck(organisation.rules.first?.email == "*@linkedin.com"
+                          && organisation.permits(senderEmail: "jobs@E.linkedin.com") && !organisation.permits(senderEmail: "ads@linkedin.com")
+                          && !organisation.permits(senderEmail: "x@linkedin.com.evil.test"),
+                          "Domain approvals must cover subdomains, yield to address rules and reject lookalikes")
         let reversed = MailPushSenderPolicy(screenUnknownSenders: false, rules: Array(policy.rules.reversed()))
         try realtimeCheck(!reversed.permits(senderEmail: "approved@example.test") && reversed.permits(senderEmail: "unknown@example.test"),
                           "Rule precedence or unscreened default differs from native incoming-mail rules")

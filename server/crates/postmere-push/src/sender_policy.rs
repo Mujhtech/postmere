@@ -50,12 +50,27 @@ impl SenderPolicy {
     }
 
     /// The native client has already selected rules for this exact account.
-    /// Preserve first-match order; routes never promote non-Inbox/read mail.
+    /// Preserve first-match order, except that a rule naming the address wins
+    /// over a "*@domain" rule; routes never promote non-Inbox/read mail.
     pub fn allows(&self, sender: &str) -> bool {
         let sender = sender.to_lowercase();
+        let host = sender.rsplit_once('@').map_or("", |(_, host)| host);
+        let exact = |rule: &&SenderRule| rule.email.to_lowercase() == sender;
+        let domain = |rule: &&SenderRule| {
+            rule.email
+                .to_lowercase()
+                .strip_prefix("*@")
+                .is_some_and(|domain| {
+                    host == domain
+                        || host
+                            .strip_suffix(domain)
+                            .is_some_and(|rest| rest.ends_with('.'))
+                })
+        };
         self.rules
             .iter()
-            .find(|rule| rule.email.to_lowercase() == sender)
+            .find(exact)
+            .or_else(|| self.rules.iter().find(domain))
             .map_or(!self.screen_unknown_senders, |rule| {
                 matches!(rule.route, SenderRoute::Inbox | SenderRoute::NeedsReply)
             })
@@ -112,6 +127,27 @@ mod tests {
             assert!(!p.allows("approved@example.test"));
             assert!(p.allows("unknown@example.test"));
         }
+    }
+    #[test]
+    fn domain_rules_cover_subdomains_and_yield_to_address_rules() {
+        let rule = |email: &str, route| SenderRule {
+            email: email.into(),
+            route,
+        };
+        let p = SenderPolicy {
+            version: 1,
+            screen_unknown_senders: true,
+            rules: vec![
+                rule("*@linkedin.com", SenderRoute::Inbox),
+                rule("ads@linkedin.com", SenderRoute::Blocked),
+            ],
+        };
+        assert!(p.validate().is_ok());
+        assert!(p.allows("jobalerts-noreply@linkedin.com"));
+        assert!(p.allows("Notifications@E.LinkedIn.com"));
+        assert!(!p.allows("ads@linkedin.com"));
+        assert!(!p.allows("x@notlinkedin.com"));
+        assert!(!p.allows("x@linkedin.com.evil.test"));
     }
     #[test]
     fn policy_is_bounded_and_malformed_rules_are_rejected_without_truncation() {
