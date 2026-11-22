@@ -108,6 +108,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let listener = tokio::net::TcpListener::bind(addr).await?;
             let worker = mail::spawn_delivery_worker(state.clone());
             let sync_worker = mail_sync::spawn_sync_worker(state.clone());
+            let triage_worker = postmere_ai::spawn_triage_worker(state.clone());
             let webhook_worker = postmere_webhooks::spawn_worker(state.clone(), webhooks.clone());
             let push_worker = if push.configured() {
                 Some(postmere_push::spawn_worker(state.clone(), push.clone()))
@@ -135,6 +136,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .await;
             worker.abort();
             sync_worker.abort();
+            triage_worker.abort();
             webhook_worker.abort();
             if let Some(push_worker) = push_worker {
                 push_worker.abort();
@@ -142,6 +144,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             let _ = worker.await;
             let _ = sync_worker.await;
+            let _ = triage_worker.await;
             let _ = webhook_worker.await;
             result?;
         }

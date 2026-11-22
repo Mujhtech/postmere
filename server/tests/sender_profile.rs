@@ -55,11 +55,11 @@ impl SearchTransport for FixtureSearch {
             serde_json::from_str(request["input"][1]["content"].as_str().unwrap()).unwrap();
         let result = if self.no_match {
             json!({"match":"none","matched_email":null,"matched_name":null,"matched_domain":null,"identity_source_urls":[],
-                "name":null,"job_title":null,"company":null,"location":null,"bio":null,"links":[],"citations":[]})
+                "name":null,"job_title":null,"company":null,"location":null,"time_zone":null,"recent_activity":[],"talking_points":[],"bio":null,"links":[],"citations":[]})
         } else {
             json!({"match":"email","matched_email":input["sender_email"],"matched_name":null,"matched_domain":null,
                 "identity_source_urls":["https://analytical.org/team/ada"],"name":"Ada Lovelace","job_title":null,
-                "company":null,"location":null,"bio":null,
+                "company":null,"location":null,"time_zone":null,"recent_activity":[],"talking_points":[],"bio":null,
                 "links":[{"label":"Website","url":"https://analytical.org/team/ada"}],
                 "citations":[{"field":"name","source_urls":["https://analytical.org/team/ada"]},
                     {"field":"links","source_urls":["https://analytical.org/team/ada"]}]})

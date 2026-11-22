@@ -2,6 +2,8 @@
 //! public sender research. Only sender research has web search tools; neither
 //! path grants mail write operations to generated output.
 mod decisions;
+mod triage;
+pub use triage::{process_one_batch as process_triage_batch, spawn_triage_worker};
 pub mod sender_profile;
 mod stream;
 
@@ -54,6 +56,8 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .merge(sender_profile::router(sender_profile::HttpSearch))
         .route("/v1/decisions/spam", post(decisions::check_spam))
+        .route("/v1/decisions/triage", post(triage::suggest))
+        .route("/v1/decisions/triage/feedback", post(triage::record))
         .route("/v1/ai/settings", get(settings).put(update_settings))
         .route("/v1/ai/summary", post(summary))
         .route("/v1/ai/draft", post(draft))
@@ -684,11 +688,22 @@ async fn call_model(
     key: &str,
     input: &Value,
 ) -> Result<Value, AppError> {
+    call_model_within(client, url, key, input, 90).await
+}
+
+/// Sender research searches the web several times and needs longer.
+async fn call_model_within(
+    client: &reqwest::Client,
+    url: &str,
+    key: &str,
+    input: &Value,
+    seconds: u64,
+) -> Result<Value, AppError> {
     let mut response = client
         .post(url)
         .bearer_auth(key)
         .json(input)
-        .timeout(std::time::Duration::from_secs(90))
+        .timeout(std::time::Duration::from_secs(seconds))
         .send()
         .await
         .map_err(provider_transport_error)?;

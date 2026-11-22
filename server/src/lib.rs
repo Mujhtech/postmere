@@ -47,10 +47,14 @@ pub fn application(state: AppState, feature_routes: Router<AppState>) -> Router 
 
 async fn request_deadline(request: Request, next: Next) -> Response {
     let path = request.uri().path();
+    let researches_sender = request.method() == Method::POST
+        && path.starts_with("/v1/mail/messages/")
+        && path.ends_with("/sender-profile");
     let generates_mail_assistance = request.method() == Method::POST
         && (matches!(
             path,
             "/v1/ai/summary"
+                | "/v1/decisions/triage"
                 | "/v1/ai/draft"
                 | "/v1/ai/ask"
                 | "/v1/ai/suggestions"
@@ -58,7 +62,8 @@ async fn request_deadline(request: Request, next: Next) -> Response {
         ) || (path.starts_with("/v1/mail/messages/") && path.ends_with("/sender-profile")));
     // Allow the model's 90s deadline plus time to load the authorized messages.
     // Once headers are sent, streaming bodies follow the provider's deadline.
-    let seconds = if generates_mail_assistance { 105 } else { 30 };
+    // Sender research runs several web searches: 155s plus loading.
+    let seconds = if researches_sender { 170 } else if generates_mail_assistance { 105 } else { 30 };
     match tokio::time::timeout(Duration::from_secs(seconds), next.run(request)).await {
         Ok(response) => response,
         Err(_) if generates_mail_assistance => AppError {
