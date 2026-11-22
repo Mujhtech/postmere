@@ -23,8 +23,10 @@ struct UnsubscribeView: View {
     @MainActor init(message: MailMessage,
          onComposeEmail: @escaping (MailUnsubscribeEmail) throws -> Void,
          onLocalActions: @escaping (_ archive: Bool, _ block: Bool) -> Void,
-         service: (any MailUnsubscribeRequesting)? = nil, session: BackendSession? = nil) {
+         service: (any MailUnsubscribeRequesting)? = nil, session: BackendSession? = nil,
+         archiveByDefault: Bool = false) {
         self.message = message
+        _archiveMessage = State(initialValue: archiveByDefault)
         self.onComposeEmail = onComposeEmail
         self.onLocalActions = onLocalActions
         self.service = service ?? MailUnsubscribeService()

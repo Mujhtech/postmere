@@ -357,6 +357,9 @@ struct MailMessage: Codable, nonisolated Equatable, Identifiable {
     var replyRequestText: String?
     var replyRequestCandidates: [String]?
     var automaticReplyPending: Bool?
+    /// Triage priority from the server ("needs_you", "people", "fyi", "bulk"),
+    /// kept on the message so tabs and search can use it.
+    var triagePriority: String?
 
     nonisolated var isFromAccountOwner: Bool {
         isOutgoing || mailbox == .sent || (

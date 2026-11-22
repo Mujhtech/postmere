@@ -19,7 +19,10 @@ nonisolated struct InboxSplit: Codable, Equatable, Identifiable {
 
     static let peopleQuery = "is:incoming -has:unsubscribe -category:promotions -category:forums -category:updates -category:social -from:noreply -from:no-reply -from:notifications"
 
-    static let defaultsVersion = 1
+    static let defaultsVersion = 2
+    /// Mail triage marked as waiting on you: a person, a task or a deadline.
+    private static let needsYou = InboxSplit(id: UUID(uuidString: "26FDFE19-6DC0-48FC-B849-87939F0A0007")!, name: "Needs you",
+                                            criteria: SavedInboxCriteria(query: "is:needsyou"))
     private static let stockPeople = InboxSplit(id: UUID(uuidString: "26FDFE19-6DC0-48FC-B849-87939F0A0002")!, name: "People",
                                               criteria: SavedInboxCriteria(query: peopleQuery + " -is:subscription -is:purchase"))
     private static let subscriptions = InboxSplit(id: UUID(uuidString: "26FDFE19-6DC0-48FC-B849-87939F0A0003")!, name: "Subscriptions",
@@ -30,6 +33,7 @@ nonisolated struct InboxSplit: Codable, Equatable, Identifiable {
                                                  criteria: SavedInboxCriteria(query: "category:updates OR category:social OR from:noreply OR from:no-reply OR from:notifications"))
 
     static let defaults: [InboxSplit] = [
+        needsYou,
         InboxSplit(id: UUID(uuidString: "26FDFE19-6DC0-48FC-B849-87939F0A0001")!, name: "Important",
                    criteria: SavedInboxCriteria(query: "is:vip OR is:starred OR is:needsreply")),
         stockPeople, purchases, subscriptions, notifications
@@ -62,6 +66,10 @@ nonisolated struct InboxSplit: Codable, Equatable, Identifiable {
             if !tabs.contains(where: { $0.id == added.id }) {
                 tabs.insert(added, at: tabs.firstIndex { $0.id == notifications.id } ?? tabs.endIndex)
             }
+        }
+
+        if !tabs.contains(where: { $0.id == needsYou.id || $0.name.caseInsensitiveCompare(needsYou.name) == .orderedSame }) {
+            tabs.insert(needsYou, at: 0)
         }
 
         if !tabs.contains(where: { $0.id == purchases.id || $0.name.caseInsensitiveCompare(purchases.name) == .orderedSame }) {

@@ -57,7 +57,7 @@ struct MenuBarInboxHost: View {
                                  isRefreshing: runtime.isSyncingBackend, canRefresh: connected,
                                  syncError: runtime.lastMailSyncError, hasAccounts: connected,
                                  compose: compose, openInbox: openInbox, openMessage: openMessage,
-                                 clearMessage: clearMessage,
+                                 act: act,
                                  settings: { present { openSettings() } }, refresh: { Task { await runtime.sync() } })
                     .id(runtime.backend.scope)
             } else {
@@ -105,15 +105,22 @@ struct MenuBarInboxHost: View {
         runtime.openMessage(id) { present { openWindow(id: "mail") } }
     }
 
-    private func clearMessage(_ id: UUID, from filter: MenuBarInboxFilter) {
+    private func act(_ action: MenuBarRowAction, on id: UUID, from filter: MenuBarInboxFilter) {
         guard runtime.backend.canAccessWorkspace, let inbox = runtime.mailboxCounts.menuBarInbox,
               inbox.messages(for: filter).contains(where: { $0.id == id }),
               let message = runtime.store.messages.first(where: { $0.id == id }),
               runtime.store.matchesMailbox(message, mailbox: .inbox) else { return }
-        if filter == .needsReply {
-            if message.needsReply { runtime.store.setNeedsReply(false, for: id) }
-        } else if message.isUnread {
-            runtime.store.setRead(true, for: [id])
+        let store = runtime.store
+        switch action {
+        case .archive:
+            if store.canMoveMessage(message, to: .archive) { _ = store.moveMessage(id, to: .archive) }
+        case .snooze(let date):
+            store.snoozeMessage(id, until: date)
+        case .clear where filter == .needsYou:
+            if message.needsReply { store.setNeedsReply(false, for: id) }
+            store.markTriageDone(conversationOf: id)
+        case .clear:
+            if message.isUnread { store.setRead(true, for: [id]) }
         }
     }
 

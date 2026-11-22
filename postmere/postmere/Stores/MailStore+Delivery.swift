@@ -337,6 +337,7 @@ extension MailStore {
                     message.replyRequestText = previous.replyRequestText
                 }
                 message.automaticReplyPending = previous.automaticReplyPending
+                message.triagePriority = message.triagePriority ?? previous.triagePriority
                 message.backendMessageID = message.backendMessageID ?? previous.backendMessageID
                 if message.providerMessageID?.isEmpty != false { message.providerMessageID = previous.providerMessageID }
                 message.providerThreadID = message.providerThreadID ?? previous.providerThreadID

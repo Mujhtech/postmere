@@ -70,6 +70,25 @@ struct PluginTests {
         let update = String(decoding: try encoder.encode(PluginUpdate(enabled: true, values: ["remind_days_before": .string("1")])), as: UTF8.self)
         check(update == #"{"enabled":true,"values":{"remind_days_before":"1"}}"#, "Settings update encoded as \(update)")
 
+        // Triage suggestions: closed actions, a stray item dropped, dates read locally.
+        let triage = try BackendHTTPClient.decoder().decode(TriageSuggestionList.self, from: Data(#"""
+        {"suggestions":[
+          {"message_id":"00000000-0000-0000-0000-000000000001","action":"snooze","priority":"fyi","reason":"Event next month",
+           "deadline":null,"snooze_until":"2026-12-10","source":"ai"},
+          {"message_id":"00000000-0000-0000-0000-000000000002","action":"none","priority":"people","reason":"From a person",
+           "deadline":"2026-11-27","snooze_until":null,"source":"rules"},
+          {"message_id":"00000000-0000-0000-0000-000000000003","action":"delete","priority":"bulk","reason":"x",
+           "deadline":null,"snooze_until":null,"source":"ai"}
+        ]}
+        """#.utf8)).suggestions.compactMap(\.value)
+        check(triage.count == 2 && triage[0].action == .snooze && triage[1].action == .keep, "Triage suggestions decode, unknown actions drop")
+        let snoozeDay = triage[0].snoozeDate.map { Calendar.current.dateComponents([.year, .month, .day, .hour], from: $0) }
+        check(snoozeDay == DateComponents(year: 2026, month: 12, day: 10, hour: 9), "Suggested snooze is 9 AM that day: \(String(describing: snoozeDay))")
+        check(triage[1].deadlineDate != nil && triage[1].priority.rank < TriageSuggestion.Priority.bulk.rank, "Deadline and priority order")
+        let request = String(decoding: try encoder.encode(TriageSuggestionRequest(messageIds: [UUID(uuidString: "00000000-0000-0000-0000-000000000001")!],
+                                                                                    today: "2026-11-22")), as: UTF8.self)
+        check(request == #"{"message_ids":["00000000-0000-0000-0000-000000000001"],"today":"2026-11-22"}"#, "Triage request encoded as \(request)")
+
         if failures > 0 { print("\(failures) plugin checks failed"); exit(1) }
         print("Plugin model checks passed")
     }

@@ -13,7 +13,7 @@ struct MenuBarInboxView: View {
     let compose: () -> Void
     let openInbox: () -> Void
     let openMessage: (UUID) -> Void
-    let clearMessage: (UUID, MenuBarInboxFilter) -> Void
+    let act: (MenuBarRowAction, UUID, MenuBarInboxFilter) -> Void
     let settings: () -> Void
     let refresh: () -> Void
 
@@ -60,6 +60,11 @@ struct MenuBarInboxView: View {
                     .padding(.bottom, 12)
             }
 
+            if hasAccounts, let code = latestCode {
+                codeCard(code)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+            }
             Divider()
             messages
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
@@ -69,6 +74,28 @@ struct MenuBarInboxView: View {
         .frame(minWidth: 0, idealWidth: Self.panelWidth, maxWidth: Self.panelWidth, alignment: .leading)
         .background {
             if theme != .native { mailboxColors.canvas }
+        }
+    }
+
+    // MARK: Verification code
+
+    /// The newest sign-in code from the last 15 minutes, if any.
+    private var latestCode: (message: MailMessage, code: String)? {
+        guard let inbox else { return nil }
+        let cutoff = Date.now.addingTimeInterval(-15 * 60)
+        for message in inbox.messages(for: .all) where message.sentAt >= cutoff {
+            if let code = MailVerificationCode.detect(subject: message.subject, paragraphs: message.paragraphs,
+                                                      html: message.bodyHTML, preview: message.displayPreview) {
+                return (message, code)
+            }
+        }
+        return nil
+    }
+
+    private func codeCard(_ found: (message: MailMessage, code: String)) -> some View {
+        MenuBarCodeCard(sender: found.message.sender.isEmpty ? found.message.senderEmail : found.message.sender,
+                        code: found.code, sentAt: found.message.sentAt) {
+            act(.clear, found.message.id, .all)
         }
     }
 
@@ -130,7 +157,7 @@ struct MenuBarInboxView: View {
             let recent = inbox.messages(for: filter)
             let height = listHeight(for: inbox)
             if recent.isEmpty {
-                placeholder(filter.emptyTitle, symbol: filter == .needsReply ? "arrowshape.turn.up.left" : "tray")
+                placeholder(filter.emptyTitle, symbol: filter == .needsYou ? "arrowshape.turn.up.left" : "tray")
                     .frame(height: height)
             } else {
                 ScrollView {
@@ -159,7 +186,8 @@ struct MenuBarInboxView: View {
         VStack(spacing: 0) {
             ForEach(recent) { message in
                 MenuBarMessageRow(message: message, filter: filter, showMessagePreviews: showMessagePreviews,
-                                  focusedMessage: $focusedMessage, open: { openMessage(message.id) }, clear: { clearMessage(message.id, filter) })
+                                  focusedMessage: $focusedMessage, open: { openMessage(message.id) },
+                                  act: { action in act(action, message.id, filter) })
                 if message.id != recent.last?.id {
                     Divider().padding(.leading, 48).padding(.trailing, 8)
                 }
@@ -262,7 +290,7 @@ private struct MenuBarMessageRow: View {
     let showMessagePreviews: Bool
     let focusedMessage: FocusState<UUID?>.Binding
     let open: () -> Void
-    let clear: () -> Void
+    let act: (MenuBarRowAction) -> Void
     @FocusState private var actionFocused: Bool
     @State private var hovering = false
     @Environment(\.postmereAccent) private var accent
@@ -277,35 +305,87 @@ private struct MenuBarMessageRow: View {
     }
 
     private var showsAction: Bool { hovering || focusedMessage.wrappedValue == message.id || actionFocused }
-    private var actionTitle: String { filter == .needsReply ? "Mark Done" : "Mark as Read" }
+    private var actionTitle: String { filter == .needsYou ? "Mark Done" : "Mark as Read" }
+    private var clear: () -> Void { { act(.clear) } }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             messageButton
-            Button(action: clear) {
-                Group {
-                    if showsAction {
-                        Image(systemName: filter == .needsReply ? "checkmark.circle" : "envelope.open")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(accent.accentInk)
-                    } else {
-                        Text(verbatim: timestamp).font(.caption).foregroundStyle(.secondary)
+            Group {
+                if showsAction {
+                    // Quick actions in place of the time: archive, snooze, read or done.
+                    HStack(spacing: 2) {
+                        rowAction("Archive", symbol: "archivebox") { act(.archive) }
+                        Menu {
+                            ForEach(Self.snoozeChoices, id: \.title) { choice in
+                                Button(choice.title) { act(.snooze(choice.date())) }
+                            }
+                        } label: {
+                            Image(systemName: "moon.zzz").font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(accent.accentInk)
+                                .frame(width: 24, height: 22)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .help("Snooze")
+                        .accessibilityLabel("Snooze")
+                        rowAction(actionTitle, symbol: filter == .needsYou ? "checkmark.circle" : "envelope.open", action: clear)
+                            .focused($actionFocused)
                     }
+                    .padding(.horizontal, 3)
+                    .background(.regularMaterial, in: .capsule)
+                    .transition(.opacity)
+                } else {
+                    Button(action: clear) {
+                        Text(verbatim: timestamp).font(.caption).foregroundStyle(.secondary)
+                            .frame(minWidth: 26, minHeight: 22, alignment: .trailing)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .focused($actionFocused)
+                    .accessibilityLabel(actionTitle)
+                    .accessibilityHint(message.displaySubject)
                 }
-                .frame(minWidth: 26, minHeight: 22, alignment: .trailing)
-                .contentShape(.rect)
             }
-            .buttonStyle(.plain)
-            .focused($actionFocused)
-            .accessibilityLabel(actionTitle)
-            .accessibilityHint(message.displaySubject)
-            .help(actionTitle)
             .padding(.top, 3)
             .padding(.trailing, 8)
         }
+        .animation(.easeOut(duration: 0.12), value: showsAction)
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         .onHover { hovering = $0 }
     }
+
+    private func rowAction(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 12, weight: .medium))
+                .foregroundStyle(accent.accentInk)
+                .frame(width: 24, height: 22)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
+        .accessibilityHint(message.displaySubject)
+    }
+
+    private static let snoozeChoices: [(title: String, date: () -> Date)] = [
+        ("Later Today", {
+            let calendar = Calendar.current
+            let evening = calendar.date(bySettingHour: 18, minute: 0, second: 0, of: .now) ?? .now
+            return evening > .now.addingTimeInterval(3_600) ? evening : .now.addingTimeInterval(3 * 3_600)
+        }),
+        ("Tomorrow Morning", {
+            let calendar = Calendar.current
+            let tomorrow = calendar.date(byAdding: .day, value: 1, to: .now) ?? .now
+            return calendar.date(bySettingHour: 8, minute: 0, second: 0, of: tomorrow) ?? tomorrow
+        }),
+        ("Next Week", {
+            let calendar = Calendar.current
+            let monday = calendar.nextDate(after: .now, matching: DateComponents(weekday: 2), matchingPolicy: .nextTime) ?? .now
+            return calendar.date(bySettingHour: 8, minute: 0, second: 0, of: monday) ?? monday
+        }),
+    ]
 
     private var messageButton: some View {
         Button(action: open) {
@@ -364,7 +444,7 @@ private extension MenuBarInboxFilter {
         case .all: "All"
         case .people: "People"
         case .updates: "Updates"
-        case .needsReply: "Needs Reply"
+        case .needsYou: "Needs You"
         }
     }
 
@@ -373,7 +453,7 @@ private extension MenuBarInboxFilter {
         case .all: "\(count.formatted()) unread"
         case .people: "\(count.formatted()) unread from people"
         case .updates: "\(count.formatted()) unread \(count == 1 ? "update" : "updates")"
-        case .needsReply: "\(count.formatted()) awaiting your reply"
+        case .needsYou: "\(count.formatted()) waiting on you"
         }
     }
 
@@ -382,7 +462,44 @@ private extension MenuBarInboxFilter {
         case .all: "No unread mail"
         case .people: "No unread mail from people"
         case .updates: "No unread updates"
-        case .needsReply: "No conversations need a reply"
+        case .needsYou: "Nothing is waiting on you"
         }
+    }
+}
+
+/// A fresh sign-in code at the top of the menu bar: copy it without opening
+/// the message. Copying marks the message read.
+private struct MenuBarCodeCard: View {
+    let sender: String
+    let code: String
+    let sentAt: Date
+    let copied: () -> Void
+    @Environment(\.postmereAccent) private var accent
+    @State private var didCopy = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Code from \(sender)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(verbatim: code)
+                    .font(.system(size: 22, weight: .semibold, design: .monospaced))
+                    .textSelection(.enabled)
+                    .accessibilityLabel("Code \(code.map(String.init).joined(separator: " "))")
+            }
+            Spacer(minLength: 8)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(code, forType: .string)
+                withAnimation(.snappy(duration: 0.2)) { didCopy = true }
+                copied()
+            } label: {
+                Label(didCopy ? "Copied" : "Copy", systemImage: didCopy ? "checkmark" : "doc.on.doc")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(accent.accentInk.opacity(0.08), in: .rect(cornerRadius: 14, style: .continuous))
+        .help("Received \(sentAt.formatted(.relative(presentation: .named)))")
     }
 }

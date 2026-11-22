@@ -106,7 +106,8 @@ nonisolated struct SidebarCounts: Sendable {
                 if mailbox == .inbox {
                     if menuAccounts.contains(message.account) {
                         if message.isUnread { result.menuBarInbox.addUnread(message) }
-                        if message.needsReply {
+                        // Needs you: waiting on a reply, or triage marked it as needing you.
+                        if message.needsReply || message.triagePriority == "needs_you" {
                             let key = message.searchConversationKey
                             if let prior = inboxReplyThreads[key] {
                                 if MenuBarInbox.newer(message, than: messages[prior]) { inboxReplyThreads[key] = index }
@@ -125,14 +126,23 @@ nonisolated struct SidebarCounts: Sendable {
         }
         for index in inboxReplyThreads.values {
             try Task.checkCancellation()
-            result.menuBarInbox.add(messages[index], to: .needsReply)
+            result.menuBarInbox.add(messages[index], to: .needsYou)
         }
         return result
     }
 }
 
 nonisolated enum MenuBarInboxFilter: String, CaseIterable {
-    case all, people, updates, needsReply
+    /// What needs you comes right after All; automated updates last.
+    case all, needsYou, people, updates
+}
+
+/// What a menu bar row can do without opening Postmere.
+enum MenuBarRowAction {
+    /// Mark read, or done in Needs you.
+    case clear
+    case archive
+    case snooze(Date)
 }
 
 /// Unread filters count individual messages. The reply queue counts one task per inbox conversation.

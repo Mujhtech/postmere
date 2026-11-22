@@ -316,8 +316,15 @@ enum RegressionFailure: Error { case failed(String) }
                   "menu bar filters count eligible unread inbox mail across accounts using the People split")
         try check(result.messages(for: .all).map(\.id) == [separate, updates[2], updates[1], updates[0], people[7], people[6]].map(\.id),
                   "menu bar preview keeps the six latest actual messages in date order")
-        try check(result.count(for: .needsReply) == 2 && result.messages(for: .needsReply).map(\.id) == [separate.id, people[5].id],
+        try check(result.count(for: .needsYou) == 2 && result.messages(for: .needsYou).map(\.id) == [separate.id, people[5].id],
                   "menu bar reply tasks include read mail, exclude archive and keep accounts' separate conversations")
+        var flagged = updates
+        flagged[0].triagePriority = "needs_you"
+        flagged[1].triagePriority = "done"
+        let triaged = try await SidebarCounts.load(people + flagged + filtered + [separate], accounts: accounts, menuAccounts: eligible).menuBarInbox
+        try check(triaged.count(for: .needsYou) == 3 && triaged.messages(for: .needsYou).contains { $0.id == flagged[0].id }
+                  && !triaged.messages(for: .needsYou).contains { $0.id == flagged[1].id },
+                  "Needs you also holds what triage marked, and not what was marked done")
 
         let leading = message(100, account: "Work")
         let target = message(70, account: "Personal")

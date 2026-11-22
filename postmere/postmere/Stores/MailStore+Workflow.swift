@@ -332,3 +332,34 @@ nonisolated struct InboxOverview: Sendable {
         "\(n.formatted()) \(n == 1 ? singular : plural)"
     }
 }
+
+extension MailStore {
+    /// Records triage priorities on messages in one update. Local only: nothing
+    /// is sent to the mail provider.
+    func applyTriagePriorities(_ priorities: [UUID: String]) {
+        var updated = messages
+        var changed = false
+        for index in updated.indices {
+            // A conversation marked done stays done when suggestions are fetched again.
+            guard let priority = priorities[updated[index].id], updated[index].triagePriority != priority,
+                  updated[index].triagePriority != "done" else { continue }
+            updated[index].triagePriority = priority
+            changed = true
+        }
+        guard changed else { return }
+        let previous = suppressRemoteMutations
+        suppressRemoteMutations = true
+        messages = updated
+        suppressRemoteMutations = previous
+    }
+}
+
+extension MailStore {
+    /// Takes a conversation out of Needs you without changing its mailbox.
+    func markTriageDone(conversationOf id: UUID) {
+        updateConversation(containing: id) { message in
+            if message.triagePriority == "needs_you" { message.triagePriority = "done" }
+        }
+        lastAction = "Marked done"
+    }
+}

@@ -220,7 +220,8 @@ private struct OverviewContent: View {
     private func startTriage(_ section: InboxOverview.Section) {
         guard !section.allIDs.isEmpty else { return }
         withAnimation(.spring(duration: 0.5, bounce: 0.12)) {
-            runtime.triage = TriageSession(title: section.title, ids: section.allIDs)
+            let ordered = runtime.triageSuggestions.ordered(section.allIDs)
+            runtime.triage = TriageSession(title: section.title, ids: ordered, batch: runtime.triageSuggestions.batch(in: ordered))
         }
     }
 

@@ -77,6 +77,10 @@ nonisolated enum MailReplyQueue {
             if message.workflow.needsReply && reply >= (message.workflow.replyDecisionAt ?? message.sentAt) {
                 messages[index].workflow.needsReply = false
             }
+            // Replying also settles what triage marked as needing you.
+            if message.triagePriority == "needs_you" && reply >= message.sentAt {
+                messages[index].triagePriority = "done"
+            }
             let pending = thread?.latestRequest == index && message.sentAt > max(reply, thread?.dismissedThrough ?? .distantPast)
             if (message.automaticReplyPending == true) != pending { messages[index].automaticReplyPending = pending ? true : nil }
         }

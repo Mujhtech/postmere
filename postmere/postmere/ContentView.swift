@@ -142,6 +142,14 @@ struct ContentView: View {
         .focusedSceneValue(\.mailStore, store)
         .focusedSceneValue(\.isComposerWindow, false)
         .onAppear { runtime.openMailWindow = { openWindow(id: "mail") } }
+        .task(id: store.mailboxDataRevision) {
+            // New mail gets its triage suggestion in the background, so Triage
+            // opens already sorted. Waits for syncing to settle first.
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, runtime.backend.canAccessWorkspace else { return }
+            let inbox = store.messages.lazy.filter { $0.mailbox == .inbox && store.isAccountVisible($0) }.prefix(150)
+            await runtime.triageSuggestions.prefetch(Array(inbox), session: runtime.backend)
+        }
         .overlay {
             // Triage takes over the window in place, not as a separate sheet.
             if let session = runtime.triage {

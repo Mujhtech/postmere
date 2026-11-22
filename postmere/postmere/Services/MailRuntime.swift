@@ -16,6 +16,8 @@ final class MailRuntime {
     let spamChecks: MailSpamChecks
     /// First-party plugins: cards and actions on messages.
     let plugins: MailPlugins
+    /// Triage suggestions for the inbox, fetched as mail arrives.
+    let triageSuggestions = MailTriageSuggestions()
     let mailLinks = MailLinkDrafts()
     let backend = BackendSession()
     let defaultMail: DefaultMailAppService
@@ -91,6 +93,7 @@ final class MailRuntime {
         }()
         spamChecks = MailSpamChecks(store: self.store)
         plugins = MailPlugins(store: self.store)
+        triageSuggestions.onPriorities = { [weak store = self.store] priorities in store?.applyTriagePriorities(priorities) }
         mailboxCounts = MailboxCounts(store: self.store, dockAccounts: { [backend] in
             guard backend.canAccessWorkspace, let scope = backend.scope else { return [] }
             let disconnecting = backend.disconnectingAccountIDs
@@ -149,6 +152,7 @@ final class MailRuntime {
         if mailSyncGeneration != generation {
             spamChecks.cancelPending()
             plugins.reset()
+            triageSuggestions.reset()
             mailSyncGeneration = generation
             pendingMailSync = []
             nextMailCacheCheck = .distantPast
