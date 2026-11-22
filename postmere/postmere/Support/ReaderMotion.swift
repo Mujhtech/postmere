@@ -293,9 +293,7 @@ struct ActionToast: View {
         .padding(.leading, 8)
         .padding(.trailing, offersUndo ? 8 : 14)
         .padding(.vertical, 8)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(PostmereTheme.rule.opacity(0.8)))
-        .shadow(color: .black.opacity(0.12), radius: 18, y: 8)
+        .toastSurface()
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.15), value: hovering)
         .task(id: action) { await countDown() }

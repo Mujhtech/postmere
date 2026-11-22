@@ -74,8 +74,16 @@ struct MailStatusNotices: View {
         .padding(.leading, 13)
         .padding(.trailing, 8)
         .padding(.vertical, 7)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+        .toastSurface()
         .accessibilityElement(children: .contain)
         .padding(.top, 6)
+    }
+}
+
+extension View {
+    /// The one surface every toast and notice uses: Liquid Glass with soft
+    /// rounded ends, so confirmations and errors look like the same family.
+    func toastSurface() -> some View {
+        glassEffect(.regular, in: RoundedRectangle(cornerRadius: 19, style: .continuous))
     }
 }
