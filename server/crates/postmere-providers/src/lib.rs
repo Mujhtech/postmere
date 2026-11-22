@@ -543,7 +543,7 @@ async fn page_from_value(
             tasks.spawn(async move { fetch_message(&state, provider, account, &token, &id).await });
         }
         while let Some(result) = tasks.join_next().await {
-            match result.map_err(|_| ProviderError::Unavailable)? {
+            match result.map_err(crate::response_error::task_failed)? {
                 Ok(message) => messages.push(message),
                 Err(ProviderError::NotFound) => {}
                 Err(error) => return Err(error),
@@ -666,7 +666,7 @@ pub async fn fetch_raw_message(
     let response = request
         .send()
         .await
-        .map_err(|_| ProviderError::Unavailable)?;
+        .map_err(crate::response_error::transport)?;
     let bytes = read_bytes(
         response,
         if provider == Provider::Gmail {
@@ -892,7 +892,7 @@ async fn request_json(request: reqwest::RequestBuilder) -> Result<Value, Provide
         request
             .send()
             .await
-            .map_err(|_| ProviderError::Unavailable)?,
+            .map_err(crate::response_error::transport)?,
     )
     .await
 }
@@ -914,7 +914,7 @@ async fn read_bytes(
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| ProviderError::Unavailable)?
+        .map_err(crate::response_error::transport)?
     {
         if bytes.len() + chunk.len() > limit {
             return Err(ProviderError::InvalidResponse);
@@ -1859,7 +1859,7 @@ pub async fn sync_batch(
             });
         }
         while let Some(result) = tasks.join_next().await {
-            let (id, result) = result.map_err(|_| ProviderError::Unavailable)?;
+            let (id, result) = result.map_err(crate::response_error::task_failed)?;
             match result {
                 Ok(message) => messages.push(message),
                 Err(ProviderError::NotFound) => deleted_ids.push(id),

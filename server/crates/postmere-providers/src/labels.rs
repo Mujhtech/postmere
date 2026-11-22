@@ -141,7 +141,7 @@ pub async fn create_label(
         .json(&body)
         .send()
         .await
-        .map_err(|_| ProviderError::Unavailable)?;
+        .map_err(crate::response_error::transport)?;
     // A retried create can find the first request already succeeded. Return
     // the existing catalog entry if the provider rejects a duplicate.
     if matches!(response.status().as_u16(), 400 | 409) {
@@ -284,7 +284,7 @@ pub async fn set_message_label(
             .json(&json!({"categories":categories}))
             .send()
             .await
-            .map_err(|_| ProviderError::Unavailable)?;
+            .map_err(crate::response_error::transport)?;
         if matches!(response.status().as_u16(), 409 | 412) {
             continue;
         }

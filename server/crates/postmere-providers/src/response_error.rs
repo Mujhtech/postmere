@@ -13,6 +13,12 @@ pub(crate) async fn classify(mut response: Response) -> ProviderError {
         return ProviderError::NotFound;
     }
     if status.is_server_error() {
+        tracing::warn!(
+            event = "mail_provider_read",
+            endpoint = safe_endpoint(response.url()),
+            status = status.as_u16(),
+            "provider server error"
+        );
         return ProviderError::Unavailable;
     }
     if !matches!(status.as_u16(), 401 | 403 | 429) {
@@ -52,6 +58,55 @@ pub(crate) async fn classify(mut response: Response) -> ProviderError {
         "provider request deferred"
     );
     error
+}
+
+/// A request that never got a response: logs which step failed (DNS, TLS,
+/// connect, timeout or reading the body) with fixed labels, never the URL,
+/// since provider URLs carry message IDs.
+pub(crate) fn transport(error: reqwest::Error) -> ProviderError {
+    let endpoint = error.url().map(safe_endpoint).unwrap_or("other");
+    let mut chain = String::new();
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        chain.push_str(&cause.to_string().to_lowercase());
+        chain.push(' ');
+        source = cause.source();
+    }
+    let kind = if error.is_timeout() {
+        "timeout"
+    } else if chain.contains("dns") || chain.contains("lookup address") {
+        "dns"
+    } else if chain.contains("certificate") || chain.contains("tls") || chain.contains("handshake")
+    {
+        "tls"
+    } else if chain.contains("refused") {
+        "refused"
+    } else if chain.contains("unreachable") {
+        "unreachable"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_body() || error.is_decode() {
+        "body"
+    } else {
+        "other"
+    };
+    tracing::warn!(
+        event = "mail_provider_transport",
+        endpoint,
+        kind,
+        "provider request failed"
+    );
+    ProviderError::Unavailable
+}
+
+/// A background fetch task that panicked or was cancelled.
+pub(crate) fn task_failed(error: tokio::task::JoinError) -> ProviderError {
+    tracing::error!(
+        event = "mail_provider_task",
+        panicked = error.is_panic(),
+        "provider fetch task failed"
+    );
+    ProviderError::Unavailable
 }
 
 fn safe_endpoint(url: &url::Url) -> &'static str {
