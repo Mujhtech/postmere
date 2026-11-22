@@ -7,7 +7,7 @@ enum AboutPanel {
         let style = NSMutableParagraphStyle()
         style.alignment = .center
         let credits = NSAttributedString(
-            string: "A native Mac mail client with its own server.\nMail, calendar, assistants and plugins in one place.",
+            string: "Native Mac mail, calendar and assistants on your own server.",
             attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
                 .foregroundColor: NSColor.secondaryLabelColor,
