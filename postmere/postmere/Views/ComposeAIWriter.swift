@@ -328,7 +328,14 @@ struct ComposeAIWriter: View {
             let loaded: MailAISettings = try await runtime.backend.request("GET", "/v1/ai/settings")
             settings = loaded
             phase = !loaded.available ? .unavailable : loaded.enabled ? .idle : .consent
+            // A draft asked for elsewhere (Draft intro) starts once AI writing is on.
+            if let pending = store.pendingWriterPrompt {
+                store.pendingWriterPrompt = nil
+                if phase == .idle || phase == .consent { prompt = pending }
+                if phase == .idle { submitPrompt() }
+            }
         } catch {
+            store.pendingWriterPrompt = nil
             phase = .failed(error.localizedDescription, canRetry: false)
         }
     }

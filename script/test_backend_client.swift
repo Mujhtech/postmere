@@ -210,7 +210,7 @@ struct BackendClientFixtures {
         _ = try await transport.raw("POST", path, token: "explicit-profile-token", body: payload)
         let request = recorder.last!
         check(request.url?.path == path && request.httpMethod == "POST", "Sender-profile lookup must use the message-scoped POST endpoint")
-        check(request.timeoutInterval == 115, "Sender-profile lookup must allow the server's bounded enrichment deadline")
+        check(request.timeoutInterval == 180, "Sender-profile lookup must allow the server's bounded web-research deadline")
         check(body(request) == payload && request.url?.query == nil, "Sender-profile transport must preserve the refresh-only request without appending mail data")
         check(request.value(forHTTPHeaderField: "Authorization") == "Bearer explicit-profile-token" &&
               request.value(forHTTPHeaderField: "Cookie") == nil && request.value(forHTTPHeaderField: "X-Ambient") == nil,
@@ -232,7 +232,7 @@ struct BackendClientFixtures {
         }
         let unrelated = reset { _, fixture in fixture.response(200, body: Data("{}".utf8)) }
         _ = try await transport.raw("POST", "/v1/mail/messages/\(accountID.uuidString)/other", body: payload)
-        check(unrelated.last?.timeoutInterval != 115, "Long enrichment timeout must not affect unrelated mail routes")
+        check(![115, 180].contains(unrelated.last?.timeoutInterval ?? 0), "Long AI timeouts must not affect unrelated mail routes")
         print("PASS: sender-profile scoped POST, bounded enrichment timeout, refresh-only body and sanitized AI/provider errors")
     }
 

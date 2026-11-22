@@ -67,6 +67,38 @@ private struct SenderContextChecks {
         precondition(completion == "\"Doe, Ada\" <ada@example.com>, grace@example.com, ")
         print("PASS: scoped conversations/files, recent suggestions, screening/trash/Bcc exclusions, and quoted recipient completion")
 
+        // History with one person: replies each way, waiting threads, usual hours.
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        let day = utc.date(from: DateComponents(year: 2030, month: 3, day: 4, hour: 9))!
+        func mail(_ thread: UUID, at hours: Double, fromAda: Bool, subject: String = "Role") -> MailMessage {
+            var message = fromAda ? incoming : outgoing
+            message.id = UUID(); message.conversationID = thread; message.subject = subject
+            message.sentAt = day.addingTimeInterval(hours * 3_600)
+            message.attachments = []
+            return message
+        }
+        let roleThread = UUID(), introThread = UUID(), followThread = UUID()
+        let history = [
+            mail(roleThread, at: 0, fromAda: true),            // Ada 09:00
+            mail(roleThread, at: 2, fromAda: false),           // you reply after 2h
+            mail(roleThread, at: 5, fromAda: true),            // Ada replies after 3h, 14:00
+            mail(introThread, at: 24, fromAda: false, subject: "Intro"),
+            mail(introThread, at: 25, fromAda: true, subject: "Intro"),   // Ada replies after 1h, 10:00
+            mail(followThread, at: 48, fromAda: true, subject: "Next steps"), // 09:00, waiting on you
+            mail(followThread, at: 72.5, fromAda: true, subject: "Next steps"), // 09:30
+        ]
+        let relationship = MailRelationship.build(email: "ADA@example.com", accountKey: scopeA, messages: history + [otherWorkspace],
+                                                   calendar: utc, now: day.addingTimeInterval(80 * 3_600))
+        precondition(relationship.fromThem == 5 && relationship.fromYou == 2 && relationship.conversations == 3, "\(relationship)")
+        precondition(relationship.firstContact == day && relationship.lastSubject == "Next steps")
+        precondition(relationship.theirReplyTime == 2 * 3_600, "median of 3h and 1h: \(String(describing: relationship.theirReplyTime))")
+        precondition(relationship.yourReplyTime == 2 * 3_600)
+        precondition(relationship.waitingOnYou.map(\.subject).sorted() == ["Intro", "Next steps", "Role"] && relationship.waitingOnThem.isEmpty)
+        precondition(relationship.usualHour == 9, "most of Ada's mail arrives 9–11: \(String(describing: relationship.usualHour))")
+        precondition(MailRelationship.build(email: "nobody@example.com", accountKey: scopeA, messages: history).isEmpty)
+        print("PASS: relationship history, reply times, waiting threads and usual hours")
+
         precondition(store.setSenderVIP(true, email: "ADA@example.com", accountKey: scopeA))
         precondition(store.hasSenderVIP(email: "ada@example.com", accountKey: scopeA))
         precondition(!store.hasSenderVIP(email: "ada@example.com", accountKey: scopeB))

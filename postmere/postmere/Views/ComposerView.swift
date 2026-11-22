@@ -57,6 +57,7 @@ struct ComposerView: View {
                               onCaptureError: showAttachmentError)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(alignment: .bottom) { aiWriting }
+                .onChange(of: store.pendingWriterPrompt, initial: true) { openWriterIfAsked() }
             if !store.draftAttachments.isEmpty { attachmentList }
         }
         .background(canvas)
@@ -239,6 +240,12 @@ struct ComposerView: View {
             .disabled(!store.draftAccount.isConnected)
             .help(store.draftValidationMessage ?? "Queue email for delivery · ⌘Return")
         }
+    }
+
+    /// Opens the writer when something asked for a draft, such as Draft intro.
+    private func openWriterIfAsked() {
+        guard store.pendingWriterPrompt != nil, runtime.backend.canAccessWorkspace, !showsAIWriting else { return }
+        withAnimation(.spring(duration: 0.4, bounce: 0.15)) { showsAIWriting = true }
     }
 
     private func toggleAIWriting() {

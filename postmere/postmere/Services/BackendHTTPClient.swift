@@ -62,7 +62,7 @@ nonisolated struct BackendHTTPClient: Sendable {
         self.baseURL = try Self.validatedBaseURL(baseURL)
         let isolated = Self.isolatedConfiguration(configuration)
         isolated.timeoutIntervalForRequest = 45
-        isolated.timeoutIntervalForResource = 120
+        isolated.timeoutIntervalForResource = 190
         session = URLSession(configuration: isolated, delegate: BackendNoRedirect(), delegateQueue: nil)
     }
 
@@ -117,7 +117,9 @@ nonisolated struct BackendHTTPClient: Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.httpBody = body
-        if method == "POST", Self.isAIRequest(path) { request.timeoutInterval = 115 }
+        if method == "POST", Self.isAIRequest(path) {
+            request.timeoutInterval = path.hasSuffix("/sender-profile") ? 180 : 115
+        }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
@@ -138,7 +140,7 @@ nonisolated struct BackendHTTPClient: Sendable {
     }
 
     private static func isAIRequest(_ path: String) -> Bool {
-        if path.hasPrefix("/v1/ai/") || path == "/v1/decisions/spam" { return true }
+        if path.hasPrefix("/v1/ai/") || path == "/v1/decisions/spam" || path == "/v1/decisions/triage" { return true }
         let parts = path.split(separator: "/", omittingEmptySubsequences: true)
         return parts.count == 5 && parts[0] == "v1" && parts[1] == "mail" && parts[2] == "messages"
             && UUID(uuidString: String(parts[3])) != nil && parts[4] == "sender-profile"

@@ -11,6 +11,11 @@ struct SenderContextView: View {
     var onEnable: () -> Void = {}
     var isEnabling = false
     var enableError: String?
+    /// Your history with this person, from your own mail.
+    var relationship: MailRelationship?
+    var onOpenMessage: (UUID) -> Void = { _ in }
+    /// Starts a new message to the sender with an AI instruction.
+    var onDraftIntro: ((String) -> Void)?
     @Environment(\.mailboxInset) private var inset
     @Environment(\.postmereAccent) private var palette
     @Environment(\.openSettings) private var openSettings
@@ -48,6 +53,10 @@ struct SenderContextView: View {
                         Text("From this message").font(.system(size: 10)).foregroundStyle(.tertiary)
                     }
                     Divider()
+                    if let relationship, !relationship.isEmpty {
+                        history(relationship)
+                        Divider()
+                    }
                     if target == nil {
                         stateMessage("Sender research unavailable", detail: message.isOutgoing
                             ? "Choose an incoming message to see its sender’s public details."
@@ -94,10 +103,15 @@ struct SenderContextView: View {
         case .matched:
             if let profile = response.profile {
                 VStack(alignment: .leading, spacing: 17) {
-                    HStack(spacing: 6) {
-                        PostmereIcon("sparkles", size: 12)
-                        Text("Public profile").font(.system(size: 11, weight: .medium))
-                    }.foregroundStyle(palette.accentInk)
+                    if profile.hasPerson {
+                        HStack(spacing: 6) {
+                            PostmereIcon("sparkles", size: 12)
+                            Text("Public profile").font(.system(size: 11, weight: .medium))
+                        }.foregroundStyle(palette.accentInk)
+                    }
+                    if let zone = profile.localTimeZone {
+                        localTime(zone)
+                    }
                     profileField("Name", field: "name", value: profile.name, profile: profile)
                     profileField("Role", field: "job_title", value: profile.jobTitle, profile: profile)
                     profileField("Company", field: "company", value: profile.company, profile: profile)
@@ -122,6 +136,24 @@ struct SenderContextView: View {
                                 }
                             }
                         }
+                    }
+                    if !profile.publicActivity.isEmpty {
+                        activity(profile.publicActivity, in: profile)
+                    }
+                    if !profile.publicTalkingPoints.isEmpty {
+                        talkingPoints(profile.publicTalkingPoints, in: profile)
+                    }
+                    if let company = profile.publicCompany {
+                        if profile.hasPerson { Divider() }
+                        companySection(company, in: profile)
+                    }
+                    if let onDraftIntro, !message.isOutgoing {
+                        Button { onDraftIntro(introPrompt(profile)) } label: {
+                            Label("Draft intro", systemImage: "square.and.pencil")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .help("Write a first message using these details. You review it before sending.")
                     }
                 }
                 VStack(alignment: .leading, spacing: 8) {
@@ -185,6 +217,242 @@ struct SenderContextView: View {
                 .font(.system(size: 10)).foregroundStyle(.tertiary)
         }
     }
+    // MARK: Your history
+
+    private func history(_ history: MailRelationship) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                PostmereIcon("bubble.left.and.bubble.right", size: 12)
+                Text("Your history").font(.system(size: 11, weight: .medium))
+            }.foregroundStyle(palette.accentInk)
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 9) {
+                if let first = history.firstContact {
+                    fact("Since", first.formatted(.dateTime.month(.abbreviated).year()),
+                         history.lastContact.map { "Last \($0.formatted(.relative(presentation: .named)))" })
+                }
+                fact("Messages", "\(history.fromThem) from them · \(history.fromYou) from you",
+                     history.conversations == 1 ? "1 conversation" : "\(history.conversations) conversations")
+                if let time = history.theirReplyTime {
+                    fact("They reply", Self.duration(time), nil)
+                }
+                if let time = history.yourReplyTime {
+                    fact("You reply", Self.duration(time), nil)
+                }
+                if let hour = history.usualHour {
+                    fact("Usually writes", Self.window(from: hour), "Your time. A good moment to reach them.")
+                }
+                if let subject = history.lastSubject {
+                    fact("Last topic", subject, nil)
+                }
+            }
+            waiting("Waiting on you", history.waitingOnYou)
+            waiting("Waiting on them", history.waitingOnThem)
+            Text("From your own mail on this Mac.")
+                .font(.system(size: 10)).foregroundStyle(.tertiary)
+        }
+    }
+
+    private func fact(_ title: String, _ value: String, _ detail: String?) -> some View {
+        GridRow {
+            fieldTitle(title)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(verbatim: value).font(.system(size: 12.5)).fixedSize(horizontal: false, vertical: true)
+                if let detail {
+                    Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func waiting(_ title: String, _ threads: [MailRelationship.Thread]) -> some View {
+        if !threads.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                fieldTitle("\(title) · \(threads.count)")
+                ForEach(threads.prefix(3)) { thread in
+                    Button { onOpenMessage(thread.messageID) } label: {
+                        HStack(spacing: 6) {
+                            Text(verbatim: thread.subject).lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text(thread.date.formatted(.relative(presentation: .named)))
+                                .foregroundStyle(.secondary).fixedSize()
+                        }
+                        .font(.system(size: 12))
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(palette.accentInk)
+                    .help("Open “\(thread.subject)”")
+                }
+            }
+        }
+    }
+
+    /// "under an hour", "about 3 hours", "about 2 days".
+    static func duration(_ seconds: TimeInterval) -> String {
+        let hours = seconds / 3_600
+        if hours < 1 { return "Within an hour" }
+        if hours < 36 { return "About \(Int(hours.rounded())) hour\(Int(hours.rounded()) == 1 ? "" : "s")" }
+        let days = Int((hours / 24).rounded())
+        return "About \(days) day\(days == 1 ? "" : "s")"
+    }
+
+    /// "9–11 AM" in the current locale's hour style.
+    static func window(from hour: Int) -> String {
+        let calendar = Calendar.current
+        let start = calendar.date(bySettingHour: hour, minute: 0, second: 0, of: .now) ?? .now
+        let end = start.addingTimeInterval(2 * 3_600)
+        return (start..<end).formatted(.interval.hour())
+    }
+
+    // MARK: Public research
+
+    private func localTime(_ zone: TimeZone) -> some View {
+        TimelineView(.everyMinute) { context in
+            let time = context.date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, timeZone: zone))
+            let offset = (zone.secondsFromGMT(for: context.date) - TimeZone.current.secondsFromGMT(for: context.date)) / 3_600
+            HStack(spacing: 6) {
+                PostmereIcon("clock", size: 12).foregroundStyle(.secondary)
+                Text("\(time) their time").font(.system(size: 12.5, weight: .medium))
+                if offset != 0 {
+                    Text(offset > 0 ? "\(offset)h ahead" : "\(-offset)h behind")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func activity(_ items: [BackendSenderProfile.Activity], in profile: BackendSenderProfile) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            fieldTitle("Recent activity")
+            ForEach(items) { item in
+                if let url = item.destination {
+                    Link(destination: url) {
+                        HStack(alignment: .firstTextBaseline, spacing: 7) {
+                            PostmereIcon(activitySymbol(item.kind), size: 11).foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(verbatim: item.title).font(.system(size: 12)).foregroundStyle(.primary)
+                                    .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                                Text([item.kind.capitalized, item.displayDate, url.host].compactMap { $0 }.joined(separator: " · "))
+                                    .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(.rect)
+                    }
+                    .help(url.absoluteString)
+                }
+            }
+        }
+    }
+
+    private func talkingPoints(_ points: [BackendSenderProfile.TalkingPoint], in profile: BackendSenderProfile) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            fieldTitle("Talking points")
+            ForEach(points) { point in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Circle().fill(palette.accentInk).frame(width: 4, height: 4).offset(y: -2)
+                    Text(verbatim: point.text).font(.system(size: 12)).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    citations(profile.publicSources.filter { $0.url == point.sourceUrl }, in: profile)
+                }
+            }
+        }
+    }
+
+    private func companySection(_ company: BackendSenderProfile.Company, in profile: BackendSenderProfile) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                PostmereIcon("building.2", size: 12)
+                Text("Company").font(.system(size: 11, weight: .medium))
+                citations(profile.publicSources.filter { company.sourceUrls.contains($0.url) }, in: profile)
+            }.foregroundStyle(palette.accentInk)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(verbatim: company.name).font(.system(size: 14, weight: .semibold))
+                if let summary = company.summary {
+                    Text(verbatim: summary).font(.system(size: 12.5)).foregroundStyle(.secondary)
+                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 7) {
+                ForEach([("Industry", company.industry), ("Size", company.size), ("Funding", company.funding),
+                         ("Based in", company.headquarters)], id: \.0) { title, value in
+                    if let value {
+                        GridRow {
+                            fieldTitle(title)
+                            Text(verbatim: value).font(.system(size: 12.5)).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+            if company.hiring != nil || company.careersURL != nil {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Circle().fill(Color.green).frame(width: 6, height: 6)
+                    Text(verbatim: company.hiring ?? "Careers page").font(.system(size: 12.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let careers = company.careersURL {
+                        Link(destination: careers) { PostmereIcon("arrow.up.right", size: 10) }
+                            .foregroundStyle(palette.accentInk).help(careers.absoluteString)
+                            .accessibilityLabel("Open careers page")
+                    }
+                }
+            }
+            if !company.news.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    fieldTitle("In the news")
+                    ForEach(company.news) { item in
+                        if let url = item.destination {
+                            Link(destination: url) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(verbatim: item.title).font(.system(size: 12)).foregroundStyle(.primary)
+                                        .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                                    Text([item.displayDate, url.host].compactMap { $0 }.joined(separator: " · "))
+                                        .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                                }
+                            }
+                            .help(url.absoluteString)
+                        }
+                    }
+                }
+            }
+            if let website = company.websiteURL {
+                Link(destination: website) {
+                    HStack(spacing: 6) {
+                        PostmereIcon("link", size: 11)
+                        Text(website.host ?? company.domain)
+                    }.font(.system(size: 12))
+                }
+                .foregroundStyle(palette.accentInk)
+            }
+        }
+    }
+
+    /// An instruction for the writer built only from cited details.
+    private func introPrompt(_ profile: BackendSenderProfile) -> String {
+        let name = profile.name ?? (message.sender.isEmpty ? message.senderEmail : message.sender)
+        var about = [profile.jobTitle, profile.company ?? profile.publicCompany?.name].compactMap { $0 }.joined(separator: " at ")
+        if about.isEmpty, let company = profile.publicCompany { about = "someone at \(company.name)" }
+        var lines = ["Write a short, specific first email to \(name)\(about.isEmpty ? "" : ", \(about)")."]
+        let points = profile.publicTalkingPoints.map(\.text)
+        if !points.isEmpty {
+            lines.append("Mention one of these naturally: " + points.joined(separator: " / "))
+        } else if let summary = profile.publicCompany?.summary {
+            lines.append("Their company: \(summary)")
+        }
+        if let hiring = profile.publicCompany?.hiring { lines.append("Hiring: \(hiring)") }
+        lines.append("Under 120 words, no flattery, and end with one clear ask. Leave a placeholder like [your ask] if the purpose is unclear.")
+        return lines.joined(separator: "\n")
+    }
+
+    private func activitySymbol(_ kind: String) -> String {
+        switch kind {
+        case "talk", "podcast": "bubble.left.and.bubble.right"
+        case "article", "post": "doc.text"
+        case "project": "chevron.left.forwardslash.chevron.right"
+        case "news": "note.text"
+        default: "link"
+        }
+    }
+
     private func linkSymbol(_ label: String) -> String {
         switch label.lowercased() {
         case "linkedin": "person.crop.rectangle"

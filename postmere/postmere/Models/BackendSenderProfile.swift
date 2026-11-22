@@ -35,11 +35,92 @@ nonisolated struct BackendSenderProfile: Decodable, Sendable {
     let jobTitle: String?
     let company: String?
     let location: String?
+    var timeZone: String? = nil
     let bio: String?
     let links: [Link]
+    var recentActivity: [Activity]? = nil
+    var talkingPoints: [TalkingPoint]? = nil
+    var companyProfile: Company? = nil
     let source: Source?
     let sources: [Source]?
     let citations: [Citation]?
+
+    struct Activity: Decodable, Identifiable, Sendable {
+        let title: String
+        let url: String
+        let date: String?
+        let kind: String
+        var id: String { url + title }
+        var destination: URL? { BackendSenderProfile.publicURL(url) }
+        /// "Mar 2026" or "14 Mar 2026" from the source's stated date.
+        var displayDate: String? {
+            guard let date else { return nil }
+            let parts = date.split(separator: "-").compactMap { Int($0) }
+            guard parts.count >= 2, let month = Calendar(identifier: .gregorian).date(from:
+                DateComponents(year: parts[0], month: parts[1], day: parts.count > 2 ? parts[2] : 1)) else { return nil }
+            return parts.count > 2 ? month.formatted(.dateTime.day().month(.abbreviated).year())
+                : month.formatted(.dateTime.month(.abbreviated).year())
+        }
+    }
+    /// The organization behind the sender's domain, or a matched person's employer.
+    struct Company: Decodable, Sendable {
+        let name: String
+        let domain: String
+        let summary: String?
+        let industry: String?
+        let size: String?
+        let funding: String?
+        let headquarters: String?
+        let website: String?
+        let careersUrl: String?
+        let hiring: String?
+        let news: [News]
+        let sourceUrls: [String]
+
+        struct News: Decodable, Identifiable, Sendable {
+            let title: String
+            let url: String
+            let date: String?
+            var id: String { url + title }
+            var destination: URL? { BackendSenderProfile.publicURL(url) }
+            var displayDate: String? {
+                Activity(title: title, url: url, date: date, kind: "news").displayDate
+            }
+        }
+        var websiteURL: URL? { website.flatMap(BackendSenderProfile.publicURL) }
+        var careersURL: URL? { careersUrl.flatMap(BackendSenderProfile.publicURL) }
+    }
+
+    struct TalkingPoint: Decodable, Identifiable, Sendable {
+        let text: String
+        let sourceUrl: String
+        var id: String { sourceUrl + text }
+    }
+
+    /// Activity and talking points shown only when their page is a listed source.
+    var publicActivity: [Activity] {
+        let urls = Set(publicSources.map(\.url))
+        return (recentActivity ?? []).filter { $0.destination != nil && urls.contains($0.url) }
+    }
+    var publicTalkingPoints: [TalkingPoint] {
+        let urls = Set(publicSources.map(\.url))
+        return (talkingPoints ?? []).filter { urls.contains($0.sourceUrl) }
+    }
+    /// The company, shown only when it cites a listed source.
+    var publicCompany: Company? {
+        guard let company = companyProfile else { return nil }
+        let urls = Set(publicSources.map(\.url))
+        return company.sourceUrls.contains(where: urls.contains) ? company : nil
+    }
+    var hasPerson: Bool {
+        [name, jobTitle, company, location, bio].contains { $0?.isEmpty == false } || !publicLinks.isEmpty
+    }
+
+    /// The sender's zone, only alongside a cited location.
+    var localTimeZone: TimeZone? {
+        guard location != nil, !sources(for: "location").isEmpty else { return nil }
+        return timeZone.flatMap(TimeZone.init(identifier:))
+    }
 
     struct Link: Decodable, Identifiable, Sendable {
         let label: String
@@ -72,7 +153,7 @@ nonisolated struct BackendSenderProfile: Decodable, Sendable {
         let fields = [("name", name), ("job_title", jobTitle), ("company", company), ("location", location), ("bio", bio)]
         return fields.contains { field, value in
             value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false && !sources(for: field).isEmpty
-        } || !publicLinks.isEmpty
+        } || !publicLinks.isEmpty || !publicActivity.isEmpty || publicCompany != nil
     }
     func sources(for field: String) -> [Source] {
         let urls = Set((citations ?? []).filter { $0.field == field }.flatMap(\.sourceUrls))

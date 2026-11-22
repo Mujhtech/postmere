@@ -80,6 +80,9 @@ final class MailStore {
         didSet { if searchField != oldValue { searchFiltersChanged() } }
     }
     var isComposing = false { didSet { schedulePersistence() } }
+    /// An instruction for the composer's AI writer, such as a drafted intro
+    /// from Sender details; the writer takes it when it opens.
+    var pendingWriterPrompt: String?
     var draftAccount: MailAccount = .unassigned {
         didSet {
             if oldValue != draftAccount {

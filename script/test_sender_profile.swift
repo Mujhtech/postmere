@@ -84,6 +84,49 @@ private struct SenderProfileChecks {
         try realtimeCheck(matched.profile?.location == "London, UK" && matched.profile?.links.count == 2 && matched.checkedAt != nil, "Profile links, location, or checked date were lost")
         try realtimeCheck(matched.profile?.publicSources.count == 3 && matched.profile?.sources(for: "job_title").count == 1,
                           "Public source attribution and field citations must stay attached to researched details")
+        var rich = try JSONSerialization.jsonObject(with: JSONSerialization.data(withJSONObject: [
+            "email": "ada@example.test", "status": "matched", "checked_at": "2026-11-20T12:34:56Z",
+            "profile": [
+                "name": "Ada Lovelace", "job_title": nil as String?, "company": nil as String?, "location": "London, UK",
+                "time_zone": "Europe/London", "bio": nil as String?, "links": [] as [Any],
+                "recent_activity": [["title": "Talk: Engines", "url": "https://talks.example.com/ada", "date": "2026-03", "kind": "talk"],
+                                    ["title": "Unlisted", "url": "https://injected.example.com/", "date": nil as String?, "kind": "post"]],
+                "talking_points": [["text": "Spoke on engines.", "source_url": "https://talks.example.com/ada"],
+                                   ["text": "Unsupported.", "source_url": "https://injected.example.com/"]],
+                "source": ["name": "Profile", "url": "https://profiles.example.com/ada"],
+                "sources": [["name": "Profile", "url": "https://profiles.example.com/ada"],
+                            ["name": "Talk", "url": "https://talks.example.com/ada"]],
+                "citations": [["field": "name", "source_urls": ["https://profiles.example.com/ada"]],
+                              ["field": "location", "source_urls": ["https://profiles.example.com/ada"]]],
+            ] as [String: Any],
+        ] as [String: Any])) as! [String: Any]
+        let richProfile = try BackendHTTPClient.decoder().decode(BackendSenderProfileResponse.self,
+                                                                 from: JSONSerialization.data(withJSONObject: rich)).profile
+        try realtimeCheck(richProfile?.publicActivity.map(\.title) == ["Talk: Engines"] && richProfile?.publicTalkingPoints.count == 1
+                          && richProfile?.localTimeZone?.identifier == "Europe/London" && richProfile?.publicActivity.first?.displayDate != nil,
+                          "Activity, talking points and time zone decode, and only listed sources are shown")
+        var uncitedLocation = rich["profile"] as! [String: Any]
+        uncitedLocation["citations"] = [["field": "name", "source_urls": ["https://profiles.example.com/ada"]]]
+        rich["profile"] = uncitedLocation
+        try realtimeCheck(try BackendHTTPClient.decoder().decode(BackendSenderProfileResponse.self,
+                          from: JSONSerialization.data(withJSONObject: rich)).profile?.localTimeZone == nil,
+                          "A time zone is shown only alongside a cited location")
+        let companyOnly = try BackendHTTPClient.decoder().decode(BackendSenderProfileResponse.self, from: JSONSerialization.data(withJSONObject: [
+            "email": "careers@analytical.example", "status": "matched",
+            "profile": [
+                "name": nil as String?, "job_title": nil as String?, "company": nil as String?, "location": nil as String?,
+                "bio": nil as String?, "links": [] as [Any],
+                "company_profile": ["name": "Analytical", "domain": "analytical.example", "summary": "Engines.", "industry": nil as String?,
+                                    "size": "51–200 employees", "funding": nil as String?, "headquarters": nil as String?,
+                                    "website": "https://analytical.example.com/", "careers_url": nil as String?, "hiring": "Hiring 3 engineers",
+                                    "news": [] as [Any], "source_urls": ["https://about.example.com/analytical"]] as [String: Any],
+                "source": ["name": "About", "url": "https://about.example.com/analytical"],
+                "sources": [["name": "About", "url": "https://about.example.com/analytical"]],
+                "citations": [] as [Any],
+            ] as [String: Any],
+        ] as [String: Any])).validated(for: "careers@analytical.example")
+        try realtimeCheck(companyOnly.profile?.publicCompany?.size == "51–200 employees" && companyOnly.profile?.hasPerson == false,
+                          "A company-only profile decodes, validates and shows no person")
         let employerCited = try response(usesEmployerLinkCitation: true)
         try realtimeCheck(employerCited.profile?.sources(for: "links").map(\.url) == ["https://engines.example.com/team/ada"] &&
                           employerCited.profile?.publicLinks.contains(where: { $0.url == "https://www.linkedin.com/in/ada-fixture" }) == true,
