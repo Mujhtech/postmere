@@ -177,6 +177,13 @@ final class MailStore {
     @ObservationIgnored var bodyFillTask: Task<Void, Never>?
     @ObservationIgnored var preparesListWhileOpening = false
     @ObservationIgnored var bodySource: MailPersistence?
+    /// Messages whose HTML or RTF is on disk but not in memory. Their plain text
+    /// stays loaded, so search and reply detection still see it.
+    @ObservationIgnored var richBodyUnloadedIDs: Set<UUID> = []
+    /// When each message with its rich body in memory was last needed, so the
+    /// least recently read can release it.
+    @ObservationIgnored var richBodyUses: [UUID: Int] = [:]
+    @ObservationIgnored var richBodyClock = 0
     @ObservationIgnored private var updatingSenderArtwork = false
     private var recentSenderMarks: [UUID: MailVerifiedSenderMark] = [:]
     @ObservationIgnored var searchQueryCache: [String: MailSearchQuery] = [:]

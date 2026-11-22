@@ -80,10 +80,18 @@ extension MailStore {
         }
     }
 
+    /// Rich bodies (HTML and RTF) kept in memory at most. Reading a message loads
+    /// its rich body again from disk.
+    static let richBodyBudget = 200
+
     /// Reads message bodies after the mailbox is showing, newest first, off the
     /// main thread. Reply detection, which reads bodies, runs once they are in.
+    /// Plain text loads for every message; HTML and RTF only for the newest
+    /// mail, drafts and the outbox. The rest stays on disk until it is read.
     private func fillStoredBodies(from persistence: MailPersistence) {
         let waiting = messages.filter { StoredMessageBody($0).isEmpty }.sorted { $0.sentAt > $1.sentAt }
+        var warm = Set(waiting.prefix(Self.richBodyBudget).map(\.id))
+        warm.formUnion(waiting.lazy.filter { $0.isDraft || $0.mailbox == .outbox }.map(\.id))
         bodySource = persistence
         bodyFillTask = Task { [weak self] in
             // The first list comes first; bodies must not compete with it.
@@ -92,13 +100,17 @@ extension MailStore {
             while start < waiting.count {
                 let batch = Array(waiting[start..<min(start + 300, waiting.count)])
                 start += batch.count
-                let restored = await Task.detached(priority: .userInitiated) { persistence.loadBodies(for: batch) }.value
+                let restored = await Task.detached(priority: .userInitiated) {
+                    persistence.loadBodies(for: batch, keepingRichFor: warm)
+                }.value
                 guard let self, !Task.isCancelled else { return }
                 self.applyStoredBodies(restored)
+                let cold = restored.keys.filter { !warm.contains($0) }
+                self.richBodyUnloadedIDs.formUnion(persistence.richBodiesOnDisk(cold))
+                for id in restored.keys where warm.contains(id) { self.noteRichBodyUse(id) }
             }
             guard let self, !Task.isCancelled else { return }
             self.bodyFillTask = nil
-            self.bodySource = nil
             // Publish the cached inbox before the first on-device reply analysis.
             // New sync pages classify themselves while this migration runs.
             if self.replyIndexVersion < MailStateSnapshot.currentReplyIndexVersion {
@@ -107,17 +119,25 @@ extension MailStore {
         }
     }
 
-    /// Fills bodies into messages that still lack one. Nothing here needs
-    /// saving or syncing: the bodies came from disk unchanged.
+    /// Fills bodies into messages that still lack one, and rich bodies into
+    /// messages that had released theirs. Nothing here needs saving or
+    /// syncing: the bodies came from disk unchanged.
     func applyStoredBodies(_ restored: [UUID: MailMessage]) {
         guard !restored.isEmpty else { return }
         var updated = messages
         var changed = false
         for index in updated.indices {
-            guard let body = restored[updated[index].id], StoredMessageBody(updated[index]).isEmpty else { continue }
-            StoredMessageBody(body).apply(to: &updated[index])
-            updated[index].preview = body.preview
-            changed = true
+            guard let body = restored[updated[index].id] else { continue }
+            if StoredMessageBody(updated[index]).isEmpty {
+                StoredMessageBody(body).apply(to: &updated[index])
+                updated[index].preview = body.preview
+                changed = true
+            } else if needsRichBody(updated[index]), body.bodyHTML != nil || body.bodyRTF != nil {
+                updated[index].bodyHTML = body.bodyHTML
+                updated[index].bodyRTF = body.bodyRTF
+                changed = true
+            }
+            if body.bodyHTML != nil || body.bodyRTF != nil { richBodyUnloadedIDs.remove(body.id) }
         }
         guard changed else { return }
         applyingStoredBodies = true
@@ -125,12 +145,52 @@ extension MailStore {
         applyingStoredBodies = false
     }
 
-    /// Opening a conversation before its bodies arrived reads them right away.
+    func needsRichBody(_ message: MailMessage) -> Bool {
+        richBodyUnloadedIDs.contains(message.id) && message.bodyHTML == nil && message.bodyRTF == nil
+    }
+
+    /// Opening a conversation reads any body or rich body it lacks right away.
     func loadBodiesNow(forConversationOf id: UUID) {
         guard let bodySource, let selected = messages.first(where: { $0.id == id }) else { return }
-        let waiting = messages.filter { $0.conversationID == selected.conversationID && StoredMessageBody($0).isEmpty }
-        guard !waiting.isEmpty else { return }
-        applyStoredBodies(bodySource.loadBodies(for: waiting))
+        let conversation = messages.filter { $0.conversationID == selected.conversationID }
+        let waiting = conversation.filter { StoredMessageBody($0).isEmpty || needsRichBody($0) }
+        if !waiting.isEmpty { applyStoredBodies(bodySource.loadBodies(for: waiting)) }
+        for message in conversation { noteRichBodyUse(message.id) }
+        releaseRichBodies(keeping: Set(conversation.map(\.id)))
+    }
+
+    private func noteRichBodyUse(_ id: UUID) {
+        richBodyClock &+= 1
+        richBodyUses[id] = richBodyClock
+    }
+
+    /// Releases the least recently read rich bodies beyond the budget. Only
+    /// bodies a save has put on disk are released, so nothing is lost.
+    private func releaseRichBodies(keeping current: Set<UUID>) {
+        guard richBodyUses.count > Self.richBodyBudget, let bodySource else { return }
+        let present = Set(messages.map(\.id))
+        richBodyUses = richBodyUses.filter { present.contains($0.key) }
+        guard richBodyUses.count > Self.richBodyBudget else { return }
+        let excess = richBodyUses.count - Self.richBodyBudget
+        let oldest = richBodyUses.filter { !current.contains($0.key) }.sorted { $0.value < $1.value }.prefix(excess).map(\.key)
+        let releasable = bodySource.richBodiesOnDisk(oldest)
+        guard !releasable.isEmpty else { return }
+        var updated = messages
+        var changed = false
+        for index in updated.indices where releasable.contains(updated[index].id) {
+            let message = updated[index]
+            guard !message.isDraft, message.mailbox != .outbox, message.bodyHTML != nil || message.bodyRTF != nil else { continue }
+            updated[index].bodyHTML = nil
+            updated[index].bodyRTF = nil
+            richBodyUnloadedIDs.insert(message.id)
+            changed = true
+        }
+        // A body not saved yet keeps its place and is released on a later read.
+        for id in releasable { richBodyUses.removeValue(forKey: id) }
+        guard changed else { return }
+        applyingStoredBodies = true
+        messages = updated
+        applyingStoredBodies = false
     }
 
     private func applyPersistentState(_ result: Result<MailStateSnapshot?, Error>) {

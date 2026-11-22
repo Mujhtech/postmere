@@ -86,17 +86,27 @@ nonisolated enum MailReplyQueue {
         }
     }
 
-    @concurrent static func savedCandidates(in messages: [MailMessage]) async -> [UUID: (MailMessage, [String]?)] {
+    /// Messages in `onDisk` have released their HTML; it is read back from
+    /// `source` for the analysis and not kept. Results are keyed by the message
+    /// as it is in memory, so unchanged mail matches later.
+    @concurrent static func savedCandidates(in messages: [MailMessage], richOnDisk onDisk: Set<UUID> = [],
+                                            from source: MailPersistence? = nil) async -> [UUID: (MailMessage, [String]?)] {
         var result: [UUID: (MailMessage, [String]?)] = [:]
-        for message in messages {
-            if Task.isCancelled { break }
-            result[message.id] = (message, MailReplyIntent.candidates(in: message))
+        var start = 0
+        while start < messages.count, !Task.isCancelled {
+            let batch = messages[start..<min(start + 200, messages.count)]
+            start += batch.count
+            let unloaded = batch.filter { onDisk.contains($0.id) && $0.bodyHTML == nil && $0.bodyRTF == nil }
+            let full = unloaded.isEmpty ? [:] : source?.readBodies(for: unloaded) ?? [:]
+            for message in batch {
+                result[message.id] = (message, MailReplyIntent.candidates(in: full[message.id] ?? message))
+            }
         }
         return result
     }
 
     @concurrent static func corrections(in messages: [MailMessage], using candidates: [UUID: (MailMessage, [String]?)],
-                                        preservingLegacyFlags: Bool) async -> [(Int, MailMessage)] {
+                                        preservingLegacyFlags: Bool, richOnDisk onDisk: Set<UUID> = []) async -> [(Int, MailMessage)] {
         var indexed = messages
         let now = Date.now
         for index in messages.indices {
@@ -104,6 +114,8 @@ nonisolated enum MailReplyQueue {
             let current = messages[index]
             if let (original, found) = candidates[current.id], original == current {
                 indexed[index].replyRequestCandidates = found
+            } else if onDisk.contains(current.id) && current.bodyHTML == nil && current.bodyRTF == nil {
+                // Without its HTML, analysis could count quoted text; keep the saved result.
             } else {
                 indexed[index].replyRequestCandidates = MailReplyIntent.candidates(in: current)
             }
@@ -119,10 +131,11 @@ nonisolated enum MailReplyQueue {
 
 extension MailStore {
     func indexSavedReplyRequests() async {
-        let candidates = await MailReplyQueue.savedCandidates(in: messages)
+        let candidates = await MailReplyQueue.savedCandidates(in: messages, richOnDisk: richBodyUnloadedIDs, from: bodySource)
         while !Task.isCancelled && replyIndexVersion < MailStateSnapshot.currentReplyIndexVersion {
             let revision = mailboxDataRevision
-            let changes = await MailReplyQueue.corrections(in: messages, using: candidates, preservingLegacyFlags: replyIndexVersion == 0)
+            let changes = await MailReplyQueue.corrections(in: messages, using: candidates, preservingLegacyFlags: replyIndexVersion == 0,
+                                                           richOnDisk: richBodyUnloadedIDs)
             guard !Task.isCancelled, replyIndexVersion < MailStateSnapshot.currentReplyIndexVersion else { return }
             // Sync and local decisions can progress while analysis runs. Reconcile
             // the current snapshot, reusing candidate extraction for unchanged mail.

@@ -164,28 +164,46 @@ nonisolated struct MailPersistence: Sendable {
         // Bodies first, then the snapshot that refers to them, then cleanup:
         // an interruption at any point leaves a readable mailbox.
         let (previous, pending) = MailBodyLedger.shared.state(for: bodyDirectory)
-        var written: [UUID: StoredMessageBody] = [:]
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        var written: [UUID: LedgerBody] = [:]
         var stillPending: Set<UUID> = []
         var snapshot = state
         snapshot.schemaVersion = 2
         for index in snapshot.messages.indices {
-            let body = StoredMessageBody(snapshot.messages[index])
-            let id = snapshot.messages[index].id
+            let message = snapshot.messages[index]
+            var body = StoredMessageBody(message)
+            let id = message.id
+            StoredMessageBody.strip(&snapshot.messages[index])
             // A body not loaded yet is still on disk; never replace it with nothing.
             if pending.contains(id) && body.isEmpty {
                 stillPending.insert(id)
-                StoredMessageBody.strip(&snapshot.messages[index])
                 continue
             }
-            // Unchanged bodies share storage with the last write, so this
-            // comparison returns without reading their contents.
-            if previous[id] != body {
+            let prior = previous[id]
+            var entry: LedgerBody
+            if body.hasRich {
+                entry = LedgerBody(text: body.textOnly, rich: .onDisk(body.richFingerprint))
+            } else if case .onDisk(let fingerprint)? = prior?.rich, !message.isDraft, message.mailbox != .outbox {
+                // Received HTML can be released from memory and stays only on disk.
+                // Keep that file's rich part; mail never loses its HTML by being unloaded.
+                entry = LedgerBody(text: body.textOnly, rich: .onDisk(fingerprint))
+                if prior == entry { written[id] = entry; continue }
+                if let data = try? Data(contentsOf: bodyFile(id)),
+                   let stored = try? decoder.decode(StoredMessageBody.self, from: data) {
+                    body.bodyHTML = stored.bodyHTML
+                    body.bodyRTF = stored.bodyRTF
+                }
+                if !body.hasRich { entry.rich = .none }
+            } else {
+                entry = LedgerBody(text: body.textOnly, rich: .none)
+            }
+            if prior != entry {
                 let file = bodyFile(id)
                 try encoder.encode(body).write(to: file, options: .atomic)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
             }
-            written[id] = body
-            StoredMessageBody.strip(&snapshot.messages[index])
+            written[id] = entry
         }
         let data = try encoder.encode(snapshot)
         try data.write(to: fileURL, options: .atomic)
@@ -197,22 +215,46 @@ nonisolated struct MailPersistence: Sendable {
     }
 
     /// Reads the stored bodies of these messages and returns each message with
-    /// its body restored. Safe off the main thread.
-    func loadBodies(for messages: [MailMessage]) -> [UUID: MailMessage] {
+    /// its body restored. Messages outside `keepingRichFor` get their plain text
+    /// only; their HTML and RTF stay on disk until `loadBodies` reads them again.
+    /// Pass nil to keep every rich body. Safe off the main thread.
+    func loadBodies(for messages: [MailMessage], keepingRichFor keep: Set<UUID>? = nil) -> [UUID: MailMessage] {
+        var restored: [UUID: MailMessage] = [:]
+        var bodies: [UUID: LedgerBody] = [:]
+        for (id, var message) in readBodies(for: messages) {
+            let stored = StoredMessageBody(message)
+            let keepsRich = keep?.contains(id) ?? true
+            bodies[id] = LedgerBody(text: stored.textOnly,
+                                    rich: stored.hasRich ? .onDisk(keepsRich ? stored.richFingerprint : nil) : .none)
+            if !keepsRich {
+                message.bodyHTML = nil
+                message.bodyRTF = nil
+            }
+            restored[id] = message
+        }
+        MailBodyLedger.shared.loaded(bodies, for: bodyDirectory)
+        return restored
+    }
+
+    /// Full stored bodies, for a one-off read such as reply analysis. Unlike
+    /// `loadBodies`, this leaves what saves know about the store unchanged.
+    func readBodies(for messages: [MailMessage]) -> [UUID: MailMessage] {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .millisecondsSince1970
         var restored: [UUID: MailMessage] = [:]
-        var bodies: [UUID: StoredMessageBody] = [:]
         for var message in messages {
             guard let data = try? Data(contentsOf: bodyFile(message.id)),
                   let body = try? decoder.decode(StoredMessageBody.self, from: data) else { continue }
             body.apply(to: &message)
             message.restoreReceivedText()
-            bodies[message.id] = body
             restored[message.id] = message
         }
-        MailBodyLedger.shared.loaded(bodies, for: bodyDirectory)
         return restored
+    }
+
+    /// Messages whose HTML or RTF is safely on disk, so memory may release it.
+    func richBodiesOnDisk(_ ids: some Sequence<UUID>) -> Set<UUID> {
+        MailBodyLedger.shared.richOnDisk(ids, for: bodyDirectory)
     }
 
     private func bodyFile(_ id: UUID) -> URL {
@@ -254,6 +296,31 @@ nonisolated struct StoredMessageBody: Codable, Equatable, Sendable {
         paragraphs.allSatisfy(\.isEmpty) && bodyHTML == nil && bodyRTF == nil && verifiedSenderMark == nil
     }
 
+    var hasRich: Bool { bodyHTML != nil || bodyRTF != nil }
+
+    /// The body without its HTML and RTF: what stays in memory for every message.
+    var textOnly: StoredMessageBody {
+        var copy = self
+        copy.bodyHTML = nil
+        copy.bodyRTF = nil
+        return copy
+    }
+
+    /// Identifies the HTML and RTF by their bytes, so saves can tell a changed
+    /// rich body without keeping one in memory.
+    var richFingerprint: Int {
+        var hasher = Hasher()
+        if var html = bodyHTML {
+            hasher.combine(1)
+            html.withUTF8 { hasher.combine(bytes: UnsafeRawBufferPointer($0)) }
+        }
+        if let rtf = bodyRTF {
+            hasher.combine(2)
+            rtf.withUnsafeBytes { hasher.combine(bytes: $0) }
+        }
+        return hasher.finalize()
+    }
+
     static func strip(_ message: inout MailMessage) {
         message.paragraphs = []
         message.bodyHTML = nil
@@ -262,16 +329,28 @@ nonisolated struct StoredMessageBody: Codable, Equatable, Sendable {
     }
 }
 
+/// What a save last wrote for one message: its plain text, which shares storage
+/// with the live message, and whether rich content is on disk. The HTML itself
+/// is never held here, so releasing it from a message frees its memory.
+nonisolated struct LedgerBody: Equatable, Sendable {
+    enum Rich: Equatable, Sendable {
+        case none
+        /// The fingerprint is nil when the HTML was read but never kept in memory.
+        case onDisk(Int?)
+    }
+    var text: StoredMessageBody
+    var rich: Rich
+}
+
 /// The bodies each store last wrote, so a save writes only new or changed
-/// ones, and which bodies are on disk but not loaded yet. Written bodies share
-/// storage with the live messages, so this costs no copies.
+/// ones, and which bodies are on disk but not loaded yet.
 private nonisolated final class MailBodyLedger: @unchecked Sendable {
     static let shared = MailBodyLedger()
     private let lock = NSLock()
-    private var written: [String: [UUID: StoredMessageBody]] = [:]
+    private var written: [String: [UUID: LedgerBody]] = [:]
     private var pending: [String: Set<UUID>] = [:]
 
-    func state(for directory: URL) -> ([UUID: StoredMessageBody], Set<UUID>) {
+    func state(for directory: URL) -> ([UUID: LedgerBody], Set<UUID>) {
         lock.withLock { (written[directory.path] ?? [:], pending[directory.path] ?? []) }
     }
 
@@ -284,11 +363,21 @@ private nonisolated final class MailBodyLedger: @unchecked Sendable {
 
     /// Loaded bodies stay pending until a save carries them: a snapshot taken
     /// before they reached the live messages must not write them empty.
-    func loaded(_ bodies: [UUID: StoredMessageBody], for directory: URL) {
+    func loaded(_ bodies: [UUID: LedgerBody], for directory: URL) {
         lock.withLock { written[directory.path, default: [:]].merge(bodies) { _, new in new } }
     }
 
-    func finishSave(written value: [UUID: StoredMessageBody], pending ids: Set<UUID>, for directory: URL) {
+    func richOnDisk(_ ids: some Sequence<UUID>, for directory: URL) -> Set<UUID> {
+        lock.withLock {
+            let known = written[directory.path] ?? [:]
+            return Set(ids.filter { id in
+                if case .onDisk? = known[id]?.rich { return true }
+                return false
+            })
+        }
+    }
+
+    func finishSave(written value: [UUID: LedgerBody], pending ids: Set<UUID>, for directory: URL) {
         lock.withLock {
             written[directory.path] = value
             // A save that carried a body clears it; loads never do.
