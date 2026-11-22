@@ -177,42 +177,119 @@ struct SavedInboxViewEditor: View {
     @Bindable var store: MailStore
     var editing: SavedInboxView?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.postmereAccent) private var palette
     @State private var name = ""
     @State private var criteria = SavedInboxCriteria()
+    @State private var matches: Int?
+    @FocusState private var nameFocused: Bool
+
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var isValid: Bool {
+        MailSearchQuery(source: criteria.query, defaultField: criteria.searchField).isValid
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            Text(editing == nil ? "Save inbox view" : "Edit inbox view")
-                .font(PostmereTheme.sheetTitle)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 24).padding(.top, 24)
+            header
             Form {
-                Section { TextField("Name", text: $name) }
+                Section {
+                    TextField("Name", text: $name, prompt: Text("Receipts, Team updates…"))
+                        .focused($nameFocused)
+                }
                 MailCriteriaFields(criteria: $criteria)
-            }.formStyle(.grouped)
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save View") {
-                    var view = editing ?? SavedInboxView(name: name, criteria: criteria)
-                    view.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    view.criteria = criteria
-                    store.saveInboxView(view)
-                    store.selectSavedView(view)
-                    dismiss()
-                }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                              || !MailSearchQuery(source: criteria.query, defaultField: criteria.searchField).isValid)
-            }.padding(24)
-        }.frame(width: 500, height: 570)
-            .mailPanelSurface()
-            .onAppear {
-                name = editing?.name ?? ""
-                criteria = editing?.criteria ?? SavedInboxCriteria(query: store.searchText, account: store.selectedAccount,
-                    unreadOnly: store.unreadOnly, attachmentsOnly: store.attachmentsOnly,
-                    mailbox: store.searchScope == .allMailboxes ? nil : store.selectedMailbox)
-                if editing == nil { criteria.searchField = store.searchField }
             }
+            .formStyle(.grouped)
+            Divider()
+            footer
+        }
+        .frame(width: 520, height: 640)
+        .mailPanelSurface()
+        .onAppear {
+            name = editing?.name ?? ""
+            criteria = editing?.criteria ?? SavedInboxCriteria(query: store.searchText, account: store.selectedAccount,
+                unreadOnly: store.unreadOnly, attachmentsOnly: store.attachmentsOnly,
+                mailbox: store.searchScope == .allMailboxes ? nil : store.selectedMailbox)
+            if editing == nil { criteria.searchField = store.searchField }
+            nameFocused = true
+        }
+        .task(id: criteria) { await countMatches() }
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            PostmereIcon("line.3.horizontal.decrease.circle", size: 18)
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(palette.accent.gradient, in: .rect(cornerRadius: 10, style: .continuous))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(editing == nil ? "Save Inbox View" : "Edit Inbox View")
+                    .font(PostmereTheme.sheetTitle)
+                    .accessibilityAddTraits(.isHeader)
+                Text("Keep this search one click away in the sidebar.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 22)
+        .padding(.bottom, 6)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            Group {
+                if let matches {
+                    HStack(spacing: 6) {
+                        Circle().fill(matches > 0 ? palette.accent : Color.secondary.opacity(0.5)).frame(width: 6, height: 6)
+                        Text(matches == 0 ? "No conversations match yet"
+                             : matches == 1 ? "1 conversation matches" : "\(matches.formatted()) conversations match")
+                            .contentTransition(.numericText(value: Double(matches)))
+                    }
+                } else {
+                    Text(isValid ? "Counting…" : "Fix the search rule to save")
+                }
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .animation(.snappy(duration: 0.2), value: matches)
+            Spacer()
+            Button("Cancel") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+            Button("Save View", action: save)
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(trimmedName.isEmpty || !isValid)
+        }
+        .controlSize(.large)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
+    }
+
+    private func save() {
+        var view = editing ?? SavedInboxView(name: trimmedName, criteria: criteria)
+        view.name = trimmedName
+        view.criteria = criteria
+        store.saveInboxView(view)
+        store.selectSavedView(view)
+        dismiss()
+    }
+
+    /// Counts conversations the view would show, off the main thread and
+    /// shortly after typing pauses.
+    private func countMatches() async {
+        guard isValid else { matches = nil; return }
+        try? await Task.sleep(for: .milliseconds(180))
+        guard !Task.isCancelled else { return }
+        let matcher = store.matcher(criteria)
+        let context = store.searchContext
+        let visible = store.messages.filter(store.isAccountVisible)
+        let count = await Task.detached(priority: .userInitiated) {
+            MailSearchRequest.representatives(visible.filter { matcher.matches($0, context: context) }, preferred: nil).count
+        }.value
+        guard !Task.isCancelled else { return }
+        matches = count
     }
 }
 

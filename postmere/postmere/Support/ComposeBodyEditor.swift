@@ -14,8 +14,8 @@ struct MailFormattingButton: View {
             PostmereIcon(symbol, size: 14)
                 .frame(width: 26, height: 24)
                 .foregroundStyle(active ? palette.accentInk : PostmereTheme.icon)
-                .background(active ? palette.accentInk.opacity(0.12) : .clear, in: .rect(cornerRadius: 4))
-                .contentShape(.rect)
+                .background(active ? palette.accentInk.opacity(0.12) : .clear, in: .capsule)
+                .contentShape(.capsule)
         }
         .buttonStyle(.borderless)
         .help(title)

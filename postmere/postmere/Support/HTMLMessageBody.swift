@@ -21,6 +21,10 @@ struct HTMLMessageBody: View {
     @State private var imageError: String?
     @State private var failed = false
     @State private var documentGeneration = 0
+    /// Hides the first, image-less inspection pass so the message appears once,
+    /// complete, instead of rendering twice.
+    @State private var revealed = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var loadsImages: Bool { automaticImages || consentedHTML == html }
 
@@ -52,9 +56,13 @@ struct HTMLMessageBody: View {
                     .textSelection(.enabled)
             } else {
                 ZStack(alignment: .topLeading) {
-                    if !layout.hasDocumentLayout { openingPreview }
+                    if !isVisible {
+                        MessageBodySkeleton(fontSize: fontSize)
+                            .transition(.opacity)
+                    }
                     if let page { renderedMessage(page) }
                 }
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: isVisible)
             }
         }
         .onChange(of: layout.blockedTrackerCount, initial: true) { _, count in onBlockedTrackerCountChange(count) }
@@ -75,26 +83,25 @@ struct HTMLMessageBody: View {
         .onDisappear { page?.stopLoading() }
     }
 
-    @ViewBuilder private var openingPreview: some View {
-        if let first = paragraphs.first(where: { !$0.isEmpty }) {
-            Text(verbatim: String(first.prefix(600)))
-                .font(readingFont.font(size: fontSize))
-                .lineLimit(6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            ProgressView("Loading message…").controlSize(.small)
-        }
-    }
+    private var isVisible: Bool { revealed && layout.hasDocumentLayout }
 
     private func renderedMessage(_ page: WebPage) -> some View {
         MessageWebView(page: page, documentHeight: layout.height,
-                       needsReaderViewport: layout.needsReaderViewport || !layout.hasDocumentLayout)
-            .opacity(layout.hasDocumentLayout ? 1 : 0)
-            .accessibilityHidden(!layout.hasDocumentLayout)
+                       needsReaderViewport: layout.needsReaderViewport || !isVisible)
+            .opacity(isVisible ? 1 : 0)
+            .accessibilityHidden(!isVisible)
             .accessibilityLabel("Message body")
     }
 
     private func loadMessage(_ source: Source) async {
+        // Reveal when the final pass is ready, or after a short wait so slow
+        // image servers never hold the message back.
+        revealed = false
+        let reveal = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1500))
+            if !Task.isCancelled { revealed = true }
+        }
+        defer { reveal.cancel(); if !Task.isCancelled { revealed = true } }
         loadedSource = nil
         page?.stopLoading()
         let currentPage = layout.makePage(quoteContext: quoteContext, readingFont: readingFont, size: fontSize)
@@ -166,6 +173,35 @@ struct HTMLMessageBody: View {
         </style>
         \(html)
         """
+    }
+}
+
+/// Stands in for the body while it renders: a few soft lines at the reading
+/// size, gently pulsing unless Reduce Motion is on.
+private struct MessageBodySkeleton: View {
+    let fontSize: Double
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var dim = false
+
+    var body: some View {
+        let line = max(8, fontSize * 0.7)
+        VStack(alignment: .leading, spacing: line * 0.9) {
+            ForEach(Array([0.92, 0.98, 0.85, 0.95, 0.6].enumerated()), id: \.offset) { _, width in
+                GeometryReader { proxy in
+                    Capsule().fill(.quaternary).frame(width: proxy.size.width * width, height: line)
+                }
+                .frame(height: line)
+            }
+        }
+        .padding(.top, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .opacity(dim ? 0.55 : 1)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { dim = true }
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Loading message")
     }
 }
 

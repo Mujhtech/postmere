@@ -7,6 +7,8 @@ struct MailAppearanceSettings: View {
     @AppStorage(MailboxTheme.lightPreference) private var lightTheme: MailboxTheme = .native
     @AppStorage(MailboxTheme.darkPreference) private var darkTheme: MailboxTheme = .native
     @AppStorage(PostmereAccent.preferenceKey) private var primary = PostmereAccent.defaultRGB
+    @AppStorage(MailboxTheme.customLightPreference) private var customLight = MailboxTheme.defaultCustomLight
+    @AppStorage(MailboxTheme.customDarkPreference) private var customDark = MailboxTheme.defaultCustomDark
     @State private var editingScheme: ColorScheme?
 
     private static let swatches = [
@@ -15,27 +17,48 @@ struct MailAppearanceSettings: View {
     ]
     private var previewScheme: ColorScheme { appearance.colorScheme ?? editingScheme ?? scheme }
     private var selection: Binding<MailboxTheme> { previewScheme == .dark ? $darkTheme : $lightTheme }
+    private var customTint: Binding<Int> { previewScheme == .dark ? $customDark : $customLight }
+    private var isCustomAccent: Bool { !Self.swatches.contains { $0.1 == primary } }
 
     var body: some View {
         Form {
             Section {
                 SettingsRow("Appearance", symbol: "paintpalette", tint: SettingsTint.indigo) {
-                    Picker("Appearance", selection: $appearance) {
-                        ForEach(MailAppearance.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
-                    }
-                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    GlassSegmentedControl(title: "Appearance", selection: $appearance, options: [
+                        .init(value: .system, title: MailAppearance.system.title, symbol: "circle.lefthalf.filled"),
+                        .init(value: .light, title: MailAppearance.light.title, symbol: "sun.max"),
+                        .init(value: .dark, title: MailAppearance.dark.title, symbol: "moon"),
+                    ])
                 }
             }
             Section {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 3), spacing: 14) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
                     ForEach(MailboxTheme.allCases) { option in
-                        ThemeCard(theme: option, scheme: previewScheme, accent: accent,
+                        ThemeCard(theme: option, scheme: previewScheme, accent: accent, customTint: customTint.wrappedValue,
                                   selected: selection.wrappedValue == option) {
                             withAnimation(.snappy(duration: 0.2)) { selection.wrappedValue = option }
+                            // Choosing Custom goes straight to picking its colour.
+                            if option == .custom {
+                                let binding = customTint
+                                ColorPanelBridge.shared.present(rgb: binding.wrappedValue) { binding.wrappedValue = $0 }
+                            }
                         }
                     }
                 }
                 .padding(.vertical, 4)
+                if selection.wrappedValue == .custom {
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Custom \(previewScheme == .dark ? "dark" : "light") theme").font(.system(size: 12.5))
+                            Text("Sidebar, list and reader are shaded from one colour.")
+                                .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        ColorWheelButton(title: "Choose the \(previewScheme == .dark ? "dark" : "light") theme colour",
+                                         rgb: customTint, isCustom: true)
+                    }
+                    .transition(.opacity)
+                }
                 if appearance == .system, previewScheme != scheme {
                     Text("Applies when your Mac is in \(previewScheme == .dark ? "dark" : "light") mode.")
                         .font(.system(size: 11.5))
@@ -46,14 +69,13 @@ struct MailAppearanceSettings: View {
                     Text("Theme")
                     Spacer()
                     if appearance == .system {
-                        Picker("Edit theme for", selection: Binding(
+                        GlassSegmentedControl(title: "Edit theme for", selection: Binding(
                             get: { previewScheme },
                             set: { editingScheme = $0 == scheme ? nil : $0 }
-                        )) {
-                            Text("Light").tag(ColorScheme.light)
-                            Text("Dark").tag(ColorScheme.dark)
-                        }
-                        .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
+                        ), options: [
+                            .init(value: ColorScheme.light, title: "Light", symbol: "sun.max"),
+                            .init(value: ColorScheme.dark, title: "Dark", symbol: "moon"),
+                        ], compact: true)
                     }
                 }
             }
@@ -78,12 +100,7 @@ struct MailAppearanceSettings: View {
                         .accessibilityAddTraits(selected ? .isSelected : [])
                     }
                     Spacer()
-                    ColorPicker("Custom accent", selection: Binding(
-                        get: { accent.swatch },
-                        set: { if let rgb = PostmereAccent.rgbValue(of: $0) { primary = rgb } }
-                    ), supportsOpacity: false)
-                    .labelsHidden()
-                    .help("Choose any color")
+                    ColorWheelButton(title: "Choose any colour", rgb: $primary, isCustom: isCustomAccent)
                 }
                 .padding(.vertical, 2)
             }
@@ -99,20 +116,21 @@ private struct ThemeCard: View {
     let theme: MailboxTheme
     let scheme: ColorScheme
     let accent: PostmereAccent
+    var customTint: Int? = nil
     let selected: Bool
     let action: () -> Void
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 7) {
-                MailboxThemePreview(theme: theme, scheme: scheme, accent: accent)
+            VStack(alignment: .leading, spacing: 5) {
+                MailboxThemePreview(theme: theme, scheme: scheme, accent: accent, customTint: customTint)
                     .aspectRatio(1.9, contentMode: .fit)
-                    .clipShape(.rect(cornerRadius: 9, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .clipShape(.rect(cornerRadius: 7, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
-                    .padding(3)
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .padding(2.5)
+                    .overlay(RoundedRectangle(cornerRadius: 9.5, style: .continuous)
                         .strokeBorder(selected ? accent.accent : .clear, lineWidth: 2))
                     .overlay(alignment: .topTrailing) {
                         if selected {
@@ -124,10 +142,22 @@ private struct ThemeCard: View {
                                 .transition(.scale.combined(with: .opacity))
                         }
                     }
+                    .overlay(alignment: .bottomTrailing) {
+                        if theme == .custom {
+                            // Marks the card you colour yourself.
+                            Circle()
+                                .fill(AngularGradient(colors: [.red, .yellow, .green, .cyan, .blue, .purple, .red], center: .center))
+                                .frame(width: 14, height: 14)
+                                .overlay(Circle().strokeBorder(.white, lineWidth: 1.5))
+                                .shadow(color: .black.opacity(0.2), radius: 1.5, y: 0.5)
+                                .padding(8)
+                        }
+                    }
                     .shadow(color: .black.opacity(hovering ? 0.12 : 0.05), radius: hovering ? 8 : 3, y: hovering ? 4 : 1)
                     .offset(y: hovering ? -1.5 : 0)
                 Text(theme.title)
-                    .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                    .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+                    .lineLimit(1)
                     .foregroundStyle(selected ? .primary : .secondary)
                     .padding(.leading, 3)
             }
@@ -145,10 +175,11 @@ private struct MailboxThemePreview: View {
     let theme: MailboxTheme
     let scheme: ColorScheme
     let accent: PostmereAccent
+    var customTint: Int?
 
     var body: some View {
         Canvas { context, size in
-            let colors = theme.colors(for: scheme)
+            let colors = theme.colors(for: scheme, customTint: customTint)
             let ink: Color = scheme == .dark ? .white : .black
             let width = size.width
             let height = size.height

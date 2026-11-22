@@ -40,13 +40,13 @@ extension View {
 
 private struct MailboxWindowSurface: ViewModifier {
     @Environment(\.mailboxTheme) private var theme
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.mailboxColors) private var colors
 
     func body(content: Content) -> some View {
         content
             .background {
                 if theme != .native {
-                    Color.clear.containerBackground(theme.colors(for: scheme).canvas, for: .window)
+                    Color.clear.containerBackground(colors.canvas, for: .window)
                 }
             }
             .toolbarBackgroundVisibility(theme == .native ? .automatic : .hidden, for: .windowToolbar)
@@ -58,14 +58,20 @@ private struct PostmereStyle: ViewModifier {
     @AppStorage(MailboxTheme.lightPreference) private var light: MailboxTheme = .native
     @AppStorage(MailboxTheme.darkPreference) private var dark: MailboxTheme = .native
     @AppStorage(PostmereAccent.preferenceKey) private var rgb = PostmereAccent.defaultRGB
+    @AppStorage(MailboxTheme.customLightPreference) private var customLight = MailboxTheme.defaultCustomLight
+    @AppStorage(MailboxTheme.customDarkPreference) private var customDark = MailboxTheme.defaultCustomDark
 
     func body(content: Content) -> some View {
         let palette = PostmereAccent(rgb: rgb)
         let theme = scheme == .dark ? dark : light
+        let colors = theme.colors(for: scheme, customTint: scheme == .dark ? customDark : customLight)
         content.environment(\.mailboxTheme, theme)
-            .environment(\.mailboxInset, theme == .native ? PostmereTheme.subtleFill : theme.colors(for: scheme).inset)
+            .environment(\.mailboxColors, colors)
+            .environment(\.mailboxInset, theme == .native ? PostmereTheme.subtleFill : colors.inset)
             .environment(\.postmereAccent, palette)
             .tint(palette.accent)
+            // Every native button is a capsule, whatever its size or style.
+            .buttonBorderShape(.capsule)
             .symbolRenderingMode(.monochrome)
     }
 }

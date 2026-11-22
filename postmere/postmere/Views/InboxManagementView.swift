@@ -6,11 +6,27 @@ struct MailCriteriaFields: View {
     var showsMailbox = true
 
     var body: some View {
-        Section("Match messages") {
+        Section {
             TextField("Search rule", text: $criteria.query, prompt: Text("from:alex has:attachment"))
             Picker("Search plain text in", selection: $criteria.searchField) {
                 ForEach(MailSearchField.allCases) { Text($0.title).tag($0) }
             }
+        } header: {
+            Text("Match")
+        } footer: {
+            let issues = MailSearchQuery(source: criteria.query, defaultField: criteria.searchField).issues
+            Group {
+                if let issue = issues.first {
+                    Text(issue.message).foregroundStyle(.red)
+                } else {
+                    Text("Combine conditions with spaces. Use OR for alternatives and a minus sign to exclude one.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        Section("From") {
             if showsMailbox {
                 Picker("Mailbox", selection: $criteria.mailbox) {
                     Text("All mailboxes").tag(nil as Mailbox?)
@@ -23,16 +39,11 @@ struct MailCriteriaFields: View {
             }
             TextField("Sender contains", text: $criteria.sender)
             TextField("Sender domain", text: $criteria.domain, prompt: Text("example.com"))
-            Toggle("Unread only", isOn: $criteria.unreadOnly)
+        }
+        Section("Only show") {
+            Toggle("Unread", isOn: $criteria.unreadOnly)
             Toggle("With attachments", isOn: $criteria.attachmentsOnly)
-            Toggle("Starred only", isOn: $criteria.starredOnly)
-            let issues = MailSearchQuery(source: criteria.query, defaultField: criteria.searchField).issues
-            if let issue = issues.first {
-                Text(issue.message).font(.caption).foregroundStyle(.red)
-            } else {
-                Text("Combine conditions with spaces. Use OR for alternatives and a minus sign to exclude a condition.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
+            Toggle("Starred", isOn: $criteria.starredOnly)
         }
     }
 }
@@ -329,8 +340,8 @@ struct InboxTabsView: View {
             .font(.system(size: 11, weight: selected ? .semibold : .regular))
             .foregroundStyle(selected ? palette.accentInk : .secondary)
             .padding(.horizontal, tabPadding).frame(height: rowHeight)
-            .background(selected ? palette.accentInk.opacity(0.10) : .clear, in: .rect(cornerRadius: 6))
-            .contentShape(Rectangle())
+            .background(selected ? palette.accentInk.opacity(0.10) : .clear, in: .capsule)
+            .contentShape(.capsule)
         }.buttonStyle(.plain)
             .help(title)
             .accessibilityLabel("\(title) inbox tab")

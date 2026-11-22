@@ -17,6 +17,7 @@ struct SettingsView: View {
     @AppStorage("readingFontSize") private var readingFontSize = 14.0
     @AppStorage(MailReadingFont.preference) private var readingFont = MailReadingFont.original
     @AppStorage("showMessagePreviews") private var showMessagePreviews = true
+    @AppStorage("showContactPhotos") private var showContactPhotos = true
     @AppStorage(MenuBarInboxHost.visibilityPreference) private var showsMenuBarInbox = true
     @AppStorage("loadRemoteMailImagesAutomatically") private var loadRemoteMailImagesAutomatically = true
     @AppStorage("blockSenderTrackingPixels") private var blockSenderTrackingPixels = true
@@ -58,12 +59,23 @@ struct SettingsView: View {
                 SettingsToggle("Menu bar inbox", symbol: "desktopcomputer", tint: SettingsTint.gray,
                                subtitle: "Glance at new mail from the menu bar", isOn: $showsMenuBarInbox)
             }
+            Section("Updates") {
+                UpdateSettingsRows()
+            }
             Section("Reading") {
                 SettingsToggle("Message previews", symbol: "eye", tint: SettingsTint.teal,
                                subtitle: "Show the first lines in the list", isOn: $showMessagePreviews)
+                SettingsToggle("Contact photos", symbol: "person.crop.circle", tint: SettingsTint.blue,
+                               subtitle: "Show sender photos in the list", isOn: $showContactPhotos)
                 SettingsRow("Font", symbol: "textformat", tint: SettingsTint.indigo) {
                     Picker("Font", selection: $readingFont) {
-                        ForEach(MailReadingFont.allCases, id: \.self) { Text($0.title).tag($0) }
+                        Text(MailReadingFont.original.title).tag(MailReadingFont.original)
+                        Section("System") {
+                            ForEach(MailReadingFont.systemFonts, id: \.self) { Text($0.title).tag($0) }
+                        }
+                        Section("Mac fonts") {
+                            ForEach(MailReadingFont.macFonts, id: \.self) { Text($0.title).tag($0) }
+                        }
                     }
                     .labelsHidden().fixedSize()
                 }
@@ -144,7 +156,7 @@ struct SettingsView: View {
                                 Text("Choose").tag(defaultSendingAccount)
                             }
                             ForEach(MailAccount.allCases, id: \.self) { account in
-                                Text(account.email).tag(account.rawValue).disabled(!account.isConnected)
+                                AccountMenuLabel(account: account).tag(account.rawValue).disabled(!account.isConnected)
                             }
                         }
                         .labelsHidden().fixedSize()
@@ -162,7 +174,7 @@ struct SettingsView: View {
             }
             Section("Signature") {
                 SignatureEditorView(accounts: MailAccount.allCases.filter { !$0.email.isEmpty }.map {
-                    MailSignatureAccount(id: $0.rawValue, title: $0.displayName, detail: $0.email)
+                    MailSignatureAccount(id: $0.rawValue, title: $0.title, detail: $0.email)
                 })
             }
         }
@@ -238,7 +250,9 @@ struct SettingsView: View {
                 } else {
                     SettingsRow("Account", symbol: "envelope", tint: SettingsTint.blue) {
                         Picker("Account", selection: $selectedNotificationAccount) {
-                            ForEach(MailAccount.allCases) { Text($0.email).tag($0.rawValue) }
+                            ForEach(MailAccount.allCases) { account in
+                                AccountMenuLabel(account: account).tag(account.rawValue)
+                            }
                         }
                         .labelsHidden().fixedSize()
                     }
@@ -374,9 +388,9 @@ struct SettingsView: View {
                 }
                 ForEach(store.senderRules) { rule in
                     HStack(spacing: 10) {
-                        ParticipantPhoto(address: rule.email, name: rule.email, size: 26, verifiedMark: nil)
+                        ParticipantPhoto(address: rule.domain.map { "hello@\($0)" } ?? rule.email, name: rule.displayName, size: 26, verifiedMark: nil)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(rule.email).font(.system(size: 13)).lineLimit(1).truncationMode(.middle)
+                            Text(rule.displayName).font(.system(size: 13)).lineLimit(1).truncationMode(.middle)
                             Text(MailAccount.scopeLabel(for: rule.account, providerEmail: rule.providerAccountEmail))
                                 .font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
                         }
@@ -389,7 +403,7 @@ struct SettingsView: View {
                         }
                         .buttonStyle(.plain)
                         .help("Remove rule")
-                        .accessibilityLabel("Remove rule for \(rule.email)")
+                        .accessibilityLabel("Remove rule for \(rule.displayName)")
                     }
                 }
                 if store.senderRules.isEmpty {
@@ -467,5 +481,50 @@ struct SettingsView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
         .accessibilityValue((keys + (alternate.map { [joiner] + $0 } ?? [])).joined(separator: " "))
+    }
+}
+
+/// An account's address with its provider's logo, for pickers and menus.
+struct AccountMenuLabel: View {
+    let account: MailAccount
+
+    var body: some View {
+        if let brand = account.remote.flatMap({ Brand(mailProvider: $0.provider) }) {
+            Label(account.titleWithEmail, image: "Brands/\(brand.rawValue)")
+        } else {
+            Text(account.titleWithEmail)
+        }
+    }
+}
+
+/// Sparkle's preferences: daily checks, optional background downloads, and
+/// a manual check with when it last ran.
+private struct UpdateSettingsRows: View {
+    @State private var updater = AppUpdater.shared
+    @State private var checksAutomatically = AppUpdater.shared.checksAutomatically
+    @State private var downloadsAutomatically = AppUpdater.shared.downloadsAutomatically
+
+    private var version: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "–"
+        let build = info?["CFBundleVersion"] as? String ?? "–"
+        return "Version \(short) (\(build))"
+    }
+
+    var body: some View {
+        SettingsRow("Postmere", symbol: "arrow.clockwise", tint: SettingsTint.blue,
+                    subtitle: updater.lastCheck.map { "\(version) · Checked \($0.formatted(.relative(presentation: .named)))" } ?? version) {
+            Button("Check Now") { updater.checkForUpdates() }
+                .controlSize(.small)
+                .disabled(!updater.canCheckForUpdates)
+        }
+        SettingsToggle("Check automatically", symbol: "clock", tint: SettingsTint.teal,
+                       subtitle: "Look for a new version once a day", isOn: $checksAutomatically)
+            .onChange(of: checksAutomatically) { _, value in updater.checksAutomatically = value }
+        if checksAutomatically {
+            SettingsToggle("Download in the background", symbol: "arrow.down.to.line", tint: SettingsTint.green,
+                           subtitle: "Install the next time Postmere quits", isOn: $downloadsAutomatically)
+                .onChange(of: downloadsAutomatically) { _, value in updater.downloadsAutomatically = value }
+        }
     }
 }

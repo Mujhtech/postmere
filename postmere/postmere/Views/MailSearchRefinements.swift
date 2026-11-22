@@ -90,11 +90,11 @@ struct MailSearchRefinements: View {
         .fixedSize(horizontal: true, vertical: false)
         .font(.system(size: 11, weight: .medium))
         .foregroundStyle(selected ? palette.accentInk : Color.secondary)
-        .padding(.horizontal, 7)
+        .padding(.horizontal, 9)
         .frame(height: 23)
-        .background(selected ? palette.accentInk.opacity(0.10) : Color.clear, in: .rect(cornerRadius: 5))
-        .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(selected ? palette.accentInk.opacity(0.35) : PostmereTheme.rule) }
-        .contentShape(Rectangle())
+        .background(selected ? palette.accentInk.opacity(0.10) : Color.clear, in: .capsule)
+        .overlay { Capsule().strokeBorder(selected ? palette.accentInk.opacity(0.35) : PostmereTheme.rule) }
+        .contentShape(.capsule)
     }
 
     private var optionsMenu: some View {

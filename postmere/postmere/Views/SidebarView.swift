@@ -9,7 +9,9 @@ struct SidebarView: View {
     @State private var dropHover: String?
     @AppStorage("sidebarLabelsExpanded") private var labelsExpanded = true
     @Environment(MailRuntime.self) private var runtime
+    @State private var renamingAccount: BackendAccount?
     @Environment(\.mailboxTheme) private var theme
+    @Environment(\.mailboxColors) private var mailboxColors
     @Environment(\.colorScheme) private var scheme
     @Environment(\.postmereAccent) private var accent
     private var accounts: [MailAccount] { MailAccount.allCases }
@@ -117,6 +119,12 @@ struct SidebarView: View {
                     Section {
                         ForEach(accounts) { account in
                             accountRow(account, unread: current?.unreadByAccount[account.rawValue, default: 0])
+                                .contextMenu {
+                                    if let remote = account.remote,
+                                       let backendAccount = runtime.backend.accounts.first(where: { $0.id == remote.accountID }) {
+                                        Button(backendAccount.name == nil ? "Name Account…" : "Rename…") { renamingAccount = backendAccount }
+                                    }
+                                }
                         }
                     } header: { Text("Accounts").foregroundStyle(sidebarSecondary) }
                 }
@@ -146,7 +154,10 @@ struct SidebarView: View {
             }
             .padding(.horizontal, 14)
         }
-        .background(theme == .native ? Color.clear : theme.colors(for: scheme).sidebar)
+        .background(theme == .native ? Color.clear : mailboxColors.sidebar)
+        .sheet(item: $renamingAccount) { account in
+            AccountNamingSheet(account: account, session: runtime.backend)
+        }
         .sheet(isPresented: $showsViewEditor) { SavedInboxViewEditor(store: store, editing: editingSavedView) }
         .task(id: labelCatalogKey) { await loadLabelCatalogs() }
     }
@@ -307,16 +318,27 @@ struct SidebarView: View {
     private func accountRow(_ account: MailAccount, unread: Int?) -> some View {
         let selected = store.selectedSavedViewID == nil && store.selectedAccount == account.rawValue && !store.isSearchActive
         return HStack(spacing: 8) {
-            navigationIcon("envelope", selected: selected)
+            if let brand = account.remote.flatMap({ Brand(mailProvider: $0.provider) }) {
+                BrandMark(brand: brand, size: 15)
+                    .frame(width: 18)
+                    .opacity(account.isConnected ? 1 : 0.5)
+            } else {
+                navigationIcon("envelope", selected: selected)
+            }
             VStack(alignment: .leading, spacing: 2) {
-                Text(account.displayName)
+                Text(account.title)
                     .foregroundStyle(rowText(selected: selected))
                     .font(.system(size: 13))
-                Text(account.isConnected ? account.email : "\(account.email) · Reconnect")
-                    .font(.system(size: 11))
-                    .foregroundStyle(rowDetail(selected: selected))
                     .lineLimit(1)
                     .truncationMode(.middle)
+                // The address only adds something when the account has a name.
+                if account.title != account.email || !account.isConnected {
+                    Text(account.isConnected ? account.email : "\(account.title == account.email ? "" : account.email + " · ")Reconnect")
+                        .font(.system(size: 11))
+                        .foregroundStyle(rowDetail(selected: selected))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             Spacer(minLength: 4)
             if let unread, unread > 0 {
@@ -329,9 +351,9 @@ struct SidebarView: View {
         .padding(.vertical, 3)
         .mailSelection(selected)
         .tag("account:\(account.rawValue)")
-        .help("\(account.name) Inbox · \(account.email)")
+        .help(account.title == account.email ? "\(account.email) Inbox" : "\(account.title) Inbox · \(account.email)")
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(account.name) Inbox, \(account.email)")
+        .accessibilityLabel(account.title == account.email ? "\(account.email) Inbox" : "\(account.title) Inbox, \(account.email)")
         .accessibilityValue(unread.map { "\($0) unread messages" } ?? "Loading count")
     }
 

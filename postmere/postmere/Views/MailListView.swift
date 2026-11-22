@@ -4,9 +4,11 @@ struct MailListView: View {
     @Bindable var store: MailStore
     @Environment(MailRuntime.self) private var runtime
     @Environment(\.mailboxTheme) private var theme
+    @Environment(\.mailboxColors) private var mailboxColors
     @Environment(\.colorScheme) private var scheme
     @Environment(\.postmereAccent) private var accent
     var listFocusRequest = 0
+    @AppStorage("showContactPhotos") private var showContactPhotos = true
     @FocusState private var isListFocused: Bool
     @State private var showsViewEditor = false
     @State private var scheduleTarget: MailMessage?
@@ -141,12 +143,12 @@ struct MailListView: View {
                     if loadingMailbox {
                         ProgressView("Loading messages…").controlSize(.small).font(.callout)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(theme == .native ? AnyShapeStyle(.background) : AnyShapeStyle(theme.colors(for: scheme).canvas))
+                            .background(theme == .native ? AnyShapeStyle(.background) : AnyShapeStyle(mailboxColors.canvas))
                     }
                 }
             }
         }
-        .background(theme == .native ? Color.clear : theme.colors(for: scheme).canvas)
+        .background(theme == .native ? Color.clear : mailboxColors.canvas)
         .overlay(alignment: .bottom) {
             if showsAction, let action = store.lastAction {
                 ActionToast(store: store, action: action, detail: store.lastActionDetail,
@@ -277,6 +279,8 @@ struct MailListView: View {
                 Divider()
                 Button("Clear Filters", action: clearMessageFilters)
             }
+            Divider()
+            Toggle("Show Contact Photos", isOn: $showContactPhotos)
             Divider()
             Button(store.selectedSavedView == nil ? "Save Inbox View…" : "Edit Saved View…") { showsViewEditor = true }
             Button("Manage Inbox Tabs and VIPs…") { showsInboxManager = true }
@@ -420,6 +424,10 @@ struct MailListView: View {
                     ForEach([SenderRoute.inbox, .archive, .needsReply]) { route in
                         Button(route.title) { store.acceptSender(of: message, route: route) }
                     }
+                    if let domain = WebsiteIconDomains.shared.organization(for: message.senderEmail) {
+                        Divider()
+                        Button("Everyone at \(domain)") { store.acceptDomain(domain, of: message) }
+                    }
                 }
                 Button("Block Sender") { store.blockSender(of: message) }
             }
@@ -518,6 +526,7 @@ private struct MailRow: View {
     var isSelected = false
     @Environment(\.postmereAccent) private var accent
     @AppStorage("showMessagePreviews") private var showMessagePreviews = true
+    @AppStorage("showContactPhotos") private var showContactPhotos = true
 
     private var senderTitle: String {
         guard message.isOutgoing else { return message.sender }
@@ -537,16 +546,24 @@ private struct MailRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 9) {
-            MailParticipantAvatar(address: message.isOutgoing ? message.toRecipients.first ?? message.senderEmail : message.senderEmail,
-                                  name: message.isOutgoing ? "" : message.sender, size: 28, messageID: message.id, verifiedMark: verifiedSenderMark)
-                .overlay(alignment: .bottomTrailing) {
-                    if message.isUnread {
-                        Circle().fill(unreadFill).frame(width: 7, height: 7)
-                            .overlay { Circle().stroke(.background, lineWidth: 1) }
-                            .allowsHitTesting(false).accessibilityHidden(true)
+        HStack(alignment: .top, spacing: showContactPhotos ? 9 : 6) {
+            if showContactPhotos {
+                MailParticipantAvatar(address: message.isOutgoing ? message.toRecipients.first ?? message.senderEmail : message.senderEmail,
+                                      name: message.isOutgoing ? "" : message.sender, size: 28, messageID: message.id, verifiedMark: verifiedSenderMark)
+                    .overlay(alignment: .bottomTrailing) {
+                        if message.isUnread {
+                            Circle().fill(unreadFill).frame(width: 7, height: 7)
+                                .overlay { Circle().stroke(.background, lineWidth: 1) }
+                                .allowsHitTesting(false).accessibilityHidden(true)
+                        }
                     }
-                }
+            } else {
+                // Without photos, the unread dot keeps its own narrow column so
+                // senders stay aligned.
+                Circle().fill(unreadFill).frame(width: 7, height: 7)
+                    .frame(width: 8, height: 17)
+                    .accessibilityHidden(true)
+            }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(senderTitle)

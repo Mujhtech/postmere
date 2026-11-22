@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(\.mailboxTheme) private var theme
+    @Environment(\.mailboxColors) private var mailboxColors
     @Environment(\.colorScheme) private var scheme
     @Bindable var store: MailStore
     @Environment(\.openWindow) private var openWindow
@@ -59,7 +60,7 @@ struct ContentView: View {
                 }
             }
             .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
-            .background(theme == .native ? Color.clear : theme.colors(for: scheme).canvas)
+            .background(theme == .native ? Color.clear : mailboxColors.canvas)
             .toolbar {
                 if !store.hasMessageSelection && !store.isSearchActive {
                     // Keep the toolbar divider aligned with the list when the reader has no actions.

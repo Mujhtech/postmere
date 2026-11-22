@@ -2,33 +2,67 @@ import AppKit
 import SwiftUI
 
 nonisolated enum MailReadingFont: String, CaseIterable, Sendable {
-    case original, sansSerif, serif, monospaced
+    // Stored raw values stay stable: older choices keep working.
+    case original, sansSerif, rounded, serif, monospaced
+    case helveticaNeue, avenirNext, optima, charter, hoeflerText, palatino, georgia
 
     static let preference = "mailReadingFont"
+
+    /// The system family, then fonts that ship with every Mac.
+    static let systemFonts: [Self] = [.sansSerif, .rounded, .serif, .monospaced]
+    static let macFonts: [Self] = [.helveticaNeue, .avenirNext, .optima, .charter, .hoeflerText, .palatino, .georgia]
 
     var title: String {
         switch self {
         case .original: "Sender’s font"
-        case .sansSerif: "Sans serif"
-        case .serif: "Serif"
-        case .monospaced: "Monospaced"
+        case .sansSerif: "San Francisco"
+        case .rounded: "SF Rounded"
+        case .serif: "New York"
+        case .monospaced: "SF Mono"
+        case .helveticaNeue: "Helvetica Neue"
+        case .avenirNext: "Avenir Next"
+        case .optima: "Optima"
+        case .charter: "Charter"
+        case .hoeflerText: "Hoefler Text"
+        case .palatino: "Palatino"
+        case .georgia: "Georgia"
         }
     }
 
-    func font(size: CGFloat) -> Font {
+    /// The installed family name for the named Mac fonts.
+    var familyName: String? {
         switch self {
-        case .original, .sansSerif: .system(size: size)
+        case .helveticaNeue: "Helvetica Neue"
+        case .avenirNext: "Avenir Next"
+        case .optima: "Optima"
+        case .charter: "Charter"
+        case .hoeflerText: "Hoefler Text"
+        case .palatino: "Palatino"
+        case .georgia: "Georgia"
+        default: nil
+        }
+    }
+
+    private var isSerif: Bool { [.serif, .charter, .hoeflerText, .palatino, .georgia].contains(self) }
+
+    func font(size: CGFloat) -> Font {
+        if let familyName { return .custom(familyName, size: size) }
+        return switch self {
+        case .rounded: .system(size: size, design: .rounded)
         case .serif: .system(size: size, design: .serif)
         case .monospaced: .system(size: size, design: .monospaced)
+        default: .system(size: size)
         }
     }
 
     var cssFamily: String {
-        switch self {
+        if let familyName { return "'\(familyName)', \(isSerif ? "ui-serif, serif" : "-apple-system, sans-serif")" }
+        return switch self {
         case .original: ""
-        case .sansSerif: "-apple-system, sans-serif"
+        case .rounded: "ui-rounded, -apple-system, sans-serif"
         case .serif: "ui-serif, Georgia, serif"
         case .monospaced: "ui-monospace, Menlo, monospace"
+        default: "-apple-system, sans-serif"
         }
     }
 
@@ -50,9 +84,11 @@ nonisolated enum MailReadingFont: String, CaseIterable, Sendable {
                 let design: NSFontDescriptor.SystemDesign = switch self {
                 case .serif: .serif
                 case .monospaced: .monospaced
-                case .original, .sansSerif: .default
+                case .rounded: .rounded
+                default: .default
                 }
-                let family = bodyFont.fontDescriptor.withDesign(design) ?? bodyFont.fontDescriptor
+                let family = familyName.map { NSFontDescriptor(fontAttributes: [.family: $0]) }
+                    ?? bodyFont.fontDescriptor.withDesign(design) ?? bodyFont.fontDescriptor
                 descriptor = family.withSymbolicTraits(family.symbolicTraits.union(traits.intersection([.bold, .italic])))
             }
             if let font = NSFont(descriptor: descriptor, size: newSize) {

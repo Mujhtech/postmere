@@ -585,6 +585,15 @@ struct ReaderView: View {
         case single, expanded, collapsed
     }
 
+    /// Screening decisions animate the prompt away and, when the message leaves
+    /// the list, the reader's departure.
+    private func decide(_ action: () -> Void) {
+        let before = store.departure?.id
+        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.35, bounce: 0.05), action)
+        // A departure taps on its own; a decision that stays in view taps here.
+        if store.departure?.id == before { NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now) }
+    }
+
     private func senderHeader(_ message: MailMessage, presentation: HeaderPresentation, trackerCount: Int) -> some View {
         let name = message.isOutgoing ? (presentation == .single ? message.mailAccount.displayName : "You") : message.sender
         let sender = name.isEmpty ? message.senderEmail : name
@@ -592,11 +601,19 @@ struct ReaderView: View {
         return VStack(alignment: .leading, spacing: 5) {
             senderIdentity(message, sender: sender, avatarWidth: avatarWidth, presentation: presentation, trackerCount: trackerCount)
             if presentation != .collapsed && message.mailbox != .junk && message.workflow.screeningState == .pending {
-                SenderDeliveryChoice(address: message.senderEmail, avatarWidth: avatarWidth) { route in
-                    store.acceptSender(of: message, route: route)
+                SenderDeliveryChoice(address: message.senderEmail,
+                                     organization: WebsiteIconDomains.shared.organization(for: message.senderEmail),
+                                     avatarWidth: avatarWidth) { route in
+                    decide { store.acceptSender(of: message, route: route) }
                 } block: {
-                    store.blockSender(of: message)
+                    decide { store.blockSender(of: message) }
+                } acceptOrganization: { domain in
+                    decide { store.acceptDomain(domain, of: message) }
                 }
+                // When the message stays in view, the decision folds away.
+                .transition(reduceMotion ? .opacity : .asymmetric(
+                    insertion: .opacity,
+                    removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .topLeading)).combined(with: .offset(y: -4))))
             }
         }
         .task(id: presentation != .collapsed && automaticImages ? message.id : nil) {

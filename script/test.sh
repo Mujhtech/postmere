@@ -29,7 +29,7 @@ backend_models=("${mail_models[@]}" Models/BackendMail.swift Models/BackendSende
 summary_sources=(Models/MailAI.swift Services/BackendSummaryStream.swift)
 store_sources=("${backend_models[@]}" Models/MailMessage+SmartCategories.swift Models/MailReplyIntent.swift Models/MailSearchQuery.swift Models/InboxSplit.swift
               Models/SampleMail.swift Stores/*.swift Support/ComposeAttachments.swift
-              Support/MailTemplate.swift Support/MailSignature.swift Support/MailSenderContext.swift)
+              Support/MailTemplate.swift Support/MailSignature.swift Support/MailSenderContext.swift Support/MailSenderDomain.swift)
 theme=(Support/MailboxTheme.swift Support/PostmereAccent.swift Support/PostmereTheme.swift Support/PostmereIcon.swift)
 attachment_views=(Support/AttachmentFileType.swift Support/AttachmentIconView.swift)
 editor_sources=("${mail_models[@]}" "${theme[@]}" Support/MailTemplate.swift
@@ -54,7 +54,7 @@ run_suite() {
             ;;
         sender_context)
             flags=(-swift-version 6)
-            sources=("${store_sources[@]}" Models/BackendSenderProfile.swift Services/MailSenderProfile.swift Services/MailContactNotesStore.swift Services/MailRemoteParticipantImages.swift Services/BackendHTTPClient.swift Support/MailSenderDomain.swift
+            sources=("${store_sources[@]}" Models/BackendSenderProfile.swift Services/MailSenderProfile.swift Services/MailContactNotesStore.swift Services/MailRemoteParticipantImages.swift Services/BackendHTTPClient.swift
                      "${theme[@]}" "${attachment_views[@]}" Views/SenderContextView.swift Views/RecipientSuggestionsView.swift
                      "$script_dir/test_realtime_support.swift")
             ;;
@@ -82,7 +82,7 @@ run_suite() {
         calendar)
             flags=(-swift-version 5 -parse-as-library)
             sources=("${theme[@]}" Models/BackendCalendar.swift Support/MailCalendar.swift Support/MailCalendarInvitation.swift
-                     Services/MailCalendarService.swift Views/CalendarViews.swift Views/CalendarInvitationView.swift Views/SettingsComponents.swift)
+                     Services/MailCalendarService.swift Views/CalendarViews.swift Views/CalendarInvitationView.swift Views/SettingsComponents.swift Support/BrandMark.swift)
             ;;
         notifications)
             flags=(-swift-version 5 "${mac_target[@]}")

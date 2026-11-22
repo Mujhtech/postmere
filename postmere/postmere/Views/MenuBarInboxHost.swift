@@ -29,6 +29,7 @@ struct MenuBarInboxHost: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @Environment(\.mailboxTheme) private var theme
+    @Environment(\.mailboxColors) private var mailboxColors
     @Environment(\.colorScheme) private var scheme
     @State private var host = MenuBarPanelAnchor.Handle()
 
@@ -64,7 +65,7 @@ struct MenuBarInboxHost: View {
             }
         }
         .frame(width: MenuBarInboxView.panelWidth, alignment: .topLeading)
-        .background { theme.colors(for: scheme).canvas.ignoresSafeArea() }
+        .background { mailboxColors.canvas.ignoresSafeArea() }
         .background { MenuBarPanelAnchor(handle: host).frame(width: 0, height: 0) }
     }
 

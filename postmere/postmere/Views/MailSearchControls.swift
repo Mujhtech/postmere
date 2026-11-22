@@ -60,9 +60,9 @@ private struct SearchTokenChip: View {
         }
         .font(.system(size: 10, weight: .medium))
         .foregroundStyle(token.isExcluded ? Color.secondary : palette.accentInk)
-        .padding(.leading, 7).padding(.trailing, 3).padding(.vertical, 3)
-        .background(inset, in: .rect(cornerRadius: 5))
-        .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(PostmereTheme.rule.opacity(0.7)) }
+        .padding(.leading, 9).padding(.trailing, 4).padding(.vertical, 3)
+        .background(inset, in: .capsule)
+        .overlay { Capsule().strokeBorder(PostmereTheme.rule.opacity(0.7)) }
     }
 
     private func apply() {

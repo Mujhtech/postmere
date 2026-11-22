@@ -19,6 +19,7 @@ struct MenuBarInboxView: View {
 
     @Environment(\.postmereAccent) private var accent
     @Environment(\.mailboxTheme) private var theme
+    @Environment(\.mailboxColors) private var mailboxColors
     @Environment(\.colorScheme) private var scheme
     @AppStorage("showMessagePreviews") private var showMessagePreviews = true
     @State private var filter: MenuBarInboxFilter = .all
@@ -67,7 +68,7 @@ struct MenuBarInboxView: View {
         }
         .frame(minWidth: 0, idealWidth: Self.panelWidth, maxWidth: Self.panelWidth, alignment: .leading)
         .background {
-            if theme != .native { theme.colors(for: scheme).canvas }
+            if theme != .native { mailboxColors.canvas }
         }
     }
 
@@ -92,8 +93,8 @@ struct MenuBarInboxView: View {
                     .lineLimit(1)
                     .foregroundStyle(selected ? accent.selectionInk : .primary)
                     .frame(minWidth: 0, maxWidth: option == .all ? 64 : .infinity, minHeight: 26)
-                    .background(selected ? accent.selectionFill : .clear, in: .rect(cornerRadius: 6))
-                    .contentShape(.rect)
+                    .background(selected ? accent.selectionFill : .clear, in: .capsule)
+                    .contentShape(.capsule)
                 }
                 .buttonStyle(.plain)
                 .focused($focusedFilter, equals: option)
@@ -105,7 +106,7 @@ struct MenuBarInboxView: View {
         }
         .padding(2)
         .frame(minWidth: 0, maxWidth: .infinity)
-        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 8))
+        .background(.quaternary.opacity(0.5), in: .capsule)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Inbox filters")
         .onMoveCommand { direction in

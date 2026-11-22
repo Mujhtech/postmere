@@ -5,6 +5,7 @@ import SwiftUI
 struct RecipientSuggestionsView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.mailboxTheme) private var theme
+    @Environment(\.mailboxColors) private var mailboxColors
     let suggestions: [MailRecipientSuggestion]
     let onSelect: (MailRecipientSuggestion) -> Void
 
@@ -23,7 +24,7 @@ struct RecipientSuggestionsView: View {
                 }.buttonStyle(.plain).accessibilityLabel("Add \(suggestion.name.isEmpty ? suggestion.email : suggestion.name + ", " + suggestion.email)")
             }
         }
-        .background(theme == .native ? PostmereTheme.paper : theme.colors(for: scheme).canvas, in: .rect(cornerRadius: PostmereTheme.cardRadius))
+        .background(theme == .native ? PostmereTheme.paper : mailboxColors.canvas, in: .rect(cornerRadius: PostmereTheme.cardRadius))
         .overlay { RoundedRectangle(cornerRadius: PostmereTheme.cardRadius).strokeBorder(PostmereTheme.rule) }
     }
 }
