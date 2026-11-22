@@ -12,6 +12,7 @@ struct BackendConnectionView: View {
     @State private var calendarAccess = false
     @State private var accountToDisconnect: BackendAccount?
     @State private var disconnectingAccountID: UUID?
+    @State private var renaming: BackendAccount?
 
     private var isManagingAccounts: Bool {
         session.isBusy || connection.provider != nil || disconnectingAccountID != nil
@@ -59,8 +60,8 @@ struct BackendConnectionView: View {
                     }
                     HStack(spacing: 12) {
                         Menu {
-                            Button("Google") { connect("gmail") }
-                            Button("Outlook") { connect("microsoft") }
+                            Button { connect("gmail") } label: { Label("Google", image: "Brands/gmail") }
+                            Button { connect("microsoft") } label: { Label("Outlook", image: "Brands/outlook") }
                         } label: {
                             Label("Add Account", systemImage: "plus")
                         }
@@ -117,12 +118,18 @@ struct BackendConnectionView: View {
         }
         .formStyle(.grouped)
         .onDisappear(perform: connection.cancel)
+        .sheet(item: $renaming) { account in
+            AccountNamingSheet(account: account, session: session)
+        }
+        .sheet(item: $connection.newAccount) { account in
+            AccountNamingSheet(account: account, session: session, isNew: true)
+        }
         .confirmationDialog("Disconnect mail account?", isPresented: Binding(
             get: { accountToDisconnect != nil },
             set: { if !$0 { accountToDisconnect = nil } }
         ), titleVisibility: .visible) {
             if let account = accountToDisconnect {
-                Button("Disconnect \(account.email)", role: .destructive) { disconnect(account) }
+                Button("Disconnect \(account.name ?? account.email)", role: .destructive) { disconnect(account) }
             }
             Button("Cancel", role: .cancel) { accountToDisconnect = nil }
         } message: {
@@ -167,16 +174,13 @@ struct BackendConnectionView: View {
         let connected = account.status == "connected"
         let synced = account.lastSyncedAt.map { "synced \($0.formatted(.relative(presentation: .named)))" }
         return HStack(spacing: 11) {
-            Text(google ? "G" : "O")
-                .font(.system(size: 12.5, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-                .frame(width: 24, height: 24)
-                .background((google ? SettingsTint.red : SettingsTint.blue).gradient,
-                            in: .rect(cornerRadius: 6.5, style: .continuous))
-                .accessibilityHidden(true)
+            BrandTile(brand: google ? .gmail : .outlook, size: 24)
+                .opacity(connected ? 1 : 0.6)
             VStack(alignment: .leading, spacing: 1) {
-                Text(account.email).font(.system(size: 13)).lineLimit(1).truncationMode(.middle)
-                Text([google ? "Google" : "Outlook", connected ? synced : "needs reconnecting"].compactMap { $0 }.joined(separator: " · "))
+                Text(account.name ?? account.email).font(.system(size: 13)).lineLimit(1).truncationMode(.middle)
+                Text([account.name == nil ? nil : account.email, google ? "Google" : "Outlook", connected ? synced : "needs reconnecting"]
+                    .compactMap { $0 }.joined(separator: " · "))
+                    .lineLimit(1).truncationMode(.middle)
                     .font(.system(size: 11.5))
                     .foregroundStyle(connected ? Color.secondary : SettingsTint.orange)
             }
@@ -189,7 +193,9 @@ struct BackendConnectionView: View {
                     .disabled(isManagingAccounts)
             }
             Menu {
+                Button(account.name == nil ? "Name Account…" : "Rename…") { renaming = account }
                 Button("Reconnect…") { connect(account.provider, reconnecting: account) }
+                Divider()
                 Button("Disconnect…", role: .destructive) { accountToDisconnect = account }
             } label: {
                 PostmereIcon("ellipsis", size: 15).foregroundStyle(.secondary)

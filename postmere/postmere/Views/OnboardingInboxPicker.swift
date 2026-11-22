@@ -15,6 +15,9 @@ struct OnboardingInboxPicker: View {
     @Environment(\.mailboxInset) private var inset
     let session: BackendSession
     let onSync: @MainActor @Sendable () async -> Void
+    /// Hands a newly added account to the onboarding window to be named, since
+    /// this picker can go away as soon as the first account arrives.
+    var onAccountAdded: (BackendAccount) -> Void = { _ in }
     @Environment(\.postmereAccent) private var palette
     @State private var connection = MailAccountConnection()
     @State private var hovered: OnboardingMailProvider?
@@ -48,6 +51,11 @@ struct OnboardingInboxPicker: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onDisappear(perform: connection.cancel)
+        .onChange(of: connection.newAccount) { _, account in
+            guard let account else { return }
+            connection.newAccount = nil
+            onAccountAdded(account)
+        }
     }
 
     private func providerButton(_ provider: OnboardingMailProvider) -> some View {
@@ -95,38 +103,9 @@ struct OnboardingProviderMark: View {
     let provider: OnboardingMailProvider
 
     var body: some View {
-        Canvas { context, size in
-            let unit = min(size.width, size.height) / 24
-            context.translateBy(x: (size.width - 24 * unit) / 2, y: (size.height - 24 * unit) / 2)
-            context.scaleBy(x: unit, y: unit)
-            switch provider {
-            case .gmail:
-                func fill(_ color: Color, _ points: [CGPoint]) {
-                    var outline = Path()
-                    outline.addLines(points)
-                    outline.closeSubpath()
-                    context.fill(outline, with: .color(color))
-                }
-                let blue = Color(red: 0.26, green: 0.52, blue: 0.96)
-                let green = Color(red: 0.20, green: 0.66, blue: 0.33)
-                let red = Color(red: 0.92, green: 0.26, blue: 0.21)
-                let yellow = Color(red: 0.98, green: 0.74, blue: 0.02)
-                fill(blue, [.init(x: 0, y: 7), .init(x: 4.5, y: 10.5), .init(x: 4.5, y: 21), .init(x: 0, y: 21)])
-                fill(green, [.init(x: 19.5, y: 10.5), .init(x: 24, y: 7), .init(x: 24, y: 21), .init(x: 19.5, y: 21)])
-                fill(red, [.init(x: 0, y: 3), .init(x: 3, y: 3), .init(x: 12, y: 10), .init(x: 21, y: 3),
-                           .init(x: 21, y: 9.5), .init(x: 12, y: 16.5), .init(x: 0, y: 7.5)])
-                fill(yellow, [.init(x: 19.5, y: 4.2), .init(x: 21, y: 3), .init(x: 24, y: 3),
-                              .init(x: 24, y: 7.5), .init(x: 19.5, y: 11)])
-            case .outlook:
-                let colors = [Color(red: 0.95, green: 0.31, blue: 0.13),
-                              Color(red: 0.50, green: 0.73, blue: 0),
-                              Color(red: 0, green: 0.64, blue: 0.94),
-                              Color(red: 1, green: 0.73, blue: 0)]
-                for (index, color) in colors.enumerated() {
-                    let rect = CGRect(x: index % 2 * 13, y: index / 2 * 13, width: 11, height: 11)
-                    context.fill(Path(rect), with: .color(color))
-                }
-            }
+        GeometryReader { proxy in
+            BrandMark(brand: provider == .gmail ? .gmail : .outlook, size: min(proxy.size.width, proxy.size.height))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .accessibilityHidden(true)
     }

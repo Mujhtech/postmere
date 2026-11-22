@@ -6,6 +6,8 @@ nonisolated struct BackendAccount: Codable, Equatable, Identifiable, Sendable {
     let provider: String
     let email: String
     let displayName: String?
+    /// The name the person gave this account, such as "Work".
+    var name: String? = nil
     let status: String
     let lastSyncedAt: Date?
     var capabilities: [String]? = nil

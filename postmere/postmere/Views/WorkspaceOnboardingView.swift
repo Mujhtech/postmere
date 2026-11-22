@@ -4,6 +4,7 @@ import SwiftUI
 
 struct WorkspaceOnboardingView: View {
     @Environment(\.mailboxTheme) private var theme
+    @Environment(\.mailboxColors) private var mailboxColors
     @Environment(\.colorScheme) private var scheme
     @Environment(\.postmereAccent) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -18,6 +19,7 @@ struct WorkspaceOnboardingView: View {
     @AppStorage("didReviewOnboardingDefaultMailApp") private var reviewedDefaultApp = false
     @State private var defaultMail: DefaultMailAppService
     @State private var page = Page.welcome
+    @State private var namingAccount: BackendAccount?
     @State private var steps: [Page] = []
     @State private var movingForward = true
     @State private var arrived = false
@@ -86,7 +88,7 @@ struct WorkspaceOnboardingView: View {
         }
         .containerBackground(for: .window) {
             GeometryReader { window in
-                let canvas = theme == .native ? PostmereTheme.paper : theme.colors(for: scheme).canvas
+                let canvas = theme == .native ? PostmereTheme.paper : mailboxColors.canvas
                 canvas.overlay {
                     RadialGradient(colors: [palette.swatch.opacity(0.10), .clear],
                                    center: UnitPoint(x: 0.50, y: 0.24), startRadius: 0,
@@ -95,6 +97,9 @@ struct WorkspaceOnboardingView: View {
             }
         }
         .frame(minWidth: 360, minHeight: 360)
+        .sheet(item: $namingAccount) { account in
+            AccountNamingSheet(account: account, session: session, isNew: true)
+        }
         .toolbar(removing: .title)
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .task(id: session.isRestoring) {
@@ -273,7 +278,7 @@ struct WorkspaceOnboardingView: View {
                 Text("Your inboxes").font(.system(size: 32, weight: .medium, design: .serif))
                     .accessibilityAddTraits(.isHeader)
             }
-            OnboardingInboxPicker(session: session) { await onSync() }
+            OnboardingInboxPicker(session: session, onSync: { await onSync() }, onAccountAdded: { namingAccount = $0 })
             Button("Set up later", action: finishInbox)
                 .buttonStyle(.link).foregroundStyle(palette.accentInk)
         }

@@ -508,7 +508,7 @@ final class BackendSession {
         let registry = accounts.map {
             RemoteAccountIdentity(localID: "remote:\(scope):\($0.id.uuidString.lowercased())", accountID: $0.id,
                                   scope: scope, email: $0.email, displayName: $0.displayName ?? $0.email,
-                                  provider: $0.provider, status: $0.status)
+                                  provider: $0.provider, status: $0.status, label: $0.name)
         }
         guard registry != RemoteAccountRegistry.accounts else { return }
         RemoteAccountRegistry.accounts = registry
@@ -566,6 +566,16 @@ final class BackendSession {
         try await refreshAccounts()
     }
 
+    nonisolated struct AccountRenameInput: Encodable, Sendable { let name: String? }
+
+    /// Names an account ("Work"); an empty name clears it.
+    func renameAccount(accountID: UUID, name: String) async throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let _: BackendEmpty = try await request("PATCH", "/v1/mail/accounts/\(accountID.uuidString)",
+                                                body: AccountRenameInput(name: trimmed.isEmpty ? nil : trimmed))
+        try await refreshAccounts()
+    }
+
     nonisolated struct OAuthOptions: Encodable, Sendable { let calendarAccess: Bool }
 
     func startOAuth(provider: String, calendarAccess: Bool = false) async throws -> OAuthStart {
@@ -573,7 +583,9 @@ final class BackendSession {
         return try await request("POST", "/v1/mail/oauth/\(provider)/start", body: OAuthOptions(calendarAccess: calendarAccess))
     }
 
-    func waitForOAuth(_ connection: OAuthStart, expectedAccountID: UUID? = nil) async throws {
+    /// Returns the connected account's ID.
+    @discardableResult
+    func waitForOAuth(_ connection: OAuthStart, expectedAccountID: UUID? = nil) async throws -> UUID {
         let requestGeneration = generation
         let expectedEmail = expectedAccountID.flatMap { id in accounts.first(where: { $0.id == id })?.email }
         while Date.now < connection.expiresAt {
@@ -588,7 +600,7 @@ final class BackendSession {
                 if let expectedAccountID, connectedID != expectedAccountID {
                     throw BackendError.response(409, "A different email account was connected. To reconnect \(expectedEmail ?? "the selected account"), choose that account in the browser.")
                 }
-                return
+                return connectedID
             }
             if ["failed", "expired"].contains(status.status) { throw BackendError.response(400, "Account connection did not complete. Start again.") }
             try await Task.sleep(for: .seconds(2))

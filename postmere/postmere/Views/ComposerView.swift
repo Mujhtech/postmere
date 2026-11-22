@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct ComposerView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.mailboxTheme) private var theme
+    @Environment(\.mailboxColors) private var mailboxColors
     @Environment(\.mailboxInset) private var inset
     @Environment(\.postmereAccent) private var palette
     @Bindable var store: MailStore
@@ -28,7 +29,7 @@ struct ComposerView: View {
     private enum Field: Hashable { case recipient, cc, bcc, subject }
 
     private var canvas: Color {
-        theme == .native ? PostmereTheme.paper : theme.colors(for: scheme).canvas
+        theme == .native ? PostmereTheme.paper : mailboxColors.canvas
     }
 
     private var barStyle: AnyShapeStyle {
@@ -267,7 +268,7 @@ struct ComposerView: View {
 
     private var sendingAccountLabel: String {
         if store.draftAccount.isConnected {
-            return "\(store.draftAccount.displayName) — \(store.draftAccount.email)"
+            return store.draftAccount.titleWithEmail
         }
         let previousEmail = store.draftProviderAccountEmail ?? store.draftAccount.email
         return previousEmail.isEmpty ? "Choose an account" : "\(previousEmail) · Not connected"
@@ -313,9 +314,9 @@ struct ComposerView: View {
                     ForEach(MailAccount.allCases) { account in
                         Button { store.draftAccount = account } label: {
                             if account == store.draftAccount {
-                                PostmereLabel("\(account.displayName) — \(account.email)", symbol: "checkmark", size: 14)
+                                PostmereLabel(account.titleWithEmail, symbol: "checkmark", size: 14)
                             } else {
-                                Text("\(account.displayName) — \(account.email)\(account.isConnected ? "" : " · Reconnect required")")
+                                Text("\(account.titleWithEmail)\(account.isConnected ? "" : " · Reconnect required")")
                             }
                         }.disabled(!account.isConnected)
                     }

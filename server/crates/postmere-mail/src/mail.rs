@@ -34,7 +34,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .merge(crate::mail_labels::router(crate::mail_labels::HttpLabels))
         .route("/v1/mail/accounts", get(accounts))
-        .route("/v1/mail/accounts/{id}", axum::routing::delete(disconnect))
+        .route(
+            "/v1/mail/accounts/{id}",
+            axum::routing::delete(disconnect).patch(rename_account),
+        )
         .route("/v1/mail/oauth/{provider}/start", post(oauth_start))
         .route("/v1/mail/oauth/{provider}/callback", get(oauth_callback))
         .route("/v1/mail/oauth/connections/{id}", get(oauth_status))
@@ -102,6 +105,8 @@ pub struct Account {
     pub provider: String,
     pub email: String,
     pub display_name: Option<String>,
+    /// The name the person gave this account, such as "Work".
+    pub name: Option<String>,
     pub status: String,
     pub last_synced_at: Option<DateTime<Utc>>,
     pub capabilities: Vec<String>,
@@ -121,6 +126,7 @@ fn account_row(row: &sqlx::postgres::PgRow) -> Result<Account, AppError> {
         provider: row.try_get("provider")?,
         email: row.try_get("email")?,
         display_name: row.try_get("display_name")?,
+        name: row.try_get("name").unwrap_or(None),
         status: row.try_get("status")?,
         last_synced_at: row.try_get("last_synced_at")?,
         capabilities: row.try_get("capabilities")?,
@@ -139,7 +145,7 @@ async fn accounts(
 pub async fn list_accounts(state: &AppState, auth: &AuthContext) -> Result<Vec<Account>, AppError> {
     let mut tx = auth.begin_authorized(&state.pool).await?;
     let query = account_status_query!(
-        "a.id,a.provider,a.email,a.display_name,a.status,a.last_synced_at,a.capabilities,a.hidden_from_assistants,",
+        "a.id,a.provider,a.email,a.display_name,a.name,a.status,a.last_synced_at,a.capabilities,a.hidden_from_assistants,",
         "WHERE a.disabled_at IS NULL ORDER BY a.created_at,a.id"
     );
     let rows = sqlx::query(query).fetch_all(&mut *tx).await?;
@@ -181,6 +187,53 @@ async fn set_assistant_access(
     }
     tx.commit().await?;
     Ok(Json(json!({"visible": input.visible})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccountRename {
+    /// Empty or null clears the name, so the email shows instead.
+    name: Option<String>,
+}
+
+/// Normalizes a name: trimmed, at most 64 characters, no control characters.
+fn account_name(input: Option<String>) -> Result<Option<String>, AppError> {
+    let Some(name) = input
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+    else {
+        return Ok(None);
+    };
+    if name.chars().count() > 64 || name.chars().any(char::is_control) {
+        return Err(AppError::bad_request("Use a name of up to 64 characters."));
+    }
+    Ok(Some(name))
+}
+
+/// Names an account. Assistants cannot rename accounts.
+async fn rename_account(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+    Json(input): Json<AccountRename>,
+) -> Result<Json<Value>, AppError> {
+    if auth.assistant {
+        return Err(AppError::forbidden());
+    }
+    let name = account_name(input.name)?;
+    let mut tx = auth.begin_authorized(&state.pool).await?;
+    let changed = sqlx::query(
+        "UPDATE provider_accounts SET name=$2,updated_at=now() WHERE id=$1 AND disabled_at IS NULL",
+    )
+    .bind(id)
+    .bind(&name)
+    .execute(&mut *tx)
+    .await?;
+    if changed.rows_affected() == 0 {
+        return Err(AppError::not_found());
+    }
+    tx.commit().await?;
+    Ok(Json(json!({ "name": name })))
 }
 
 async fn disconnect(
@@ -1721,6 +1774,29 @@ mod folder_tests {
         assert_eq!(
             messages.map(|msg| msg.mailbox),
             ["junk", "inbox", "trash", "archive", "archive"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod account_name_tests {
+    use super::account_name;
+
+    #[test]
+    fn names_are_trimmed_bounded_and_clearable() {
+        assert_eq!(
+            account_name(Some("  Work ".into())).unwrap().as_deref(),
+            Some("Work")
+        );
+        assert_eq!(account_name(Some("   ".into())).unwrap(), None);
+        assert_eq!(account_name(None).unwrap(), None);
+        assert!(account_name(Some("x".repeat(65))).is_err());
+        assert!(account_name(Some("Work\nHome".into())).is_err());
+        assert_eq!(
+            account_name(Some("é".repeat(64)))
+                .unwrap()
+                .map(|n| n.chars().count()),
+            Some(64)
         );
     }
 }

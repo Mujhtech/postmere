@@ -28,6 +28,17 @@ struct MailAccount: RawRepresentable, Codable, CaseIterable, Identifiable, Hasha
         guard let account, account != .unassigned else { return "No account" }
         return account.name
     }
+    /// How the account is named in lists: its label, else the provider's
+    /// name for it, else its address.
+    var title: String {
+        if let label = remote?.label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty { return label }
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty || name == "Me" || name.caseInsensitiveCompare(email) == .orderedSame ? email : name
+    }
+    /// "Work — me@example.com", or just the address when there is no name.
+    var titleWithEmail: String {
+        title.caseInsensitiveCompare(email) == .orderedSame ? email : "\(title) — \(email)"
+    }
     var displayName: String {
         if isRemote { return remote?.displayName ?? "Me" }
         return self == .work || self == .personal ? "Alex Johnson" : "Me"
@@ -58,6 +69,9 @@ struct RemoteAccountIdentity: Codable, Equatable {
     let displayName: String
     let provider: String
     var status: String = "connected"
+    /// The name the person gave this account. `displayName` stays the sender
+    /// name on outgoing mail.
+    var label: String? = nil
 }
 
 /// Only active-session identities are exposed. Cached messages retain their full

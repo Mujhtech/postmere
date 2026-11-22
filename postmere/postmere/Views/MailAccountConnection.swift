@@ -7,6 +7,8 @@ final class MailAccountConnection {
     private(set) var provider: String?
     private(set) var reconnectingEmail: String?
     private(set) var errorMessage: String?
+    /// An account this connection just added, waiting to be named.
+    var newAccount: BackendAccount?
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var attemptID: UUID?
 
@@ -31,8 +33,13 @@ final class MailAccountConnection {
                       ["accounts.google.com", "login.microsoftonline.com"].contains(url.host ?? ""),
                       url.user == nil, url.password == nil,
                       NSWorkspace.shared.open(url) else { throw BackendError.invalidURL }
-                try await session.waitForOAuth(connection, expectedAccountID: account?.id)
+                let known = Set(session.accounts.map(\.id))
+                let connectedID = try await session.waitForOAuth(connection, expectedAccountID: account?.id)
                 guard session.realtimeGeneration == generation else { return }
+                if account == nil, !known.contains(connectedID),
+                   let added = session.accounts.first(where: { $0.id == connectedID }), added.name == nil {
+                    newAccount = added
+                }
                 // Installing the first account removes the picker. Its disappearance
                 // can cancel browser polling, but must not cancel the mailbox sync.
                 await Task { await onSync() }.value

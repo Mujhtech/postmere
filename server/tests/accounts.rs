@@ -573,6 +573,36 @@ async fn many_provider_accounts_remain_independent_through_reconnect_disconnect_
 
     let selected = account_ids[5];
     let neighbor = account_ids[6];
+    // A name the person gives an account: set, private to its owner, bounded,
+    // and kept when the account is reconnected.
+    let selected_path = format!("/v1/mail/accounts/{selected}");
+    let (status, _) = request(
+        &app,
+        "PATCH",
+        &selected_path,
+        &session.token,
+        json!({"name": "  Work  "}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = request(
+        &app,
+        "PATCH",
+        &selected_path,
+        &peer_session.token,
+        json!({"name": "Mine"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = request(
+        &app,
+        "PATCH",
+        &selected_path,
+        &session.token,
+        json!({"name": "x".repeat(65)}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let before_selected = credential_bytes(&state, &auth, selected).await;
     let before_neighbor = credential_bytes(&state, &auth, neighbor).await;
     assert_eq!(
@@ -595,6 +625,50 @@ async fn many_provider_accounts_remain_independent_through_reconnect_disconnect_
         credential_bytes(&state, &auth, neighbor).await,
         before_neighbor,
         "reconnect changes only the selected identity"
+    );
+    let name_of = |listed: &Value, id: Uuid| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == id.to_string())
+            .unwrap()["name"]
+            .clone()
+    };
+    let (_, listed) = request(
+        &app,
+        "GET",
+        "/v1/mail/accounts",
+        &session.token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        name_of(&listed, selected),
+        "Work",
+        "reconnecting keeps the account's name"
+    );
+    assert!(name_of(&listed, neighbor).is_null());
+    let (status, _) = request(
+        &app,
+        "PATCH",
+        &selected_path,
+        &session.token,
+        json!({"name": ""}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, listed) = request(
+        &app,
+        "GET",
+        "/v1/mail/accounts",
+        &session.token,
+        Value::Null,
+    )
+    .await;
+    assert!(
+        name_of(&listed, selected).is_null(),
+        "an empty name clears it"
     );
 
     let (first_connection, first_token) = begin(&app, &session, Provider::Microsoft).await;
