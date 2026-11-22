@@ -196,11 +196,11 @@ struct TriageView: View {
             .scrollIndicators(.automatic)
         }
         .padding(28)
-        .frame(maxWidth: 680, maxHeight: 560, alignment: .topLeading)
+        .frame(maxWidth: 760, maxHeight: 900, alignment: .topLeading)
         .background(PostmereTheme.paper, in: .rect(cornerRadius: 20, style: .continuous))
         .shadow(color: .black.opacity(0.10), radius: 28, y: 12)
         .shadow(color: .black.opacity(0.04), radius: 3, y: 1)
-        .padding(.vertical, 12)
+        .padding(.vertical, 20)
     }
 
     /// "Suggested: Archive — Receipt, nothing to do", with priority and any deadline.
@@ -269,11 +269,11 @@ struct TriageView: View {
             }
         }
         .padding(28)
-        .frame(maxWidth: 680, alignment: .topLeading)
+        .frame(maxWidth: 760, alignment: .topLeading)
         .background(PostmereTheme.paper, in: .rect(cornerRadius: 20, style: .continuous))
         .shadow(color: .black.opacity(0.10), radius: 28, y: 12)
         .shadow(color: .black.opacity(0.04), radius: 3, y: 1)
-        .padding(.vertical, 12)
+        .padding(.vertical, 20)
         .accessibilityElement(children: .combine)
     }
 
