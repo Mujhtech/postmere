@@ -1,21 +1,45 @@
 import SwiftUI
 
+/// The toolbar tag button. Labels open in a popover anchored to it.
 struct MessageLabelButton: View {
+    let runtime: MailRuntime
     let message: MailMessage?
-    var isSelected = false
-    let action: () -> Void
     @Environment(\.postmereAccent) private var palette
+    @State private var isPresented = false
 
     var body: some View {
-        Button(action: action) {
+        Button { isPresented.toggle() } label: {
             PostmereLabel("Label", symbol: "tag", size: 17)
                 .labelStyle(.iconOnly)
-                .foregroundStyle(isSelected ? palette.accentInk : PostmereTheme.icon)
+                .toolbarIcon(active: isPresented ? palette.accentInk : nil)
         }
         .help("Edit labels or categories for this message")
         .accessibilityLabel("Label message")
-        .accessibilityValue(isSelected ? "Shown" : "Hidden")
+        .accessibilityValue(isPresented ? "Shown" : "Hidden")
         .disabled(message?.mailAccount.isConnected != true)
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            if let message {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(message.mailAccount.remote?.provider == "microsoft" ? "Categories" : "Labels")
+                        .font(.headline)
+                        .accessibilityAddTraits(.isHeader)
+                        .padding(.horizontal, 14)
+                    ScrollView {
+                        // Room for the search field's focus ring, which draws
+                        // outside the field and would be clipped by the scroll view.
+                        MessageLabelsView(runtime: runtime, message: message)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 4)
+                    }
+                    .frame(maxHeight: 360)
+                    .scrollBounceBehavior(.basedOnSize)
+                }
+                .padding(.vertical, 14)
+                .frame(width: 300)
+            }
+        }
+        // A different message closes the popover rather than relabelling it.
+        .onChange(of: message?.id) { isPresented = false }
     }
 }
 
@@ -190,55 +214,5 @@ struct MessageLabelsView: View {
         } catch {
             if !Task.isCancelled { self.error = error.localizedDescription }
         }
-    }
-}
-
-/// Labels as a centered sheet, like an alert, rather than a side panel:
-/// find, tick or create labels for one message, then Done.
-struct MessageLabelsSheet: View {
-    let runtime: MailRuntime
-    let message: MailMessage
-    @Environment(\.dismiss) private var dismiss
-
-    private var outlook: Bool { message.mailAccount.remote?.provider == "microsoft" }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                PostmereIcon("tag", size: 15)
-                    .foregroundStyle(.white)
-                    .frame(width: 30, height: 30)
-                    .background(SettingsTint.indigo.gradient, in: .rect(cornerRadius: 8, style: .continuous))
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(outlook ? "Categories" : "Labels")
-                        .font(.system(size: 15, weight: .semibold))
-                        .accessibilityAddTraits(.isHeader)
-                    Text(message.displaySubject)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-            ScrollView {
-                MessageLabelsView(runtime: runtime, message: message)
-                    .padding(.vertical, 2)
-            }
-            .frame(minHeight: 120, maxHeight: 340)
-            .scrollBounceBehavior(.basedOnSize)
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .controlSize(.large)
-                    // Escape closes too; changes are already saved as they are made.
-                    .background { Button("Close") { dismiss() }.keyboardShortcut(.cancelAction).opacity(0).accessibilityHidden(true) }
-            }
-        }
-        .padding(20)
-        .frame(width: 360)
-        .mailPanelSurface()
     }
 }

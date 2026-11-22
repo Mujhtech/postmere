@@ -424,3 +424,21 @@ struct IconDrawing {
         line([14, 3, 14, 8, 19, 8])
     }
 }
+
+/// Toolbar icons in full contrast while their button works and clearly
+/// dimmed when it does not, so enabled actions never read as disabled on glass.
+private struct ToolbarIconStyle: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+    let active: Color?
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(isEnabled ? AnyShapeStyle(active ?? Color.primary) : AnyShapeStyle(.tertiary))
+    }
+}
+
+extension View {
+    /// `active` tints the icon while its panel or state is on.
+    func toolbarIcon(active: Color? = nil) -> some View {
+        modifier(ToolbarIconStyle(active: active))
+    }
+}

@@ -12,7 +12,6 @@ struct ReaderView: View {
     @AppStorage("readingFontSize") private var readingFontSize = 14.0
     @AppStorage(MailReadingFont.preference) private var readingFont = MailReadingFont.original
     @State private var presentedSheet: ReaderSheet?
-    @State private var labelingMessage: MailMessage?
     @State private var trashKick = 0
     @State private var archiveKick = 0
     @State private var starKick = 0
@@ -187,9 +186,6 @@ struct ReaderView: View {
                     }
                 }, session: runtime.backend)
             }
-        }
-        .sheet(item: $labelingMessage) { message in
-            MessageLabelsSheet(runtime: runtime, message: message)
         }
         .task(id: summaryTarget?.requestID) {
             // Keep generation alive when the lazy reader scrolls its summary offscreen.
@@ -899,9 +895,7 @@ struct ReaderView: View {
     private var readerToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .automatic) {
             let message = toolbarMessage
-            MessageLabelButton(message: syncedToolbarMessage, isSelected: labelingMessage != nil) {
-                labelingMessage = syncedToolbarMessage
-            }
+            MessageLabelButton(runtime: runtime, message: syncedToolbarMessage)
 
             let starred = message?.isStarred == true
             let starTitle = starred ? "Remove Star" : "Star Message"
@@ -913,7 +907,7 @@ struct ReaderView: View {
             } label: {
                 PostmereLabel(starTitle, symbol: starred ? "star.fill" : "star", size: 17)
                     .labelStyle(.iconOnly)
-                    .foregroundStyle(starred ? palette.accentInk : PostmereTheme.icon)
+                    .toolbarIcon(active: starred ? palette.accentInk : nil)
                     .actionKick(.star, trigger: starKick, enabled: !reduceMotion)
             }
             .help(starTitle)
@@ -924,7 +918,7 @@ struct ReaderView: View {
             Button { toggleActionPanel(.snooze) } label: {
                 PostmereLabel(snoozeTitle, symbol: "moon.zzz", size: 17)
                     .labelStyle(.iconOnly)
-                    .foregroundStyle(runtime.readerPanel?.action == .snooze ? palette.accentInk : PostmereTheme.icon)
+                    .toolbarIcon(active: runtime.readerPanel?.action == .snooze ? palette.accentInk : nil)
                     .actionKick(.snooze, trigger: snoozeKick, enabled: !reduceMotion)
             }
             .help(snoozeTitle)
@@ -941,7 +935,7 @@ struct ReaderView: View {
             } label: {
                 PostmereLabel(moveActionTitle, symbol: returnsToInbox ? "tray.and.arrow.down" : "archivebox", size: 17)
                     .labelStyle(.iconOnly)
-                    .foregroundStyle(PostmereTheme.icon)
+                    .toolbarIcon()
                     .actionKick(returnsToInbox ? .restore : .archive, trigger: archiveKick, enabled: !reduceMotion)
             }
             .help(returnsToInbox ? moveActionTitle : "\(moveActionTitle) · ⇧⌘A")
@@ -950,7 +944,7 @@ struct ReaderView: View {
             Button { store.deleteSelected() } label: {
                 PostmereLabel("Move to Trash", symbol: "trash", size: 17)
                     .labelStyle(.iconOnly)
-                    .foregroundStyle(PostmereTheme.icon)
+                    .toolbarIcon()
                     .trashWobble(trigger: trashKick, enabled: !reduceMotion)
             }
                 .help("Move to Trash · ⌘Delete")
@@ -964,7 +958,7 @@ struct ReaderView: View {
             } label: {
                 PostmereLabel("Sender details", symbol: "sidebar.right", size: 17)
                     .labelStyle(.iconOnly)
-                    .foregroundStyle(showsSenderDetails ? palette.accentInk : PostmereTheme.icon)
+                    .toolbarIcon(active: showsSenderDetails ? palette.accentInk : nil)
             }
             .help(showsSenderDetails ? "Hide sender details" : "Show sender details")
             .accessibilityValue(showsSenderDetails ? "Shown" : "Hidden")
@@ -973,7 +967,7 @@ struct ReaderView: View {
             Button(action: summarizeConversation) {
                 PostmereLabel("Summarize Conversation", symbol: "sparkles", size: 17)
                     .labelStyle(.iconOnly)
-                    .foregroundStyle(PostmereTheme.icon)
+                    .toolbarIcon()
             }
             .help("Summarize this conversation")
             .disabled(syncedToolbarMessage == nil)
@@ -981,7 +975,7 @@ struct ReaderView: View {
             Menu { additionalMessageActions } label: {
                 PostmereLabel("More Message Actions", symbol: "ellipsis", size: 17)
                     .labelStyle(.iconOnly)
-                    .foregroundStyle(PostmereTheme.icon)
+                    .toolbarIcon()
             }
             .menuIndicator(.hidden)
             .help("More message actions")
