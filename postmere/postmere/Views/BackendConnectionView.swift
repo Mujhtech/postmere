@@ -60,8 +60,8 @@ struct BackendConnectionView: View {
                     }
                     HStack(spacing: 12) {
                         Menu {
-                            Button { connect("gmail") } label: { Label("Google", image: "Brands/gmail") }
-                            Button { connect("microsoft") } label: { Label("Outlook", image: "Brands/outlook") }
+                            Button { connect("gmail") } label: { Label { Text("Google") } icon: { Brand.gmail.menuImage() } }
+                            Button { connect("microsoft") } label: { Label { Text("Outlook") } icon: { Brand.outlook.menuImage() } }
                         } label: {
                             Label("Add Account", systemImage: "plus")
                         }

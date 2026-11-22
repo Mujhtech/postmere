@@ -7,10 +7,12 @@ struct ReaderView: View {
     @Bindable var store: MailStore
     var compactToolbar = false
     @Environment(MailRuntime.self) private var runtime
+    @Environment(\.openWindow) private var openWindow
     @AppStorage("loadRemoteMailImagesAutomatically") private var automaticImages = true
     @AppStorage("readingFontSize") private var readingFontSize = 14.0
     @AppStorage(MailReadingFont.preference) private var readingFont = MailReadingFont.original
     @State private var presentedSheet: ReaderSheet?
+    @State private var labelingMessage: MailMessage?
     @State private var trashKick = 0
     @State private var archiveKick = 0
     @State private var starKick = 0
@@ -29,6 +31,7 @@ struct ReaderView: View {
     @State private var isSummaryExpanded = true
     @State private var senderResearch = MailSenderProfile()
     @State private var senderDetailsSelection: SenderSelection?
+    @State private var relationshipCache = RelationshipCache()
     @State private var senderLookupTask: Task<Void, Never>?
     @State private var readerSize: CGSize = .zero
     @State private var isEnablingSenderResearch = false
@@ -185,6 +188,9 @@ struct ReaderView: View {
                 }, session: runtime.backend)
             }
         }
+        .sheet(item: $labelingMessage) { message in
+            MessageLabelsSheet(runtime: runtime, message: message)
+        }
         .task(id: summaryTarget?.requestID) {
             // Keep generation alive when the lazy reader scrolls its summary offscreen.
             if let summaryTarget { await summaryTarget.load(session: runtime.backend) }
@@ -231,7 +237,10 @@ struct ReaderView: View {
             if showsSenderDetails, let sender = senderDetailsMessage {
                 SenderContextView(message: sender, target: senderProfileTarget, research: senderResearch,
                                   onRefresh: { requestSenderDetails(.refresh) }, onClose: closeSenderDetails,
-                                  onEnable: { requestSenderDetails(.enable) }, isEnabling: isEnablingSenderResearch, enableError: senderEnableError)
+                                  onEnable: { requestSenderDetails(.enable) }, isEnabling: isEnablingSenderResearch, enableError: senderEnableError,
+                                  relationship: senderRelationship(for: sender),
+                                  onOpenMessage: { id in _ = store.revealMessage(id) },
+                                  onDraftIntro: { prompt in draftIntro(to: sender, prompt: prompt) })
                     .frame(minWidth: 280, idealWidth: 300, maxWidth: 320)
             }
         }
@@ -354,6 +363,27 @@ struct ReaderView: View {
     private func toggleActionPanel(_ action: ReaderPanelAction) {
         if runtime.readerPanel?.action == action { closeActionPanel() }
         else { runtime.openReaderPanel(action) }
+    }
+
+    /// A new message to the sender, with the writer asked for an intro.
+    private func draftIntro(to sender: MailMessage, prompt: String) {
+        guard !store.isComposing else { openWindow(id: "compose"); return }
+        store.beginCompose(account: sender.mailAccount.isConnected ? sender.mailAccount : nil)
+        store.draftTo = sender.senderEmail
+        store.pendingWriterPrompt = prompt
+        openWindow(id: "compose")
+    }
+
+    /// History with an incoming message's sender, rebuilt only when mail changes.
+    private func senderRelationship(for message: MailMessage) -> MailRelationship? {
+        guard !message.isOutgoing else { return nil }
+        let key = "\(message.id)|\(store.mailboxDataRevision)"
+        if relationshipCache.key == key { return relationshipCache.value }
+        let value = MailRelationship.build(email: message.senderEmail, accountKey: MailContactIdentity.accountKey(for: message),
+                                           messages: store.messages.filter(store.isAccountVisible))
+        relationshipCache.key = key
+        relationshipCache.value = value
+        return value
     }
 
     private var senderDetailsMessage: MailMessage? {
@@ -553,7 +583,7 @@ struct ReaderView: View {
                 .id("invitation-\(message.id)")
             }
             MailVerificationCodeView(message: message) { EmptyView() }
-            Group {
+            TranslatableMessageBody(message: message, fontSize: readingFontSize, readingFont: readingFont) {
                 if let html = message.receivedHTML {
                     HTMLMessageBody(html: html, paragraphs: message.paragraphs, fontSize: readingFontSize, readingFont: readingFont, quoteContext: quoteContext) { count in
                         if trackerCount.wrappedValue != count { trackerCount.wrappedValue = count }
@@ -869,8 +899,8 @@ struct ReaderView: View {
     private var readerToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .automatic) {
             let message = toolbarMessage
-            MessageLabelButton(message: syncedToolbarMessage, isSelected: runtime.readerPanel?.action == .labels) {
-                toggleActionPanel(.labels)
+            MessageLabelButton(message: syncedToolbarMessage, isSelected: labelingMessage != nil) {
+                labelingMessage = syncedToolbarMessage
             }
 
             let starred = message?.isStarred == true
@@ -1229,4 +1259,11 @@ private struct HoverResponseControls<Content: View>: View {
             .opacity(visible ? 1 : 0)
             .allowsHitTesting(visible)
     }
+}
+
+/// Holds the last computed sender history; a class so filling it during a
+/// render does not trigger another one.
+private final class RelationshipCache {
+    var key = ""
+    var value: MailRelationship?
 }

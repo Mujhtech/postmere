@@ -192,3 +192,53 @@ struct MessageLabelsView: View {
         }
     }
 }
+
+/// Labels as a centered sheet, like an alert, rather than a side panel:
+/// find, tick or create labels for one message, then Done.
+struct MessageLabelsSheet: View {
+    let runtime: MailRuntime
+    let message: MailMessage
+    @Environment(\.dismiss) private var dismiss
+
+    private var outlook: Bool { message.mailAccount.remote?.provider == "microsoft" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                PostmereIcon("tag", size: 15)
+                    .foregroundStyle(.white)
+                    .frame(width: 30, height: 30)
+                    .background(SettingsTint.indigo.gradient, in: .rect(cornerRadius: 8, style: .continuous))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(outlook ? "Categories" : "Labels")
+                        .font(.system(size: 15, weight: .semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    Text(message.displaySubject)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            ScrollView {
+                MessageLabelsView(runtime: runtime, message: message)
+                    .padding(.vertical, 2)
+            }
+            .frame(minHeight: 120, maxHeight: 340)
+            .scrollBounceBehavior(.basedOnSize)
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .controlSize(.large)
+                    // Escape closes too; changes are already saved as they are made.
+                    .background { Button("Close") { dismiss() }.keyboardShortcut(.cancelAction).opacity(0).accessibilityHidden(true) }
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+        .mailPanelSurface()
+    }
+}

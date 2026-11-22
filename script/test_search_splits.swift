@@ -190,7 +190,7 @@ func runSearchSplitRegressions(directory: URL) throws {
     legacy["savedViews"] = legacyViews
     try JSONSerialization.data(withJSONObject: legacy).write(to: legacyURL)
     let migrated = MailStore(messages: [], persistenceURL: legacyURL)
-    try check(migrated.persistenceError == nil && migrated.inboxSplits.map(\.name) == ["Important", "People", "Purchases", "Subscriptions", "Notifications"]
+    try check(migrated.persistenceError == nil && migrated.inboxSplits.map(\.name) == ["Needs you", "Important", "People", "Purchases", "Subscriptions", "Notifications"]
               && migrated.vipContacts.isEmpty && migrated.selectedInboxSplitID == nil, "legacy snapshots acquire editable default tabs without losing mail")
     try check(migrated.savedViews[0].criteria.searchField == .all && migrated.savedViews[0].criteria.mailbox == nil, "legacy missing search field defaults to All Text and omitted mailbox remains All Mailboxes")
     try check(InboxSplit.defaults.allSatisfy { MailSearchQuery(source: $0.criteria.query).isValid }, "all default tab predicates are valid editable queries")
@@ -256,8 +256,39 @@ private func runSmartCategoryRegressions() throws {
     old.isHidden = true
     let custom = InboxSplit(name: "Studio", criteria: .init(query: "from:studio"))
     let upgraded = InboxSplit.upgradingLegacyTabs([custom, old])
-    try check(upgraded.first == custom && upgraded.contains { $0.id == old.id && $0.name == "Subscriptions" && $0.isHidden },
-              "legacy Newsletters retains identity, relative order and hidden state")
+    try check(upgraded.first?.name == "Needs you" && upgraded.dropFirst().first == custom
+              && upgraded.contains { $0.id == old.id && $0.name == "Subscriptions" && $0.isHidden },
+              "legacy Newsletters retains identity, relative order and hidden state; Needs you leads")
+    try check(InboxSplit.upgradingLegacyTabs(upgraded).count(where: { $0.name == "Needs you" }) == 1, "Needs you is added once")
+    var trashed = receipt
+    trashed.mailbox = .trash
+    var junked = receipt
+    junked.mailbox = .junk
+    let skipBin = MailSearchQuery(source: "invoice " + MailSearchQuery.withoutTrashOrJunk)
+    try check(skipBin.isValid && !skipBin.matches(trashed) && !skipBin.matches(junked),
+              "-in:trash -in:junk leaves deleted and junk mail out")
+    try check(MailSearchQuery(source: "in:trash").matches(trashed) && MailSearchQuery(source: "in:spam").matches(junked)
+              && !MailSearchQuery(source: "in:trash").matches(junked), "in: matches one mailbox; spam means Junk")
+    try check(!MailSearchQuery(source: "in:nowhere").isValid, "unknown mailboxes are reported")
+    var cleared = "invoice -in:trash -in:junk"
+    while let token = MailSearchQuery(source: cleared).tokens.first(where: { $0.isExcluded && $0.field == "in" }) {
+        cleared = MailSearchQuery(source: cleared).removingToken(id: token.id)
+    }
+    try check(cleared.trimmingCharacters(in: .whitespaces) == "invoice", "removing both exclusions restores the search: \(cleared)")
+    var waiting = receipt
+    waiting.triagePriority = "needs_you"
+    try check(MailSearchQuery(source: "is:needsyou").isValid && MailSearchQuery(source: "is:needsyou").matches(waiting)
+              && !MailSearchQuery(source: "is:needsyou").matches(receipt), "is:needsyou follows the triage priority")
+    // Replying settles it; a fetched suggestion never brings it back.
+    var reply = waiting
+    reply.id = UUID(); reply.isOutgoing = true; reply.mailbox = .sent; reply.sentAt = waiting.sentAt.addingTimeInterval(60)
+    reply.senderEmail = "alex@postmere.app"; reply.triagePriority = nil
+    var thread = [waiting, reply]
+    MailReplyQueue.reconcile(&thread)
+    try check(thread[0].triagePriority == "done", "a reply takes the conversation out of Needs you")
+    let settled = MailStore(messages: thread)
+    settled.applyTriagePriorities([waiting.id: "needs_you"])
+    try check(settled.messages.first { $0.id == waiting.id }?.triagePriority == "done", "done stays done when suggestions return")
     old.name = "For later"
     old.criteria = SavedInboxCriteria(query: "from:design")
     let edited = InboxSplit.upgradingLegacyTabs([old])

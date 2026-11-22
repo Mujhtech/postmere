@@ -104,6 +104,15 @@ nonisolated struct MailSearchQuery: Sendable {
         return "label:\"\(escaped)\""
     }
 
+    /// "in:" names: the mailboxes, plus "spam" for Junk.
+    static func mailbox(named value: String) -> Mailbox? {
+        let name = value.lowercased()
+        return name == "spam" ? .junk : Mailbox(rawValue: name)
+    }
+
+    /// Leaves deleted and junk mail out of results.
+    static let withoutTrashOrJunk = "-in:trash -in:junk"
+
     static func senderCondition(_ value: String) -> String {
         let escaped = value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         return "from:\"\(escaped)\""
@@ -116,7 +125,7 @@ nonisolated struct MailSearchQuery: Sendable {
         return replacingToken(id: id, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static let syntaxHelp = "Combine terms with spaces (AND), OR, parentheses, or a leading minus to exclude. Use from:, to:, subject:, date:this-week, before:YYYY-MM-DD, after:YYYY-MM-DD, has:attachment, is:unread, is:starred, label:name, filetype:pdf, or quoted phrases. Dates use your Mac’s time zone; after includes that day and before excludes it. Search covers downloaded mail only."
+    static let syntaxHelp = "Combine terms with spaces (AND), OR, parentheses, or a leading minus to exclude. Use from:, to:, subject:, date:this-week, before:YYYY-MM-DD, after:YYYY-MM-DD, has:attachment, is:unread, is:starred, in:trash, label:name, filetype:pdf, or quoted phrases. Dates use your Mac’s time zone; after includes that day and before excludes it. Search covers downloaded mail only."
 }
 
 private nonisolated struct MailSearchLexeme {
@@ -297,9 +306,13 @@ private nonisolated struct MailSearchParser {
             issue(token.field.map { "Add a value after \($0):." } ?? "Add text inside this search term.", at: token)
             return nil
         }
-        let supported = ["from", "to", "cc", "bcc", "subject", "body", "before", "after", "date", "has", "is", "filetype", "filename", "domain", "account", "category", "label"]
+        let supported = ["from", "to", "cc", "bcc", "subject", "body", "before", "after", "date", "has", "is", "in", "filetype", "filename", "domain", "account", "category", "label"]
         if let field = token.field, !supported.contains(field) {
-            issue("Unknown operator “\(field):”. Use from:, to:, subject:, before:, after:, has:, is:, filetype:, filename:, domain:, account:, or category:. Quote literal text containing a colon.", at: token)
+            issue("Unknown operator “\(field):”. Use from:, to:, subject:, before:, after:, has:, is:, in:, filetype:, filename:, domain:, account:, or category:. Quote literal text containing a colon.", at: token)
+            return nil
+        }
+        if token.field == "in" && MailSearchQuery.mailbox(named: token.value) == nil {
+            issue("Use in:inbox, in:sent, in:drafts, in:archive, in:starred, in:junk, or in:trash.", at: token)
             return nil
         }
         var date: Date?
@@ -319,7 +332,7 @@ private nonisolated struct MailSearchParser {
             issue("Use has:attachment or has:unsubscribe.", at: token)
             return nil
         }
-        if token.field == "is" && !["unread", "read", "starred", "vip", "needsreply", "outgoing", "incoming", "draft", "snoozed", "followup", "subscription", "purchase"].contains(value) {
+        if token.field == "is" && !["unread", "read", "starred", "vip", "needsreply", "outgoing", "incoming", "draft", "snoozed", "followup", "subscription", "purchase", "needsyou"].contains(value) {
             issue("Use is:unread, is:read, is:starred, is:vip, is:needsreply, is:outgoing, is:incoming, is:draft, is:snoozed, is:followup, is:subscription, or is:purchase.", at: token)
             return nil
         }
@@ -432,6 +445,9 @@ private nonisolated struct MailSearchTerm: Sendable {
         case "date":
             let week = calendar.dateInterval(of: .weekOfYear, for: context.referenceDate ?? .now)
             return week.map { message.sentAt >= $0.start && message.sentAt < $0.end } ?? false
+        case "in":
+            guard let mailbox = MailSearchQuery.mailbox(named: lower) else { return false }
+            return mailbox == .starred ? message.isStarred && !message.mailbox.isJunkOrTrash : message.mailbox == mailbox
         case "has": return lower == "unsubscribe" ? message.unsubscribeHeaders?.listUnsubscribe.isEmpty == false : !message.attachments.isEmpty
         case "is":
             switch lower {
@@ -440,6 +456,7 @@ private nonisolated struct MailSearchTerm: Sendable {
             case "starred": return message.isStarred
             case "vip": return !context.matchingVIPs(for: message).isEmpty
             case "needsreply": return message.needsReply
+            case "needsyou": return message.triagePriority == "needs_you" && !message.isOutgoing
             case "subscription": return message.isSubscriptionMail
             case "purchase": return message.isPurchaseMail
             case "outgoing": return message.isOutgoing

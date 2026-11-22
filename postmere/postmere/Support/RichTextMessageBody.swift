@@ -67,6 +67,7 @@ struct RichTextMessageBody: View {
         }
         .font(readingFont.font(size: fontSize))
         .lineSpacing(5)
+        .tint(palette.accentInk)
         .onChange(of: source) {
             showsQuote = false
             rendered = nil
@@ -86,7 +87,7 @@ struct RichTextMessageBody: View {
         case .plain(let paragraphs):
             LazyVStack(alignment: .leading, spacing: 18) {
                 ForEach(paragraphs.indices, id: \.self) { index in
-                    Text(verbatim: paragraphs[index]).fixedSize(horizontal: false, vertical: true)
+                    Text(MailLinkDetector.attributed(paragraphs[index])).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -96,7 +97,9 @@ struct RichTextMessageBody: View {
         if let rtf = source.rtf, !Task.isCancelled,
            let original = try? NSAttributedString(data: rtf, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil),
            original.length > 0 {
-            let rich = font.format(original, size: size)
+            let formatted = NSMutableAttributedString(attributedString: font.format(original, size: size))
+            MailLinkDetector.link(formatted)
+            let rich: NSAttributedString = formatted
             let text = rich.string
             if let split = source.context?.plainQuote(in: text) {
                 let end = text[..<split.start].lastIndex(where: { !$0.isNewline }).map { text.index(after: $0) } ?? text.startIndex

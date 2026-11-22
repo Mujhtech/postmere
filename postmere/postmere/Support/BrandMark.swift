@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Third-party marks for services Postmere connects to, used only to say
@@ -135,5 +136,22 @@ struct BrandPair: View {
         }
         .frame(width: size, height: size, alignment: .topLeading)
         .accessibilityHidden(true)
+    }
+}
+
+extension Brand {
+    /// The mark scaled to fit `side` points, for menus and pickers, which
+    /// draw images at their file's own size and ignore SwiftUI frames.
+    @MainActor func menuImage(side: CGFloat = 16) -> Image {
+        guard let source = NSImage(named: "Brands/\(rawValue)") else { return image }
+        let size = source.size
+        let scale = min(side / max(size.width, 1), side / max(size.height, 1))
+        let fitted = NSSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
+        let result = NSImage(size: fitted, flipped: false) { rect in
+            source.draw(in: rect)
+            return true
+        }
+        result.isTemplate = !isFullColor
+        return Image(nsImage: result)
     }
 }

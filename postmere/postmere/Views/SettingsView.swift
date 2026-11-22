@@ -490,7 +490,7 @@ struct AccountMenuLabel: View {
 
     var body: some View {
         if let brand = account.remote.flatMap({ Brand(mailProvider: $0.provider) }) {
-            Label(account.titleWithEmail, image: "Brands/\(brand.rawValue)")
+            Label { Text(account.titleWithEmail) } icon: { brand.menuImage() }
         } else {
             Text(account.titleWithEmail)
         }

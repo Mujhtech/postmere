@@ -50,6 +50,7 @@ struct MailSearchRefinements: View {
                                      token: required.last { $0.field == "is" && $0.value.lowercased() == "unread" })
                         filterButton("This week", condition: "date:this-week", query: query,
                                      token: required.last { $0.field == "date" && $0.value.lowercased() == "this-week" })
+                        trashFilter(query)
                     }
                     .buttonStyle(.plain)
                     .padding(.vertical, 2)
@@ -79,6 +80,33 @@ struct MailSearchRefinements: View {
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .help(selected ? "Remove the \(title.lowercased()) filter" : "Filter results by \(title.lowercased())")
+    }
+
+    /// Leaves Trash and Junk out of the results, or brings them back.
+    private func trashFilter(_ query: MailSearchQuery) -> some View {
+        let excluded = query.tokens.filter { $0.isExcluded && $0.field == "in" && ["trash", "junk", "spam"].contains($0.value.lowercased()) }
+        let selected = !excluded.isEmpty
+        return Button {
+            if selected {
+                // Positions shift as terms are removed, so look each one up again.
+                var text = store.searchText
+                while let token = MailSearchQuery(source: text).tokens.first(where: {
+                    $0.isExcluded && $0.field == "in" && ["trash", "junk", "spam"].contains($0.value.lowercased())
+                }) {
+                    let next = MailSearchQuery(source: text).removingToken(id: token.id)
+                    guard next != text else { break }
+                    text = next
+                }
+                store.updateSearchText(text)
+            } else {
+                store.updateSearchText(query.addingRequiredFilter(MailSearchQuery.withoutTrashOrJunk))
+            }
+        } label: {
+            chip("No Trash or Junk", symbol: selected ? "checkmark" : "minus", selected: selected)
+        }
+        .accessibilityLabel("Exclude Trash and Junk")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .help(selected ? "Include Trash and Junk again" : "Leave Trash and Junk out of the results")
     }
 
     private func chip(_ title: String, symbol: String? = nil, selected: Bool) -> some View {
