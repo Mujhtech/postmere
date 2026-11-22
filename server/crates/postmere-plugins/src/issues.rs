@@ -15,6 +15,12 @@ enum Tracker {
 }
 
 impl Tracker {
+    fn brand(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::Jira => "jira",
+        }
+    }
     fn name(self) -> &'static str {
         match self {
             Self::Linear => "Linear",
@@ -228,6 +234,7 @@ impl Plugin for Issues {
             version: 1,
             icon: "checklist",
             tint: "blue",
+            brands: vec!["linear", "jira"],
             permissions: vec![Permission::MessageRead],
             settings: Vec::new(),
         }
@@ -239,7 +246,9 @@ impl Plugin for Issues {
             Some(title) => format!("{} · {title}", issue.key),
             None => issue.key.clone(),
         };
-        let mut card = Card::new(&issue.event).subtitle(subtitle);
+        let mut card = Card::new(&issue.event)
+            .brand(issue.tracker.brand())
+            .subtitle(subtitle);
         let mut facts = Vec::new();
         if let Some(status) = &issue.status {
             facts.push(("Status".to_owned(), status.clone()));
@@ -365,6 +374,7 @@ mod tests {
         );
         let c = card(&Issues, &mail).unwrap();
         assert_eq!(c.title, "Linus Torvalds commented");
+        assert_eq!(c.brand, Some("jira"));
         assert_eq!(c.subtitle.as_deref(), Some("PROJ-42 · Crash on start"));
         assert_eq!(
             c.actions[0].kind,

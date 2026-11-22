@@ -62,7 +62,8 @@ private struct PluginSection: View {
 
     var body: some View {
         Section {
-            SettingsRow(plugin.name, symbol: plugin.icon, tint: tint, subtitle: plugin.summary) {
+            SettingsRow(plugin.name, symbol: plugin.icon, tint: tint, subtitle: plugin.summary,
+                        brands: (plugin.brands ?? []).compactMap(Brand.init(rawValue:))) {
                 Toggle(plugin.name, isOn: Binding(get: { plugin.enabled }, set: { enabled in
                     Task { await runtime.plugins.setEnabled(enabled, for: plugin.id, session: session) }
                 }))

@@ -44,10 +44,13 @@ struct SettingsRow<Accessory: View>: View {
     let tint: Color
     let title: String
     var subtitle: String?
+    /// Third-party marks shown instead of the icon tile, for a connected service.
+    var brands: [Brand] = []
     @ViewBuilder var accessory: () -> Accessory
 
-    init(_ title: String, symbol: String, tint: Color, subtitle: String? = nil,
+    init(_ title: String, symbol: String, tint: Color, subtitle: String? = nil, brands: [Brand] = [],
          @ViewBuilder accessory: @escaping () -> Accessory) {
+        self.brands = brands
         self.title = title
         self.symbol = symbol
         self.tint = tint
@@ -57,7 +60,13 @@ struct SettingsRow<Accessory: View>: View {
 
     var body: some View {
         HStack(spacing: 11) {
-            SettingsIcon(symbol, tint: tint)
+            if brands.count >= 2 {
+                BrandPair(first: brands[0], second: brands[1])
+            } else if let brand = brands.first {
+                BrandTile(brand: brand)
+            } else {
+                SettingsIcon(symbol, tint: tint)
+            }
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.system(size: 13))
                 if let subtitle {

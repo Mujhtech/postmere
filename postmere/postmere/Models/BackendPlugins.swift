@@ -45,6 +45,8 @@ nonisolated struct PluginInfo: Decodable, Identifiable, Equatable, Sendable {
     let version: Int
     let icon: String
     let tint: String
+    /// Services the plugin covers, such as ["linear", "jira"], for their marks.
+    let brands: [String]?
     /// Plain-language descriptions of what the plugin may read or do.
     let permissions: [String]
     var enabled: Bool
@@ -103,14 +105,17 @@ nonisolated struct PluginUpdate: Encodable, Sendable {
 nonisolated let pluginCardSchema = 1
 
 nonisolated struct PluginCard: Decodable, Equatable, Sendable {
+    /// The service this card is about, when the app has its mark.
+    let brand: String?
     let title: String
     let subtitle: String?
     let body: [PluginComponent]
     let actions: [PluginCardAction]
 
-    enum CodingKeys: String, CodingKey { case title, subtitle, body, actions }
+    enum CodingKeys: String, CodingKey { case brand, title, subtitle, body, actions }
 
-    init(title: String, subtitle: String? = nil, body: [PluginComponent] = [], actions: [PluginCardAction] = []) {
+    init(brand: String? = nil, title: String, subtitle: String? = nil, body: [PluginComponent] = [], actions: [PluginCardAction] = []) {
+        self.brand = brand
         self.title = title
         self.subtitle = subtitle
         self.body = body
@@ -119,6 +124,7 @@ nonisolated struct PluginCard: Decodable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        brand = try container.decodeIfPresent(String.self, forKey: .brand)
         title = try container.decode(String.self, forKey: .title)
         subtitle = try container.decodeIfPresent(String.self, forKey: .subtitle)
         body = (try container.decodeIfPresent([PluginComponent].self, forKey: .body) ?? []).filter { $0 != .unsupported }

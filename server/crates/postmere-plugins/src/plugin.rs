@@ -54,6 +54,8 @@ pub struct Manifest {
     pub version: u32,
     pub icon: &'static str,
     pub tint: &'static str,
+    /// Services this plugin covers, for their marks in Settings.
+    pub brands: Vec<&'static str>,
     pub permissions: Vec<Permission>,
     pub settings: Vec<SettingField>,
 }

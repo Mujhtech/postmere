@@ -151,6 +151,16 @@ impl Carrier {
             Self::RoyalMail => "Royal Mail",
         }
     }
+    /// The mark the app draws for this carrier, when it ships one.
+    pub fn brand(self) -> Option<&'static str> {
+        match self {
+            Self::Ups => Some("ups"),
+            Self::Usps => Some("usps"),
+            Self::FedEx => Some("fedex"),
+            Self::Dhl => Some("dhl"),
+            Self::RoyalMail => None,
+        }
+    }
     pub fn tracking_url(self, number: &str) -> String {
         match self {
             Self::Ups => format!("https://www.ups.com/track?tracknum={number}"),

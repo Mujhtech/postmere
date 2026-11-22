@@ -122,6 +122,7 @@ impl Plugin for Sentry {
             version: 1,
             icon: "ladybug",
             tint: "purple",
+            brands: vec!["sentry"],
             permissions: vec![Permission::MessageRead],
             settings: Vec::new(),
         }
@@ -134,7 +135,7 @@ impl Plugin for Sentry {
             subtitle.push_str(" · ");
             subtitle.push_str(environment);
         }
-        let mut card = Card::new(&alert.title).subtitle(subtitle);
+        let mut card = Card::new(&alert.title).brand("sentry").subtitle(subtitle);
         if let Some((label, tint)) = alert.state {
             card = card.component(Component::Badge {
                 label: label.into(),

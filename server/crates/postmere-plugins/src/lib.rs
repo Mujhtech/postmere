@@ -122,6 +122,7 @@ struct PluginInfo {
     version: u32,
     icon: &'static str,
     tint: &'static str,
+    brands: Vec<&'static str>,
     /// Plain-language descriptions of what the plugin may access.
     permissions: Vec<&'static str>,
     enabled: bool,
@@ -185,6 +186,7 @@ fn info(plugin: &dyn Plugin, install: Option<&Install>, activity: Vec<Activity>)
         version: manifest.version,
         icon: manifest.icon,
         tint: manifest.tint,
+        brands: manifest.brands.clone(),
         permissions: manifest
             .permissions
             .iter()
@@ -507,6 +509,7 @@ mod tests {
         let (card, actions) = run(&packages::Packages, &mail, Map::new());
         let card = card.unwrap();
         assert_eq!(card.title, "Out for delivery");
+        assert_eq!(card.brand, Some("ups"));
         assert_eq!(
             card.subtitle.as_deref(),
             Some("UPS · Arriving today by 7 PM")
@@ -538,6 +541,7 @@ mod tests {
         let (card, actions) = run(&bills::Bills, &mail, settings.clone());
         let card = card.unwrap();
         assert_eq!(card.title, "$120.00 due Dec 5");
+        assert_eq!(card.brand, None);
         assert_eq!(card.subtitle.as_deref(), Some("Acme Billing"));
         assert!(
             matches!(&card.actions[0].kind, ActionKind::Open(url) if url == "https://acme.test/pay/2041")

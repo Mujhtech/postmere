@@ -66,7 +66,7 @@ struct PluginCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 11) {
-                PluginOrb(symbol: result.icon, tint: tint)
+                PluginOrb(symbol: result.icon, tint: tint, brand: card.brand.flatMap(Brand.init(rawValue:)))
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(verbatim: card.title)
@@ -171,14 +171,21 @@ struct PluginCardView: View {
 private struct PluginOrb: View {
     let symbol: String
     let tint: Color
+    /// The service's own mark replaces the plugin glyph when the card names one.
+    var brand: Brand?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var kick = 0
 
     var body: some View {
-        PostmereIcon(symbol, size: 15)
-            .foregroundStyle(tint)
+        Group {
+            if let brand {
+                BrandMark(brand: brand, size: 16)
+            } else {
+                PostmereIcon(symbol, size: 15).foregroundStyle(tint)
+            }
+        }
             .frame(width: 30, height: 30)
-            .background(tint.opacity(0.13), in: Circle())
+            .background(discFill, in: Circle())
             .keyframeAnimator(initialValue: 1.0, trigger: kick) { [reduceMotion] content, scale in
                 content.scaleEffect(reduceMotion ? 1 : scale)
             } keyframes: { _ in
@@ -187,6 +194,11 @@ private struct PluginOrb: View {
             }
             .onAppear { kick += 1 }
             .accessibilityHidden(true)
+    }
+
+    private var discFill: Color {
+        guard let brand else { return tint.opacity(0.13) }
+        return brand.isDark || brand.isFullColor ? Color.primary.opacity(0.07) : brand.color.opacity(0.13)
     }
 }
 

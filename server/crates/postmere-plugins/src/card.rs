@@ -9,6 +9,9 @@ pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Card {
+    /// The service this card is about, such as "github", when the app has its mark.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brand: Option<&'static str>,
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subtitle: Option<String>,
@@ -21,11 +24,16 @@ pub struct Card {
 impl Card {
     pub fn new(title: impl Into<String>) -> Self {
         Self {
+            brand: None,
             title: title.into(),
             subtitle: None,
             body: Vec::new(),
             actions: Vec::new(),
         }
+    }
+    pub fn brand(mut self, brand: &'static str) -> Self {
+        self.brand = Some(brand);
+        self
     }
     pub fn subtitle(mut self, subtitle: impl Into<String>) -> Self {
         self.subtitle = Some(subtitle.into());

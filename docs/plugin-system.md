@@ -272,3 +272,18 @@ parties are ever allowed: signing, review, a directory and stricter sandboxing.
   spam check and needs-reply annotation, so a message never stacks three banners.
 - Rate limits for remote plugins, and whether triggers are allowed to send
   notifications or only update cards.
+
+## Brand marks
+
+Plugin cards, Settings → Plugins and Settings → AI show the logo of the
+service they connect to, only to identify it. Postmere's own interface keeps
+its drawn icons.
+
+- Single-colour marks for GitHub, Linear, Jira, Sentry, Vercel, Netlify,
+  PagerDuty, Opsgenie, Claude, OpenAI and Cursor come from Simple Icons (CC0),
+  drawn in each brand's official colour, unaltered.
+- VS Code uses Microsoft's logo from code.visualstudio.com/brand; Microsoft
+  asked Simple Icons not to carry its marks.
+- Assets live in `Assets.xcassets/Brands`. A card names its service with
+  `brand`; a plugin lists the services it covers in `brands` (two show as an
+  overlapping pair). Follow each company's brand guidelines when adding one.

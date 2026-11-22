@@ -166,6 +166,14 @@ struct AssistantMonogram: View {
     }
 
     var body: some View {
+        if let brand = Brand(clientName: name) {
+            BrandTile(brand: brand, size: size)
+        } else {
+            monogram
+        }
+    }
+
+    private var monogram: some View {
         Text(String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased())
             .font(.system(size: size * 0.5, weight: .bold, design: .rounded))
             .foregroundStyle(.white)

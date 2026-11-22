@@ -141,6 +141,7 @@ impl Plugin for Bills {
             version: 1,
             icon: "doc.text",
             tint: "green",
+            brands: vec![],
             permissions: vec![Permission::MessageRead],
             settings: vec![SettingField {
                 key: "remind_days_before",

@@ -26,6 +26,7 @@ impl Plugin for Packages {
             version: 1,
             icon: "shippingbox",
             tint: "orange",
+            brands: vec![],
             permissions: vec![Permission::MessageRead],
             settings: vec![SettingField {
                 key: "show_delivered",
@@ -57,6 +58,9 @@ impl Plugin for Packages {
             subtitle.push_str(&estimate);
         }
         let mut card = Card::new(title).subtitle(subtitle);
+        if let Some(brand) = tracking.carrier.brand() {
+            card = card.brand(brand);
+        }
         if let Some(stage) = stage {
             card = card.component(Component::Steps {
                 labels: STEPS.iter().map(|s| (*s).into()).collect(),

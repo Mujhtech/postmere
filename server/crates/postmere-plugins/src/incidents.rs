@@ -139,6 +139,7 @@ impl Plugin for Incidents {
             version: 1,
             icon: "flame",
             tint: "red",
+            brands: vec!["pagerduty", "opsgenie"],
             permissions: vec![Permission::MessageRead],
             settings: Vec::new(),
         }
@@ -164,12 +165,18 @@ impl Plugin for Incidents {
             subtitle.push_str(" · ");
             subtitle.push_str(number);
         }
-        let mut card = Card::new(title)
-            .subtitle(subtitle)
-            .component(Component::Badge {
-                label: state.into(),
-                tint: Some(tint),
-            });
+        let brand = match incident.provider {
+            Provider::PagerDuty => "pagerduty",
+            Provider::Opsgenie => "opsgenie",
+        };
+        let mut card =
+            Card::new(title)
+                .brand(brand)
+                .subtitle(subtitle)
+                .component(Component::Badge {
+                    label: state.into(),
+                    tint: Some(tint),
+                });
         if let Some(urgency) = &incident.urgency {
             card = card.component(Component::Facts {
                 items: vec![("Urgency".into(), urgency.clone())],
@@ -228,6 +235,7 @@ mod tests {
         );
         let c = card(&Incidents, &mail).unwrap();
         assert_eq!(c.title, "Disk full on db-1");
+        assert_eq!(c.brand, Some("pagerduty"));
         assert_eq!(c.subtitle.as_deref(), Some("Payments API · Q1W2E3"));
         assert_eq!(
             c.body[0],

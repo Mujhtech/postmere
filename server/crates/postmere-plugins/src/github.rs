@@ -322,6 +322,7 @@ impl Plugin for GitHub {
             version: 1,
             icon: "chevron.left.forwardslash.chevron.right",
             tint: "indigo",
+            brands: vec!["github"],
             permissions: vec![Permission::MessageRead],
             settings: vec![SettingField {
                 key: "show_successful_runs",
@@ -368,7 +369,9 @@ impl Plugin for GitHub {
                     Event::Other => (kind_name(&kind).into(), None),
                 };
                 let reference = format!("{repo}#{number}");
-                let mut card = Card::new(headline).subtitle(format!("{reference} · {title}"));
+                let mut card = Card::new(headline)
+                    .brand("github")
+                    .subtitle(format!("{reference} · {title}"));
                 if let Some(reason) = reason {
                     card = card.component(Component::Badge {
                         label: reason.into(),
@@ -413,6 +416,7 @@ impl Plugin for GitHub {
                     facts.push(("Commit".into(), commit.chars().take(7).collect()));
                 }
                 let mut card = Card::new(headline)
+                    .brand("github")
                     .subtitle(subtitle)
                     .component(Component::Badge {
                         label: badge.into(),
@@ -434,7 +438,7 @@ impl Plugin for GitHub {
                 severity,
                 url,
             } => {
-                let mut card = Card::new("Security alert").subtitle(repo);
+                let mut card = Card::new("Security alert").brand("github").subtitle(repo);
                 if let Some(severity) = severity {
                     let tint = match severity {
                         "Critical" | "High" => "red",

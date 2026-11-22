@@ -136,6 +136,7 @@ impl Plugin for Deploys {
             version: 1,
             icon: "icloud.and.arrow.up",
             tint: "teal",
+            brands: vec!["vercel", "netlify"],
             permissions: vec![Permission::MessageRead],
             settings: vec![SettingField {
                 key: "show_successful",
@@ -164,12 +165,18 @@ impl Plugin for Deploys {
             subtitle.push_str(" · ");
             subtitle.push_str(environment);
         }
-        let mut card = Card::new(title)
-            .subtitle(subtitle)
-            .component(Component::Badge {
-                label: badge.into(),
-                tint: Some(tint),
-            });
+        let brand = match deploy.host {
+            Host::Vercel => "vercel",
+            Host::Netlify => "netlify",
+        };
+        let mut card =
+            Card::new(title)
+                .brand(brand)
+                .subtitle(subtitle)
+                .component(Component::Badge {
+                    label: badge.into(),
+                    tint: Some(tint),
+                });
         if let Some(branch) = &deploy.branch {
             card = card.component(Component::Facts {
                 items: vec![("Branch".into(), branch.clone())],
@@ -244,6 +251,7 @@ mod tests {
         );
         let c = card(&Deploys, &mail).unwrap();
         assert_eq!(c.title, "Deploy failed");
+        assert_eq!(c.brand, Some("vercel"));
         assert_eq!(c.subtitle.as_deref(), Some("storefront · Production"));
         assert_eq!(c.actions[0].title, "Open Logs");
         assert_eq!(
