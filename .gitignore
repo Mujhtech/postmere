@@ -8,3 +8,9 @@ xcuserdata/
 .env.*
 !.env.example
 /server/deploy/secrets/
+/build/
+*.xcarchive
+# Sparkle's private signing key must never be committed. Export it only to a
+# password manager or a CI secret.
+*sparkle*private*
+*.sparkle-key

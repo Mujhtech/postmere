@@ -1,0 +1,8 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Postmere</title>
+        <!-- Updated by script/release.sh. Each item is signed with the
+             private EdDSA key that matches SUPublicEDKey in Info.plist. -->
+    </channel>
+</rss>

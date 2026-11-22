@@ -2,6 +2,19 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Sparkle: the appcast lives in the public repo; updates must be signed
+	     with the private key matching SUPublicEDKey, which never leaves the
+	     release machine's keychain. -->
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/Mujhtech/postmere/main/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>DxvQHCZAXjNrAATdg7OHkb7cQ0zYwKu0rR1wfHz/FMo=</string>
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

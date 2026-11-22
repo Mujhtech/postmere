@@ -10,6 +10,7 @@ struct postmereApp: App {
         let runtime = MailRuntime()
         _runtime = State(initialValue: runtime)
         appDelegate.runtime = runtime
+        _ = AppUpdater.shared
     }
 
     private var store: MailStore { runtime.store }

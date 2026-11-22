@@ -39,6 +39,11 @@ struct MailCommands: Commands {
     private var canActOnConversation: Bool { canActOnMessage && (store?.selectedMessageIDs.count ?? 0) <= 1 && store?.selectedMessage?.mailbox != .outbox }
 
     var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("About Postmere") { AboutPanel.show() }
+            Button("Check for Updates…") { AppUpdater.shared.checkForUpdates() }
+                .disabled(!AppUpdater.shared.canCheckForUpdates)
+        }
         CommandGroup(after: .textEditing) {
             Button("Search Mail") {
                 if let search = NSApp.keyWindow?.toolbar?.visibleItems?.compactMap({ $0 as? NSSearchToolbarItem }).first {
