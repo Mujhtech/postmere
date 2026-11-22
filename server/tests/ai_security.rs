@@ -46,7 +46,7 @@ async fn ai_opt_in_and_retrieval_stay_user_and_workspace_scoped() {
     let pool = db::connect(&url).await.unwrap();
     db::migrate(&pool).await.unwrap();
     let mut config = common::config(url);
-    config.ai_api_key = Some("fixture-never-transmitted".into());
+    config.ai = Some(postmere_core::config::AiProvider::openai("fixture-never-transmitted"));
     let mut state = AppState::new(pool.clone(), config).await.unwrap();
     // Even an accidental model call is forced onto a closed loopback port.
     state.http = reqwest::Client::builder()
@@ -346,7 +346,7 @@ async fn check_spam_provider(
         .route("/redirect", post(|| async { axum::response::Redirect::temporary("/assess") }));
     let transport = tokio::spawn(async move { axum::serve(listener, fixture).await.unwrap() });
     let mut cfg = (*state.config).clone();
-    cfg.ai_api_key = None;
+    cfg.ai = None;
     // Only this in-process test bypasses the production HTTPS-only loader.
     cfg.decision_adapter = Some(DecisionAdapter {
         url: format!("http://127.0.0.1:{port}/assess").parse().unwrap(),

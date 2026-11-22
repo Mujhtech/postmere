@@ -21,7 +21,7 @@ pub fn config(database_url: String) -> Config {
         microsoft_client_id: None,
         microsoft_client_secret: None,
         microsoft_tenant: "common".into(),
-        ai_api_key: None,
+        ai: None,
         ai_model: "test-disabled".into(),
         decision_adapter: None,
     }

@@ -100,7 +100,7 @@ struct MailAISettingsView: View {
 
     private func availability(_ value: MailAISettings) -> String {
         if value.available { return "\(value.provider) · \(value.model)" }
-        return value.decisionAvailable == true ? "Spam checks only; writing needs OpenAI" : "Not set up by your administrator"
+        return value.decisionAvailable == true ? "Spam checks only; writing needs an AI provider" : "Not set up by your administrator"
     }
 
     private func save(enabled: Bool? = nil, in generation: UUID) async {

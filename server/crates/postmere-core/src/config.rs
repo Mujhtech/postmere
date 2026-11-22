@@ -25,7 +25,8 @@ pub struct Config {
     pub microsoft_client_id: Option<String>,
     pub microsoft_client_secret: Option<String>,
     pub microsoft_tenant: String,
-    pub ai_api_key: Option<String>,
+    /// None when the deployment has no AI configured.
+    pub ai: Option<AiProvider>,
     pub ai_model: String,
     pub decision_adapter: Option<DecisionAdapter>,
 }
@@ -34,6 +35,153 @@ pub struct Config {
 pub struct DecisionAdapter {
     pub url: Url,
     pub token: Zeroizing<String>,
+}
+
+/// Where AI requests go: any endpoint that speaks the OpenAI Responses API.
+/// That covers OpenAI, Azure OpenAI and self-hosted servers such as vLLM or
+/// Ollama, so a deployment can keep mail on infrastructure it controls.
+#[derive(Clone)]
+pub struct AiProvider {
+    /// The Responses endpoint, for example https://api.openai.com/v1/responses.
+    pub url: Url,
+    /// Self-hosted servers on a private network may need no key.
+    pub key: Option<Zeroizing<String>>,
+    pub auth: AiAuth,
+    /// Named in the data notice users read before turning AI on.
+    pub name: String,
+    /// Sender research relies on the provider's hosted web search tool.
+    pub web_search: bool,
+    /// The operator states this provider keeps no request data, for example
+    /// under an OpenAI zero data retention agreement or a self-hosted model.
+    pub zero_retention: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiAuth {
+    /// `Authorization: Bearer <key>` (OpenAI and most compatible servers).
+    Bearer,
+    /// `api-key: <key>` (Azure OpenAI keys).
+    ApiKey,
+}
+
+const OPENAI_BASE: &str = "https://api.openai.com/v1";
+
+impl AiProvider {
+    /// OpenAI's hosted API with an API key.
+    pub fn openai(key: impl Into<String>) -> Self {
+        Self {
+            url: Url::parse(&format!("{OPENAI_BASE}/responses")).expect("static URL"),
+            key: Some(Zeroizing::new(key.into())),
+            auth: AiAuth::Bearer,
+            name: "OpenAI".into(),
+            web_search: true,
+            zero_retention: false,
+        }
+    }
+}
+
+/// Plain HTTP is allowed only where traffic cannot leave a private network:
+/// loopback, private and link-local addresses, and single-label or .internal
+/// and .local names such as a Compose service.
+fn private_host(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback() || (ip.segments()[0] & 0xfe00) == 0xfc00,
+        Some(url::Host::Domain(name)) => {
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            name == "localhost"
+                || !name.contains('.')
+                || name.ends_with(".internal")
+                || name.ends_with(".local")
+        }
+        None => false,
+    }
+}
+
+fn flag(value: Option<String>, default: bool) -> Result<bool, AppError> {
+    match value
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        None => Ok(default),
+        Some("1" | "true" | "yes" | "on") => Ok(true),
+        Some("0" | "false" | "no" | "off") => Ok(false),
+        Some(_) => Err(AppError::internal("invalid_ai_flag")),
+    }
+}
+
+pub struct AiProviderInput {
+    pub base_url: Option<String>,
+    pub key: Option<String>,
+    pub auth: Option<String>,
+    pub name: Option<String>,
+    pub web_search: Option<String>,
+    pub zero_retention: Option<String>,
+}
+
+fn ai_provider(input: AiProviderInput) -> Result<Option<AiProvider>, AppError> {
+    if input.base_url.is_none() && input.key.is_none() {
+        return Ok(None);
+    }
+    let base = input.base_url.unwrap_or_else(|| OPENAI_BASE.into());
+    let base = base.trim().trim_end_matches('/');
+    let endpoint = if base.ends_with("/responses") {
+        base.to_owned()
+    } else {
+        format!("{base}/responses")
+    };
+    let url = Url::parse(&endpoint).map_err(|_| AppError::internal("invalid_ai_base_url"))?;
+    if !(url.scheme() == "https" || (url.scheme() == "http" && private_host(&url)))
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(AppError::internal("invalid_ai_base_url"));
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let openai = host == "api.openai.com";
+    if input
+        .key
+        .as_deref()
+        .is_some_and(|key| key.bytes().any(|b| !b.is_ascii_graphic()))
+        || (openai && input.key.is_none())
+    {
+        return Err(AppError::internal("invalid_ai_key"));
+    }
+    let auth = match input
+        .auth
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        None | Some("bearer") => AiAuth::Bearer,
+        Some("api-key") => AiAuth::ApiKey,
+        Some(_) => return Err(AppError::internal("invalid_ai_auth")),
+    };
+    let name = match input.name.map(|name| name.trim().to_owned()) {
+        Some(name) if !name.is_empty() => {
+            if name.chars().count() > 60 || name.chars().any(char::is_control) {
+                return Err(AppError::internal("invalid_ai_provider_name"));
+            }
+            name
+        }
+        _ if openai => "OpenAI".into(),
+        _ if host.ends_with(".openai.azure.com") => "Azure OpenAI".into(),
+        _ => host.clone(),
+    };
+    Ok(Some(AiProvider {
+        url,
+        key: input.key.map(Zeroizing::new),
+        auth,
+        name,
+        web_search: flag(input.web_search, openai)?,
+        zero_retention: flag(input.zero_retention, false)?,
+    }))
 }
 
 fn decision_adapter(
@@ -139,7 +287,14 @@ impl Config {
             microsoft_client_id,
             microsoft_client_secret,
             microsoft_tenant,
-            ai_api_key: optional("OPENAI_API_KEY"),
+            ai: ai_provider(AiProviderInput {
+                base_url: optional("POSTMERE_AI_BASE_URL"),
+                key: optional("POSTMERE_AI_API_KEY").or_else(|| optional("OPENAI_API_KEY")),
+                auth: optional("POSTMERE_AI_AUTH"),
+                name: optional("POSTMERE_AI_PROVIDER_NAME"),
+                web_search: optional("POSTMERE_AI_WEB_SEARCH"),
+                zero_retention: optional("POSTMERE_AI_ZERO_RETENTION"),
+            })?,
             ai_model: env::var("POSTMERE_AI_MODEL").unwrap_or_else(|_| "gpt-6-luna".into()),
             decision_adapter: decision_adapter(
                 optional("POSTMERE_DECISION_URL"),
@@ -243,6 +398,98 @@ fn validate_database_url(value: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn ai(base: Option<&str>, key: Option<&str>) -> AiProviderInput {
+        AiProviderInput {
+            base_url: base.map(Into::into),
+            key: key.map(Into::into),
+            auth: None,
+            name: None,
+            web_search: None,
+            zero_retention: None,
+        }
+    }
+    #[test]
+    fn ai_provider_defaults_to_openai_and_accepts_compatible_endpoints() {
+        assert!(ai_provider(ai(None, None)).unwrap().is_none());
+        let openai = ai_provider(ai(None, Some("sk-test"))).unwrap().unwrap();
+        assert_eq!(openai.url.as_str(), "https://api.openai.com/v1/responses");
+        assert_eq!(
+            (
+                openai.name.as_str(),
+                openai.web_search,
+                openai.zero_retention
+            ),
+            ("OpenAI", true, false)
+        );
+        // OpenAI itself always needs a key.
+        assert!(ai_provider(ai(Some("https://api.openai.com/v1"), None)).is_err());
+
+        let azure = ai_provider(AiProviderInput {
+            auth: Some("api-key".into()),
+            ..ai(
+                Some("https://acme.openai.azure.com/openai/v1/"),
+                Some("azure-key"),
+            )
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            azure.url.as_str(),
+            "https://acme.openai.azure.com/openai/v1/responses"
+        );
+        assert_eq!(
+            (azure.auth, azure.name.as_str(), azure.web_search),
+            (AiAuth::ApiKey, "Azure OpenAI", false)
+        );
+
+        // A model server on the same private network needs neither TLS nor a key.
+        for base in [
+            "http://ollama:11434/v1",
+            "http://127.0.0.1:8000/v1",
+            "http://10.0.0.5/v1",
+            "http://host.docker.internal:11434/v1/responses",
+        ] {
+            let local = ai_provider(ai(Some(base), None)).unwrap().unwrap();
+            assert!(local.key.is_none() && !local.web_search, "{base}");
+            assert!(local.url.path().ends_with("/v1/responses"), "{base}");
+        }
+        let attested = ai_provider(AiProviderInput {
+            zero_retention: Some("true".into()),
+            name: Some("Acme private model".into()),
+            ..ai(Some("http://vllm:8000/v1"), None)
+        })
+        .unwrap()
+        .unwrap();
+        assert!(attested.zero_retention);
+        assert_eq!(attested.name, "Acme private model");
+    }
+    #[test]
+    fn ai_provider_rejects_plaintext_over_the_internet_and_malformed_settings() {
+        for base in [
+            "http://models.example.com/v1",
+            "https://user:pw@models.example.com/v1",
+            "https://models.example.com/v1?x=1",
+            "ftp://models/v1",
+            "not a url",
+        ] {
+            assert!(ai_provider(ai(Some(base), Some("k"))).is_err(), "{base}");
+        }
+        assert!(ai_provider(ai(None, Some("key with space"))).is_err());
+        assert!(
+            ai_provider(AiProviderInput {
+                auth: Some("basic".into()),
+                ..ai(None, Some("k"))
+            })
+            .is_err()
+        );
+        assert!(
+            ai_provider(AiProviderInput {
+                web_search: Some("maybe".into()),
+                ..ai(None, Some("k"))
+            })
+            .is_err()
+        );
+    }
     #[test]
     fn decision_adapter_requires_an_explicit_secure_endpoint_and_separate_token() {
         let token = Some("adapter-token".to_owned());

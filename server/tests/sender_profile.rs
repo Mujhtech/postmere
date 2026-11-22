@@ -109,7 +109,7 @@ impl Fixture {
         let pool = db::connect(&url).await.unwrap();
         db::migrate(&pool).await.unwrap();
         let mut config = common::config(url);
-        config.ai_api_key = Some("fixture-never-transmitted".into());
+        config.ai = Some(postmere_core::config::AiProvider::openai("fixture-never-transmitted"));
         let mut state = AppState::new(pool.clone(), config).await.unwrap();
         state.http = reqwest::Client::builder()
             .no_proxy()
@@ -454,7 +454,7 @@ async fn unconfigured_sender_profile_never_calls_transport() {
     let transport = FixtureSearch::new(false, false);
     let fixture = Fixture::new(transport.clone(), 1).await;
     let mut config = (*fixture.state.config).clone();
-    config.ai_api_key = None;
+    config.ai = None;
     let state = AppState::new(fixture.state.pool.clone(), config)
         .await
         .unwrap();

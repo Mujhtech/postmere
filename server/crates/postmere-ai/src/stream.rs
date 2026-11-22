@@ -4,7 +4,7 @@
 //! checks; other details and citations wait for the completed response. The
 //! final event always carries the result validated as a whole.
 use super::{
-    API_URL, AiFailure, AppError, AppState, Generated, Item, OutputMode, Source, parse_response,
+    AiFailure, AppError, AppState, Generated, Item, OutputMode, Source, parse_response,
     provider_response_failure, provider_status_error, provider_transport_error, result,
     withhold_invalid_items,
 };
@@ -35,15 +35,8 @@ pub(super) async fn generate(
         mode,
         announce_sources,
     };
-    let key = state
-        .config
-        .ai_api_key
-        .as_deref()
-        .ok_or_else(|| AiFailure::NotConfigured.error())?;
     request_stream(
-        &state.http,
-        API_URL,
-        key,
+        super::model_request(&state)?,
         state.config.ai_model.clone(),
         sources,
         request,
@@ -60,9 +53,7 @@ struct StreamOptions {
 }
 
 async fn request_stream(
-    client: &reqwest::Client,
-    url: &str,
-    key: &str,
+    call: reqwest::RequestBuilder,
     model: String,
     sources: Vec<Source>,
     mut request: Value,
@@ -72,9 +63,7 @@ async fn request_stream(
     }: StreamOptions,
 ) -> Result<Response, AppError> {
     request["stream"] = true.into();
-    let call = client
-        .post(url)
-        .bearer_auth(key)
+    let call = call
         .header(header::ACCEPT, "text/event-stream")
         .json(&request)
         .timeout(Duration::from_secs(180));
@@ -439,9 +428,9 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let fixture = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let response = request_stream(
-            &reqwest::Client::new(),
-            &format!("http://{address}/responses"),
-            "test-key",
+            reqwest::Client::new()
+                .post(format!("http://{address}/responses"))
+                .bearer_auth("test-key"),
             "fixture".into(),
             vec![source.clone()],
             json!({"store":false}),
@@ -520,9 +509,9 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let fixture = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let response = request_stream(
-            &reqwest::Client::new(),
-            &format!("http://{address}/responses"),
-            "test-key",
+            reqwest::Client::new()
+                .post(format!("http://{address}/responses"))
+                .bearer_auth("test-key"),
             "fixture".into(),
             vec![source],
             json!({"store":false}),
@@ -586,9 +575,9 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let fixture = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let response = request_stream(
-            &reqwest::Client::new(),
-            &format!("http://{address}/responses"),
-            "test-key",
+            reqwest::Client::new()
+                .post(format!("http://{address}/responses"))
+                .bearer_auth("test-key"),
             "fixture".into(),
             vec![source],
             json!({"store":false}),

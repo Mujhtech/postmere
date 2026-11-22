@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use postmere_core::{AppState, auth::AuthContext, db, error::AppError};
 
-use super::{API_URL, AiFailure, call_model, response_text};
+use super::{AiFailure, call_model, model_request, response_text};
 
 /// At most this many model calls per request, run a few at a time. The app
 /// asks again for the rest.
@@ -271,15 +271,12 @@ fn validated(id: Uuid, value: Value, today: NaiveDate) -> Result<Suggestion, App
 
 async fn ask_model(
     state: &AppState,
-    key: &str,
     evidence: &Evidence,
     history: Option<&BTreeMap<String, i64>>,
     today: NaiveDate,
 ) -> Result<Suggestion, AppError> {
     let response = call_model(
-        &state.http,
-        API_URL,
-        key,
+        model_request(state)?,
         &request(&state.config.ai_model, evidence, history, today),
     )
     .await?;
@@ -469,27 +466,26 @@ async fn compute(
     }
     tx.commit().await?;
 
-    let key = state.config.ai_api_key.clone().filter(|_| ai_enabled);
+    let use_model = ai_enabled && state.config.ai.is_some();
     let mut fresh = Vec::new();
     let mut for_model = Vec::new();
     for item in evidence {
         let habit = history.get(&item.sender);
         if let Some(suggestion) = habit.and_then(|counts| from_history(item.id, counts)) {
             fresh.push(suggestion);
-        } else if item.from_you || key.is_none() {
+        } else if item.from_you || !use_model {
             fresh.push(from_rules(&item));
         } else if for_model.len() < AI_PER_REQUEST {
             for_model.push(item);
         }
     }
-    if let Some(key) = key {
+    if use_model {
         let answers: Vec<Option<Suggestion>> = stream::iter(for_model)
             .map(|item| {
                 let state = state.clone();
-                let key = key.clone();
                 let habit = history.get(&item.sender).cloned();
                 async move {
-                    match ask_model(&state, &key, &item, habit.as_ref(), today).await {
+                    match ask_model(&state, &item, habit.as_ref(), today).await {
                         Ok(suggestion) => Some(suggestion),
                         Err(error) => {
                             tracing::warn!(

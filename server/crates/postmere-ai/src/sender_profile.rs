@@ -1,6 +1,6 @@
 //! Public professional context, researched from an authorized sender envelope.
 //! Never shares message bodies, subjects, mailbox history, or account credentials.
-use super::{API_URL, AiFailure, call_model_within};
+use super::{AiFailure, call_model_within, model_request};
 use axum::{
     Extension, Json, Router,
     extract::{Path, State},
@@ -40,12 +40,7 @@ pub trait SearchTransport: Clone + Send + Sync + 'static {
 pub struct HttpSearch;
 impl SearchTransport for HttpSearch {
     async fn search(&self, state: &AppState, request: Value) -> Result<Value, AppError> {
-        let key = state
-            .config
-            .ai_api_key
-            .as_deref()
-            .ok_or_else(|| AiFailure::NotConfigured.error())?;
-        call_model_within(&state.http, API_URL, key, &request, 150).await
+        call_model_within(model_request(state)?, &request, 150).await
     }
 }
 
@@ -368,7 +363,8 @@ fn status(sender: &Sender, value: &'static str) -> ProfileResponse {
     }
 }
 fn availability(state: &AppState, sender: &Sender) -> Option<ProfileResponse> {
-    if state.config.ai_api_key.is_none() {
+    // Research needs the provider's hosted web search; self-hosted models lack it.
+    if !state.config.ai.as_ref().is_some_and(|ai| ai.web_search) {
         Some(status(sender, "unconfigured"))
     } else if !sender.enabled {
         Some(status(sender, "disabled"))

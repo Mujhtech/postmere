@@ -1,6 +1,6 @@
 //! Read-only decisions about one explicitly selected message. Only the server
 //! maps the analyzer's result back to an owned message.
-use super::{API_URL, AiFailure, call_model, response_text};
+use super::{AiFailure, call_model, model_request, response_text};
 use axum::{Json, extract::State};
 use postmere_core::{AppState, auth::AuthContext, error::AppError};
 use serde::{Deserialize, Serialize};
@@ -56,7 +56,7 @@ async fn evidence(state: &AppState, auth: &AuthContext, id: Uuid) -> Result<Evid
     if !enabled {
         return Err(AppError::forbidden());
     }
-    if state.config.decision_adapter.is_none() && state.config.ai_api_key.is_none() {
+    if state.config.decision_adapter.is_none() && state.config.ai.is_none() {
         return Err(AiFailure::NotConfigured.error());
     }
     let row = sqlx::query(
@@ -131,17 +131,14 @@ async fn assess(state: &AppState, message: &Evidence) -> Result<Decision, AppErr
     }
     let value = if let Some(adapter) = &state.config.decision_adapter {
         let body = json!({"task":"spam", "message":message});
-        call_model(&state.http, adapter.url.as_str(), &adapter.token, &body).await?
+        let request = state
+            .http
+            .post(adapter.url.clone())
+            .bearer_auth(adapter.token.as_str());
+        call_model(request, &body).await?
     } else {
-        let key = state
-            .config
-            .ai_api_key
-            .as_deref()
-            .ok_or_else(|| AiFailure::NotConfigured.error())?;
         let provider = call_model(
-            &state.http,
-            API_URL,
-            key,
+            model_request(state)?,
             &openai_request(&state.config.ai_model, message),
         )
         .await?;
