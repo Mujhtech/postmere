@@ -143,9 +143,17 @@ final class MailHTMLQuoteDisclosure: NSObject, WKScriptMessageHandler {
             if (node.nodeType !== Node.ELEMENT_NODE || node.matches('br,style,script,template,meta,link')) return false;
             return !!node.textContent.trim() || node.matches('img,hr,svg,video,table') || !!node.querySelector('img,hr,svg,video,table');
         };
+        // Gmail and others put the sender's signature below the quote by default,
+        // after a "--" delimiter line. A signature there does not count as an answer.
+        const signature = node => {
+            if (node.nodeType === Node.ELEMENT_NODE && node.matches('.gmail_signature,.gmail_signature_prefix,[data-smartmail="gmail_signature"],.moz-signature')) return true;
+            const text = node.nodeType === Node.ELEMENT_NODE ? node.innerText : node.textContent;
+            return (text ?? '').trim().split(/\r?\n/)[0].trim() === '--';
+        };
         const hasFollowingContent = element => {
             for (let ancestor = element; ancestor && ancestor !== body; ancestor = ancestor.parentElement) {
                 for (let sibling = ancestor.nextSibling; sibling; sibling = sibling.nextSibling) {
+                    if (signature(sibling)) return false;
                     if (meaningful(sibling)) return true;
                 }
             }
