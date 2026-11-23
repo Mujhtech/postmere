@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds, notarizes and publishes a Postmere release for Sparkle.
+# Builds, notarizes and publishes a Postmere release: a drag-to-install disk
+# image for new users and a Sparkle update for existing ones.
 #
 #   script/release.sh 1.1.0
 #
@@ -42,6 +43,16 @@ xcrun notarytool submit "$build/notarize.zip" --keychain-profile "$notary_profil
 xcrun stapler staple "$app"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
 
+# The disk image is what people download; the zip above is Sparkle's update.
+echo "› Building the installer disk image"
+dmg="$build/Postmere-$version.dmg"
+"$root/script/make_dmg.sh" "$app" "$dmg"
+identity="$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application: .*\(6JR3ZGLPD6\)/ {print $2; exit}')"
+[[ -n $identity ]] || { echo "No Developer ID Application certificate for team 6JR3ZGLPD6." >&2; exit 1; }
+codesign --sign "$identity" --timestamp "$dmg"
+xcrun notarytool submit "$dmg" --keychain-profile "$notary_profile" --wait
+xcrun stapler staple "$dmg"
+
 echo "› Updating appcast.xml"
 sparkle="$packages/artifacts/sparkle/Sparkle/bin"
 cp "$root/appcast.xml" "$build/updates/appcast.xml"
@@ -51,7 +62,7 @@ cp "$root/appcast.xml" "$build/updates/appcast.xml"
 cp "$build/updates/appcast.xml" "$root/appcast.xml"
 
 echo "› Publishing GitHub release v$version"
-gh release create "v$version" "$archive" --repo "$repo" --title "Postmere $version" --generate-notes
+gh release create "v$version" "$dmg" "$archive" --repo "$repo" --title "Postmere $version" --generate-notes
 
 cat <<DONE
 
