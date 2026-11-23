@@ -1,5 +1,7 @@
 # Postmere
 
+![Postmere's welcome screen: "A home for your mail."](docs/images/onboarding.png)
+
 A native SwiftUI email client for macOS. All Google and Microsoft mail accounts connect through a Rust/PostgreSQL workspace server, with no application-imposed limit on connected accounts. The backend uses a [Cargo workspace of connected feature crates](server/ARCHITECTURE.md).
 
 Messages, unfinished drafts, rich text, attachments, snippets, saved views, sender rules, and private notes persist on this Mac. File attachments are copied into app-owned storage. An interrupted draft can be resumed after launch; a damaged mailbox file is preserved and reported instead of silently overwritten.
