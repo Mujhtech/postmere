@@ -59,6 +59,12 @@ docker compose run --rm -T app bootstrap owner@example.com 'My workspace' < /sec
 docker compose up -d app caddy
 ```
 
+To skip the local build, run a published release from GitHub Packages
+instead: set `POSTMERE_IMAGE=ghcr.io/mujhtech/postmere-server` and
+`POSTMERE_IMAGE_TAG` to a release such as `1.0.0` in `.env`, then replace
+`docker compose build app` with `docker compose pull app migrate`. Images are
+published for amd64 and arm64.
+
 Run bootstrap only for the first workspace and retain its printed workspace ID.
 The password input must be a protected file or password-manager pipe; it is not
 a command-line argument. The app waits for successful migrations before

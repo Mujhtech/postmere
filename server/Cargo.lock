@@ -1949,7 +1949,7 @@ checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "postmere-ai"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-stream",
  "axum",
@@ -1968,7 +1968,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-calendar"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "chrono",
@@ -1988,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-collaboration"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2005,7 +2005,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -2029,7 +2029,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-mail"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2060,7 +2060,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-mcp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2082,7 +2082,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-mcp-auth"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2099,7 +2099,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-mcp-operations"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2118,7 +2118,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-plugins"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "chrono",
@@ -2134,7 +2134,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-providers"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2155,7 +2155,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-push"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2177,7 +2177,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-realtime"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "futures-util",
@@ -2191,7 +2191,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-server"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2231,7 +2231,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-tracking"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "chrono",
@@ -2247,7 +2247,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-unsubscribe"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2266,7 +2266,7 @@ dependencies = [
 
 [[package]]
 name = "postmere-webhooks"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64 0.22.1",

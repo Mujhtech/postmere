@@ -35,7 +35,9 @@ x-environment: &environment
   POSTMERE_APNS_ENVIRONMENT: ${POSTMERE_APNS_ENVIRONMENT:-}
 
 x-server: &server
-  image: postmere-server:${POSTMERE_IMAGE_TAG:-local}
+  # Local builds by default. To run the published image instead, set
+  # POSTMERE_IMAGE=ghcr.io/mujhtech/postmere-server and a release tag.
+  image: ${POSTMERE_IMAGE:-postmere-server}:${POSTMERE_IMAGE_TAG:-local}
   build:
     context: ..
     dockerfile: Dockerfile
