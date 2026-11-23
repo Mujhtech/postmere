@@ -58,6 +58,7 @@ struct SettingsView: View {
                 defaultMailRow
                 SettingsToggle("Menu bar inbox", symbol: "desktopcomputer", tint: SettingsTint.gray,
                                subtitle: "Glance at new mail from the menu bar", isOn: $showsMenuBarInbox)
+                OpenAtLoginRow()
             }
             Section("Updates") {
                 UpdateSettingsRows()
