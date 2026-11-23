@@ -32,7 +32,9 @@ xcodebuild -project "$root/postmere/postmere.xcodeproj" -scheme postmere -config
     MARKETING_VERSION="$version" CURRENT_PROJECT_VERSION="$build_number" archive -quiet
 
 echo "› Exporting with Developer ID"
-xcodebuild -exportArchive -archivePath "$build/Postmere.xcarchive" \
+# Push notifications need a Developer ID provisioning profile; let Xcode
+# create or refresh it with the account signed in under Xcode › Settings.
+xcodebuild -exportArchive -allowProvisioningUpdates -archivePath "$build/Postmere.xcarchive" \
     -exportOptionsPlist "$root/script/ExportOptions.plist" -exportPath "$build/export" -quiet
 app="$build/export/Postmere.app"
 archive="$build/updates/Postmere-$version.zip"
