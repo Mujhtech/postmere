@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 import AppIntents
 import Observation
 import UserNotifications
@@ -100,10 +100,7 @@ final class MailRuntime {
             return Set(RemoteAccountRegistry.accounts.lazy.filter {
                 $0.scope == scope && $0.status == "connected" && !disconnecting.contains($0.accountID)
             }.map(\.localID))
-        }, writeBadge: { count in
-            let label = count?.formatted()
-            if let tile = NSApp?.dockTile, tile.badgeLabel != label { tile.badgeLabel = label }
-        })
+        }, writeBadge: { count in MailPlatform.setBadge(count) })
         backend.pushInstallationID = push.installationID
         backend.onAccountCatalogChanged = { [weak self] in
             PostmereFocusFilter.invalidateFocusFilterAppContext()
@@ -166,8 +163,7 @@ final class MailRuntime {
         if pushRegistrationGeneration != generation {
             deferredIncomingNotificationIDs = []
             pushRegistrationGeneration = generation
-            if generation != nil { NSApp?.registerForRemoteNotifications() }
-            else { NSApp?.unregisterForRemoteNotifications() }
+            MailPlatform.setRegisteredForPush(generation != nil)
         }
         guard !backend.canAccessWorkspace else {
             lastAccessibleWorkspaceScope = backend.scope
@@ -201,10 +197,7 @@ final class MailRuntime {
 
         // Native attachment and formatting panels are not owned by a SwiftUI
         // sheet, so dismiss those as the authenticated view is removed.
-        for panel in (NSApp?.windows ?? []).compactMap({ $0 as? NSPanel }) {
-            if let filePanel = panel as? NSSavePanel { filePanel.cancel(nil) }
-            else { panel.orderOut(nil) }
-        }
+        MailPlatform.dismissNativePanels()
     }
 
     func start() {
@@ -298,8 +291,15 @@ final class MailRuntime {
     }
 
     func receivedPush(_ destination: MailPushDestination) {
-        guard validPushDestination(destination) else { return }
-        Task { await syncBackend(refreshProvider: false) }
+        Task { await syncForPush(destination) }
+    }
+
+    /// Syncs for a push meant for this workspace. iOS waits on it to finish a background fetch.
+    @discardableResult
+    func syncForPush(_ destination: MailPushDestination) async -> Bool {
+        guard validPushDestination(destination) else { return false }
+        await syncBackend(refreshProvider: false)
+        return true
     }
 
     private func validPushDestination(_ destination: MailPushDestination) -> Bool {

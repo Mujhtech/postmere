@@ -88,3 +88,5 @@ nonisolated struct SharedTemplateAttachment: Codable, Sendable {
 }
 nonisolated struct SharedTemplateInput: Encodable, Sendable { let template: SharedTemplate }
 nonisolated struct SharedTemplateUpdate: Encodable, Sendable { let template: SharedTemplate; let expectedVersion: Int }
+
+extension BackendMailMessage: Identifiable {}

@@ -24,18 +24,28 @@ cd "$project_root/postmere/postmere"
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/postmere-tests.XXXXXX")"
 trap 'rm -rf "$test_dir"' EXIT
 
-mail_models=(Models/MailMessage.swift Models/ReceivedMailBody.swift Models/MailWorkflow.swift)
-backend_models=("${mail_models[@]}" Models/BackendMail.swift Models/BackendSenderMark.swift Models/BackendAssistants.swift)
+mail_models=(Models/MailMessage.swift Models/ReceivedMailBody.swift Models/MailHTMLDocument.swift Models/MailWorkflow.swift)
+backend_models=("${mail_models[@]}" Models/BackendMail.swift Models/BackendSenderMark.swift Models/BackendAssistants.swift Support/MailPlatform.swift)
 summary_sources=(Models/MailAI.swift Services/BackendSummaryStream.swift)
 store_sources=("${backend_models[@]}" Models/MailMessage+SmartCategories.swift Models/MailReplyIntent.swift Models/MailSearchQuery.swift Models/InboxSplit.swift
               Models/SampleMail.swift Stores/*.swift Support/ComposeAttachments.swift
               Support/MailTemplate.swift Support/MailSignature.swift Support/MailSenderContext.swift Support/MailSenderDomain.swift)
-theme=(Support/MailboxTheme.swift Support/PostmereAccent.swift Support/PostmereTheme.swift Support/PostmereIcon.swift)
+theme=(Support/MailPlatform.swift Support/MailboxTheme.swift Support/PostmereAccent.swift Support/PostmereTheme.swift Support/PostmereIcon.swift)
 attachment_views=(Support/AttachmentFileType.swift Support/AttachmentIconView.swift)
 editor_sources=("${mail_models[@]}" "${theme[@]}" Support/MailTemplate.swift
                 Support/MarkdownSubstitutions.swift Support/ComposeContinuityCamera.swift
                 Support/ComposeBodyEditor.swift)
 mac_target=(-target "$(uname -m)-apple-macos27.0")
+
+# Source groups overlap (the platform shim is in several), so list each file once.
+unique_sources() {
+    local -a unique=()
+    local source
+    for source in "${sources[@]}"; do
+        [[ " ${unique[*]-} " == *" $source "* ]] || unique+=("$source")
+    done
+    sources=("${unique[@]}")
+}
 
 run_suite() {
     local suite="$1"
@@ -95,7 +105,7 @@ run_suite() {
         notifications)
             flags=(-swift-version 5 "${mac_target[@]}")
             sources=("${mail_models[@]}" Models/NotificationProfile.swift Models/MailPushModels.swift Services/BackendHTTPClient.swift
-                     Services/BackendKeychain.swift Support/MailFocusFilter.swift Services/MailNotificationService.swift)
+                     Services/BackendKeychain.swift Support/MailFocusFilter.swift Services/MailNotificationService.swift Support/MailPlatform.swift)
             ;;
         unsubscribe)
             flags=(-swift-version 5 -parse-as-library)
@@ -116,6 +126,7 @@ run_suite() {
                 signatures) sources+=(Support/MailSignature.swift Views/SignatureEditorView.swift) ;;
             esac
             # These fixtures exercise file-private editor behavior in the same source file.
+            unique_sources
             cat "${sources[@]}" "$fixture" > "$test_dir/$suite.swift"
             fixture="$test_dir/$suite.swift"
             sources=()
@@ -128,6 +139,7 @@ run_suite() {
     esac
 
     sources+=("$fixture")
+    unique_sources
     printf '\nRunning %s\n' "$suite"
     xcrun swiftc -default-isolation MainActor -module-cache-path "$test_dir/module-cache" \
         "${flags[@]}" "${sources[@]}" -o "$binary"

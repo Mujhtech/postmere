@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 import Observation
 
 /// The account picker and Accounts settings use the same browser sign-in flow.
@@ -32,7 +32,7 @@ final class MailAccountConnection {
                 guard let url = URL(string: connection.authorizationUrl), url.scheme == "https",
                       ["accounts.google.com", "login.microsoftonline.com"].contains(url.host ?? ""),
                       url.user == nil, url.password == nil,
-                      NSWorkspace.shared.open(url) else { throw BackendError.invalidURL }
+                      MailPlatform.open(url) else { throw BackendError.invalidURL }
                 let known = Set(session.accounts.map(\.id))
                 let connectedID = try await session.waitForOAuth(connection, expectedAccountID: account?.id)
                 guard session.realtimeGeneration == generation else { return }

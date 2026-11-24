@@ -1,4 +1,8 @@
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import Observation
 
 nonisolated enum DefaultMailAppStatus: Equatable, Sendable {
@@ -23,10 +27,19 @@ final class DefaultMailAppService {
     }
 
     convenience init() {
+        #if os(macOS)
         self.init(readStatus: { await Self.systemStatus() }, requestChange: {
             try await NSWorkspace.shared.setDefaultApplication(at: Bundle.main.bundleURL,
                                                                toOpenURLsWithScheme: "mailto")
         })
+        #else
+        // iOS doesn't report the default mail app; the choice lives in Settings.
+        self.init(readStatus: { .other(nil) }, requestChange: {
+            if let settings = URL(string: UIApplication.openDefaultApplicationsSettingsURLString) {
+                await UIApplication.shared.open(settings)
+            }
+        })
+        #endif
     }
 
     func refresh() async {
@@ -50,7 +63,7 @@ final class DefaultMailAppService {
             let systemError = error as NSError
             let cancelled = error is CancellationError
                 || (systemError.domain == NSCocoaErrorDomain && systemError.code == NSUserCancelledError)
-                || (systemError.domain == NSOSStatusErrorDomain && systemError.code == Int(userCanceledErr))
+                || (systemError.domain == NSOSStatusErrorDomain && systemError.code == -128 /* userCanceledErr */)
             if !cancelled { issue = systemError.localizedDescription }
         }
         // The system can keep the previous handler when the confirmation is dismissed.
@@ -58,6 +71,7 @@ final class DefaultMailAppService {
         if status != .postmere { errorMessage = issue }
     }
 
+    #if os(macOS)
     @concurrent private static func systemStatus() async -> DefaultMailAppStatus {
         guard let link = URL(string: "mailto:"),
               let handler = NSWorkspace.shared.urlForApplication(toOpen: link) else { return .other(nil) }
@@ -71,4 +85,5 @@ final class DefaultMailAppService {
             ?? handler.deletingPathExtension().lastPathComponent
         return .other(name)
     }
+    #endif
 }

@@ -20,7 +20,9 @@ struct AccentLinkStyle: ButtonStyle {
                 .opacity(isEnabled ? (configuration.isPressed ? 0.6 : 1) : 0.4)
                 .contentShape(Rectangle())
                 .onHover { hovering = $0 }
+                #if os(macOS)
                 .pointerStyle(.link)
+                #endif
         }
     }
 }

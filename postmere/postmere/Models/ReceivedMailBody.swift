@@ -55,19 +55,18 @@ nonisolated extension MailMessage {
     /// A local DOM gives us entity decoding and tolerant HTML parsing without a
     /// browser, resource fetching, or HTML attributed-string import.
     private static func visibleText(in html: String) -> String {
-        guard let document = try? XMLDocument(xmlString: html, options: [.documentTidyHTML, .nodeLoadExternalEntitiesNever]),
-              let root = document.rootElement() else { return "" }
+        guard let document = MailHTMLDocument(html), let root = document.root else { return "" }
         let omitted = ["head", "style", "script", "template", "iframe", "object"]
         let blocks = ["p", "div", "li", "tr", "section", "article", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6"]
         var text = ""
-        func visit(_ node: XMLNode) {
-            if node.kind == .text {
-                text += node.stringValue ?? ""
+        func visit(_ node: MailHTMLNode) {
+            if let value = node.text {
+                text += value
                 return
             }
-            guard node.kind == .element, let name = node.localName?.lowercased(), !omitted.contains(name) else { return }
+            guard let name = node.tag, !omitted.contains(name) else { return }
             if name == "br" || (blocks.contains(name) && !text.hasSuffix("\n")) { text += "\n" }
-            for child in node.children ?? [] { visit(child) }
+            for child in node.children { visit(child) }
             if blocks.contains(name) && !text.hasSuffix("\n") { text += "\n" }
             if name == "td" || name == "th" { text += " " }
         }
@@ -98,12 +97,11 @@ nonisolated enum MailAuthoredText {
     static func visibleHTML(_ html: String) -> String {
         guard !Task.isCancelled, html.utf8.count <= 384 * 1_024,
               html.range(of: "<!ENTITY", options: .caseInsensitive) == nil,
-              let document = try? XMLDocument(xmlString: html, options: [.documentTidyHTML, .nodeLoadExternalEntitiesNever]),
-              let root = document.rootElement() else { return "" }
+              let document = MailHTMLDocument(html), let root = document.root else { return "" }
 
         var hiddenSelectors: Set<String> = []
-        for style in (try? document.nodes(forXPath: "//style")) ?? [] {
-            for rule in (style.stringValue ?? "").split(separator: "}") {
+        for style in document.styleSheets {
+            for rule in style.split(separator: "}") {
                 let blocks = rule.split(separator: "{", omittingEmptySubsequences: false)
                 guard blocks.count >= 2, let declarations = blocks.last,
                       matches(invisibleStyle, in: String(declarations)) else { continue }
@@ -119,24 +117,24 @@ nonisolated enum MailAuthoredText {
         let skipClasses: Set<String> = ["gmail_quote", "gmail_quote_container", "yahoo_quoted", "moz-cite-prefix", "preheader", "previewtext"]
         var text = ""
         var reachedReply = false
-        func visit(_ node: XMLNode, depth: Int) {
+        func visit(_ node: MailHTMLNode, depth: Int) {
             guard depth < 96, !reachedReply, !Task.isCancelled, text.utf8.count < maxTextBytes else { return }
-            if node.kind == .text {
-                text += prefix(node.stringValue ?? "", bytes: maxTextBytes - text.utf8.count)
+            if let value = node.text {
+                text += prefix(value, bytes: maxTextBytes - text.utf8.count)
                 return
             }
-            guard let element = node as? XMLElement, let name = element.localName?.lowercased(), !omitted.contains(name) else { return }
-            let id = element.attribute(forName: "id")?.stringValue ?? ""
+            guard let name = node.tag, !omitted.contains(name) else { return }
+            let id = node.attribute("id") ?? ""
             if ["divrplyfwdmsg", "x_divrplyfwdmsg", "ms-outlook-mobile-reference-message"].contains(id.lowercased()) {
                 reachedReply = true
                 return
             }
-            let classes = (element.attribute(forName: "class")?.stringValue ?? "").split(whereSeparator: \.isWhitespace)
-            guard element.attribute(forName: "hidden") == nil, element.attribute(forName: "aria-hidden")?.stringValue?.lowercased() != "true",
+            let classes = (node.attribute("class") ?? "").split(whereSeparator: \.isWhitespace)
+            guard node.attribute("hidden") == nil, node.attribute("aria-hidden")?.lowercased() != "true",
                   !hiddenSelectors.contains("#" + id), !classes.contains(where: { skipClasses.contains($0.lowercased()) || hiddenSelectors.contains("." + $0) }),
-                  !matches(invisibleStyle, in: element.attribute(forName: "style")?.stringValue ?? "") else { return }
+                  !matches(invisibleStyle, in: node.attribute("style") ?? "") else { return }
             if (blocks.contains(name) || name == "br") && !text.hasSuffix("\n") { text += "\n" }
-            for child in element.children ?? [] { visit(child, depth: depth + 1) }
+            for child in node.children { visit(child, depth: depth + 1) }
             if blocks.contains(name) && !text.hasSuffix("\n") { text += "\n" }
             if name == "td" || name == "th" { text += " " }
         }

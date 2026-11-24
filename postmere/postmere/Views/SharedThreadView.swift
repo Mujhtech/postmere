@@ -154,4 +154,3 @@ struct SharedThreadView: View {
     }
 }
 
-extension BackendMailMessage: Identifiable {}

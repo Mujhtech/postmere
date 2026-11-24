@@ -1,5 +1,9 @@
-import AppKit
 import Foundation
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 struct MailTemplateHeaders: Equatable {
     var to = ""
@@ -117,8 +121,12 @@ enum MailTemplate {
            rich.string == text { return rich }
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 4
-        return NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 14),
-            .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph])
+        #if os(macOS)
+        let font = NSFont.systemFont(ofSize: 14), ink = NSColor.labelColor
+        #else
+        let font = UIFont.systemFont(ofSize: 14), ink = UIColor.label
+        #endif
+        return NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: ink, .paragraphStyle: paragraph])
     }
 
     static func encodeRTF(_ text: NSAttributedString) -> Data? {

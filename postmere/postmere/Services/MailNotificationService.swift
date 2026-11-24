@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 import Observation
 import UserNotifications
 
@@ -442,7 +442,7 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
         if let destination = MailPushDestination(userInfo: response.notification.request.content.userInfo) {
             guard response.actionIdentifier != UNNotificationDismissActionIdentifier else { return }
             await MainActor.run {
-                NSApp.activate(ignoringOtherApps: true)
+                MailPlatform.activate()
                 self.openRemoteMessage?(destination)
             }
             return
@@ -452,7 +452,7 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
               let identifier = response.notification.request.content.userInfo["messageID"] as? String,
               let id = UUID(uuidString: identifier) else { return }
         await MainActor.run {
-            NSApp.activate(ignoringOtherApps: true)
+            MailPlatform.activate()
             self.openMessage?(id)
         }
     }

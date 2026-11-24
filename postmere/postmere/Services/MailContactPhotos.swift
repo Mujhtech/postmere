@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 import Contacts
 import ImageIO
 import Observation
@@ -18,7 +18,7 @@ final class MailContactPhotos {
 
     private init() {
         cache.countLimit = 256
-        for notification in [Notification.Name.CNContactStoreDidChange, NSApplication.didBecomeActiveNotification] {
+        for notification in [Notification.Name.CNContactStoreDidChange, MailPlatform.didBecomeActive] {
             let observer = NotificationCenter.default.addObserver(forName: notification, object: nil, queue: .main) { [weak self] note in
                 let contactsChanged = note.name == .CNContactStoreDidChange
                 MainActor.assumeIsolated { self?.refresh(contactsChanged: contactsChanged) }

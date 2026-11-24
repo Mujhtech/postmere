@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 import WebKit
 
@@ -238,7 +237,15 @@ private struct MessageWebView: View {
             .frame(height: documentHeight, alignment: .top)
             .clipped()
             .contentShape(Rectangle())
+            #if os(macOS)
             .overlay { HTMLWheelRouter().accessibilityHidden(true) }
+            #else
+            // The reader's scroll view moves the whole message. The web view is
+            // already as tall as the email, so its own scroller would only
+            // capture touches and bounce separately.
+            .scrollDisabled(true)
+            .scrollIndicators(.hidden)
+            #endif
             .onGeometryChange(for: Window.self) { geometry in
                 guard needsReaderViewport, let viewport = geometry.bounds(of: .scrollView(axis: .vertical))
                 else { return Window(height: documentHeight) }
@@ -250,6 +257,7 @@ private struct MessageWebView: View {
 
 /// Keep a trackpad gesture with one scroller, including its momentum. The
 /// first event often has zero delta, before AppKit knows its direction.
+#if os(macOS)
 private struct HTMLWheelRouter: NSViewRepresentable {
     func makeNSView(context: Context) -> WheelView { WheelView() }
     func updateNSView(_ view: WheelView, context: Context) {}
@@ -299,6 +307,7 @@ private struct HTMLWheelRouter: NSViewRepresentable {
         }
     }
 }
+#endif
 
 /// Measures the body independently of the viewport so widening the reader can also shrink its height.
 @Observable
@@ -584,7 +593,7 @@ private struct MessageLinkPolicy: WebPage.NavigationDeciding {
         }
         if action.navigationType == .linkActivated, action.source.isMainFrame,
            ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
-            NSWorkspace.shared.open(url)
+            MailPlatform.open(url)
         }
         return .cancel
     }

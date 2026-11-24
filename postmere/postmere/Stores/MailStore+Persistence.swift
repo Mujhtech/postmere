@@ -100,7 +100,7 @@ extension MailStore {
             while start < waiting.count {
                 let batch = Array(waiting[start..<min(start + 300, waiting.count)])
                 start += batch.count
-                let restored = await Task.detached(priority: .userInitiated) {
+                let restored = await Task.detached(priority: .userInitiated) { [warm] in
                     persistence.loadBodies(for: batch, keepingRichFor: warm)
                 }.value
                 guard let self, !Task.isCancelled else { return }

@@ -7,6 +7,15 @@ nonisolated enum MailPushEnvironment: String, Sendable {
     /// Build settings and user defaults do not prove which APNs environment
     /// signed this running binary. Read its actual code-signing entitlement.
     static func signedEnvironment() -> Self? {
+        #if os(iOS)
+        // iOS exposes no code-signing API to the app. The build writes the
+        // same aps-environment value into Info.plist beside the entitlement.
+        return switch Bundle.main.object(forInfoDictionaryKey: "PostmereAPNSEnvironment") as? String {
+        case "development": .sandbox
+        case "production": .production
+        default: nil
+        }
+        #else
         var code: SecCode?
         guard SecCodeCopySelf(SecCSFlags(), &code) == errSecSuccess, let code else { return nil }
         var staticCode: SecStaticCode?
@@ -21,6 +30,7 @@ nonisolated enum MailPushEnvironment: String, Sendable {
         case "production": return .production
         default: return nil
         }
+        #endif
     }
 }
 
