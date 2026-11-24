@@ -233,3 +233,22 @@ struct MailRelationship: Equatable {
         return result
     }
 }
+
+extension MailRelationship {
+    /// "under an hour", "about 3 hours", "about 2 days".
+    static func duration(_ seconds: TimeInterval) -> String {
+        let hours = seconds / 3_600
+        if hours < 1 { return "Within an hour" }
+        if hours < 36 { return "About \(Int(hours.rounded())) hour\(Int(hours.rounded()) == 1 ? "" : "s")" }
+        let days = Int((hours / 24).rounded())
+        return "About \(days) day\(days == 1 ? "" : "s")"
+    }
+
+    /// "9–11 AM" in the current locale's hour style.
+    static func window(from hour: Int) -> String {
+        let calendar = Calendar.current
+        let start = calendar.date(bySettingHour: hour, minute: 0, second: 0, of: .now) ?? .now
+        let end = start.addingTimeInterval(2 * 3_600)
+        return (start..<end).formatted(.interval.hour())
+    }
+}

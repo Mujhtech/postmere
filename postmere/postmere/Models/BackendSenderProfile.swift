@@ -172,6 +172,25 @@ nonisolated struct BackendSenderProfile: Decodable, Sendable {
     }
 }
 
+extension BackendSenderProfile {
+    /// An instruction for the AI writer, built only from cited details. Used by "Draft intro".
+    func introPrompt(fallbackName: String) -> String {
+        let name = self.name ?? fallbackName
+        var about = [jobTitle, company ?? publicCompany?.name].compactMap { $0 }.joined(separator: " at ")
+        if about.isEmpty, let company = publicCompany { about = "someone at \(company.name)" }
+        var lines = ["Write a short, specific first email to \(name)\(about.isEmpty ? "" : ", \(about)")."]
+        let points = publicTalkingPoints.map(\.text)
+        if !points.isEmpty {
+            lines.append("Mention one of these naturally: " + points.joined(separator: " / "))
+        } else if let summary = publicCompany?.summary {
+            lines.append("Their company: \(summary)")
+        }
+        if let hiring = publicCompany?.hiring { lines.append("Hiring: \(hiring)") }
+        lines.append("Under 120 words, no flattery, and end with one clear ask. Leave a placeholder like [your ask] if the purpose is unclear.")
+        return lines.joined(separator: "\n")
+    }
+}
+
 nonisolated enum SenderProfileResponseError: LocalizedError {
     case mismatchedSender, unsupportedProfile
     var errorDescription: String? {
