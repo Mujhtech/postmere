@@ -92,7 +92,7 @@ nonisolated enum PostmereLink {
     static let scheme = "postmere"
 
     enum Route: Equatable, Sendable {
-        case inbox, needsReply, compose, ask, triage
+        case inbox, needsReply, compose, ask, triage, assistants
         case message(UUID)
     }
 
@@ -103,6 +103,7 @@ nonisolated enum PostmereLink {
         case .compose: "compose"
         case .ask: "ask"
         case .triage: "triage"
+        case .assistants: "assistants"
         case .message(let id): "message/\(id.uuidString)"
         }
         return URL(string: "\(scheme)://\(path)")!
@@ -117,6 +118,7 @@ nonisolated enum PostmereLink {
         case "compose": return .compose
         case "ask": return .ask
         case "triage": return .triage
+        case "assistants": return .assistants
         case "message": return parts.dropFirst().first.flatMap(UUID.init(uuidString:)).map(Route.message)
         default: return nil
         }

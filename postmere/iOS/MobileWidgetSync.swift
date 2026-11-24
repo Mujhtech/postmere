@@ -75,4 +75,6 @@ enum MobileWidgetSync {
 final class MobileRouter {
     static let shared = MobileRouter()
     var pending: PostmereLink.Route?
+    /// Settings opens straight to Assistants, from the assistant Live Activity.
+    var opensAssistants = false
 }

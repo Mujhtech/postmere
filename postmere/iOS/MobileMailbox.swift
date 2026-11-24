@@ -139,6 +139,9 @@ extension MobileMailbox {
             tab = .ai
         case .triage:
             tab = .triage
+        case .assistants:
+            MobileRouter.shared.opensAssistants = true
+            showsSettings = true
         case .message(let id):
             guard let message = store.messages.first(where: { $0.id == id }) else {
                 tab = .home

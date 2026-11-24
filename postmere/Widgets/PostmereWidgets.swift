@@ -11,6 +11,7 @@ struct PostmereWidgets: WidgetBundle {
         AskControl()
         TriageControl()
         MailSendLiveActivity()
+        AssistantLiveActivity()
     }
 }
 

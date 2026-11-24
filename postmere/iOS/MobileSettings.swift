@@ -30,6 +30,10 @@ struct MobileSettings: View {
             ScrollView {
                 VStack(spacing: 22) {
                     profile
+                        .navigationDestination(isPresented: Binding(get: { MobileRouter.shared.opensAssistants },
+                                                                    set: { MobileRouter.shared.opensAssistants = $0 })) {
+                            MobileAssistantsSettings(runtime: runtime)
+                        }
                     group("Mail") {
                         NavigationLink { MobileInboxTabsSettings(store: runtime.store) } label: {
                             SettingsRow(symbol: "rectangle.split.3x1.fill", tint: .blue, title: "Inbox Tabs",
@@ -97,6 +101,13 @@ struct MobileSettings: View {
                         group("Intelligence") {
                             NavigationLink { MobileAISettings(runtime: runtime) } label: {
                                 SettingsRow(symbol: "sparkles", tint: palette.accent, title: "AI Writing & Answers")
+                            }
+                            divider
+                            NavigationLink { MobileAssistantsSettings(runtime: runtime) } label: {
+                                SettingsRow(symbol: "point.3.connected.trianglepath.dotted", tint: .orange, title: "Assistants",
+                                            value: runtime.assistants.working.isEmpty
+                                                ? (runtime.assistants.connections.isEmpty ? nil : runtime.assistants.connections.count.formatted())
+                                                : "\(runtime.assistants.working.count) working")
                             }
                             divider
                             NavigationLink { MobilePluginSettings(runtime: runtime) } label: {

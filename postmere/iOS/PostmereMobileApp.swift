@@ -34,6 +34,7 @@ struct PostmereMobileApp: App {
                     await runtime.backend.expireSessionIfNeeded()
                     await runtime.notifications.refreshAuthorization()
                     await runtime.synchronizePush(forceStatus: true)
+                    MobileAssistantActivities.refresh(runtime: runtime)
                     await runtime.sync()
                 }
             case .background:
@@ -55,6 +56,7 @@ final class MobileAppDelegate: NSObject, UIApplicationDelegate {
                      didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         runtime.start()
         MobileLiveActivities.start(runtime: runtime)
+        MobileAssistantActivities.start(runtime: runtime)
         // Device registration is separate from permission to show alerts.
         application.registerForRemoteNotifications()
         return true

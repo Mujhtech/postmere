@@ -358,6 +358,7 @@ final class MailRuntime {
             }
             guard !Task.isCancelled, self.backend.realtimeGeneration == requestGeneration else { return }
             if changes.contains(.outbox) { await self.processBackendOutbox(forceRefresh: true) }
+            if changes.contains(.assistants) { await self.assistants.refresh(session: self.backend) }
         })
     }
 
