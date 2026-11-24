@@ -13,4 +13,14 @@
         <string>$(PRODUCT_BUNDLE_IDENTIFIER)-spks</string>
         <string>$(PRODUCT_BUNDLE_IDENTIFIER)-spki</string>
     </array>
+    <!-- Settings → AI → Connect an assistant adds Postmere to these assistants' MCP config files. -->
+    <key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+    <array>
+        <string>/.claude.json</string>
+        <string>/.cursor/</string>
+        <string>/.codex/</string>
+        <string>/.codeium/windsurf/</string>
+        <string>/.gemini/</string>
+        <string>/Library/Application Support/Code/User/</string>
+    </array>
 </dict></plist>

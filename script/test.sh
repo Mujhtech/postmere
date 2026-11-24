@@ -3,7 +3,7 @@ set -euo pipefail
 
 suites=(mail_backend notifications composer attachment_types templates signatures
         backend_events backend_push
-        unsubscribe calendar sender_context sender_profile backend_client backend_session plugins links triage)
+        unsubscribe calendar sender_context sender_profile backend_client backend_session plugins links triage assistant_config)
 
 usage() {
     printf 'Usage: %s [suite ...]\nRun all native suites by default. Available suites:\n' "${0##*/}"
@@ -83,6 +83,10 @@ run_suite() {
         links)
             flags=(-swift-version 6 -parse-as-library)
             sources=(Support/MailLinkDetector.swift)
+            ;;
+        assistant_config)
+            flags=(-swift-version 6 -parse-as-library)
+            sources=(Support/AssistantConfig.swift)
             ;;
         plugins)
             flags=(-swift-version 6 -parse-as-library)

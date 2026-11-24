@@ -185,34 +185,49 @@ struct AssistantMonogram: View {
 
 // MARK: - Quick setup
 
+/// One assistant Postmere can be added to, and the ways to do it.
+private struct AssistantClient: Identifiable {
+    let name: String
+    /// The file Postmere can update directly.
+    var config: AssistantConfigFile?
+    /// A Terminal command that does the same through the assistant's own CLI.
+    var command: String?
+    /// The assistant's own install link, and the URL scheme that shows it's installed.
+    var link: (url: URL, scheme: String)?
+    /// For assistants set up on the web: the page where connectors are added.
+    var connectorPage: URL?
+    /// What to do after the config is in place.
+    var next: String
+    var id: String { name }
+}
+
 private struct QuickSetupGrid: View {
     let mcpURL: URL
-    @Environment(\.openURL) private var openURL
     @State private var done: String?
+    @State private var showing: String?
+    @State private var setUp: Set<String> = []
 
-    private struct Client: Identifiable {
-        enum Action { case copy(String, then: URL?), open(URL, requires: String) }
-        let name: String
-        let hint: String
-        let action: Action
-        var id: String { name }
-    }
-
-    private var clients: [Client] {
+    private var clients: [AssistantClient] {
         let url = mcpURL.absoluteString
         return [
-            Client(name: "Claude Code", hint: "Copies a command. Run it, then /mcp to sign in.",
-                   action: .copy("claude mcp add --transport http postmere \(url)", then: nil)),
-            Client(name: "Codex", hint: "Copies a command that adds Postmere and signs in.",
-                   action: .copy("codex mcp add postmere --url \(url) && codex mcp login postmere", then: nil)),
-            Client(name: "Cursor", hint: "Opens Cursor to install Postmere.",
-                   action: .open(cursorInstallURL(url), requires: "cursor://")),
-            Client(name: "VS Code", hint: "Opens VS Code to install Postmere.",
-                   action: .open(vscodeInstallURL(url), requires: "vscode://")),
-            Client(name: "Claude", hint: "Copies the URL and opens Connectors. Choose Add custom connector.",
-                   action: .copy(url, then: URL(string: "https://claude.ai/settings/connectors"))),
-            Client(name: "ChatGPT", hint: "Copies the URL and opens Connectors in ChatGPT.",
-                   action: .copy(url, then: URL(string: "https://chatgpt.com/#settings/Connectors"))),
+            AssistantClient(name: "Claude Code", config: .claudeCode,
+                            command: "claude mcp add --transport http --scope user postmere \(url)",
+                            next: "In Claude Code, run /mcp and choose postmere to sign in."),
+            AssistantClient(name: "Codex", config: .codex,
+                            command: "codex mcp add postmere --url \(url) && codex mcp login postmere",
+                            next: "Run codex mcp login postmere in Terminal to sign in."),
+            AssistantClient(name: "Cursor", config: .cursor, link: (cursorInstallURL(url), "cursor://"),
+                            next: "In Cursor, open Settings → MCP and sign in to postmere."),
+            AssistantClient(name: "VS Code", config: .vsCode, link: (vscodeInstallURL(url), "vscode://"),
+                            next: "In VS Code, start postmere from the MCP Servers list and sign in."),
+            AssistantClient(name: "Windsurf", config: .windsurf,
+                            next: "In Windsurf, refresh MCP servers and sign in to postmere."),
+            AssistantClient(name: "Gemini CLI", config: .gemini,
+                            next: "In Gemini CLI, run /mcp auth postmere to sign in."),
+            AssistantClient(name: "Claude", connectorPage: URL(string: "https://claude.ai/settings/connectors"),
+                            next: "Choose Add custom connector and paste the URL."),
+            AssistantClient(name: "ChatGPT", connectorPage: URL(string: "https://chatgpt.com/#settings/Connectors"),
+                            next: "Create a connector and paste the URL."),
         ]
     }
 
@@ -225,20 +240,20 @@ private struct QuickSetupGrid: View {
                     .lineLimit(1).truncationMode(.middle)
                     .textSelection(.enabled)
                 Spacer()
-                Button(done == "url" ? "Copied" : "Copy URL") { copy(mcpURL.absoluteString, key: "url") }
+                Button(done == "url" ? "Copied" : "Copy URL") { copyToPasteboard(mcpURL.absoluteString); flash("url") }
                     .controlSize(.small)
             }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
                 ForEach(clients) { client in
-                    let available = isAvailable(client)
-                    Button { run(client) } label: {
+                    let isSetUp = setUp.contains(client.name)
+                    Button { showing = client.name } label: {
                         HStack(spacing: 9) {
                             AssistantMonogram(name: client.name, size: 26)
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(client.name).font(.system(size: 12.5, weight: .medium)).lineLimit(1)
-                                Text(done == client.name ? doneText(client) : actionText(client, available: available))
+                                Text(isSetUp ? "Added" : client.connectorPage == nil ? "Set up…" : "Add connector…")
                                     .font(.system(size: 11))
-                                    .foregroundStyle(done == client.name ? SettingsTint.green : .secondary)
+                                    .foregroundStyle(isSetUp ? SettingsTint.green : .secondary)
                                     .lineLimit(1)
                                     .contentTransition(.opacity)
                             }
@@ -250,51 +265,20 @@ private struct QuickSetupGrid: View {
                         .contentShape(.rect(cornerRadius: 10))
                     }
                     .buttonStyle(QuickSetupStyle())
-                    .disabled(!available)
-                    .help(client.hint)
                     .accessibilityLabel("Set up \(client.name)")
-                    .accessibilityHint(client.hint)
+                    .popover(isPresented: Binding(get: { showing == client.name }, set: { if !$0 { showing = nil } }),
+                             arrowEdge: .bottom) {
+                        AssistantSetupPopover(client: client, mcpURL: mcpURL) { added in
+                            if added { setUp.insert(client.name) }
+                        }
+                    }
                 }
             }
         }
         .padding(.vertical, 2)
         .animation(.snappy(duration: 0.2), value: done)
-    }
-
-    private func actionText(_ client: Client, available: Bool) -> String {
-        switch client.action {
-        case .copy(_, let then): then == nil ? "Copy command" : "Copy & open"
-        case .open: available ? "Install" : "Not installed"
-        }
-    }
-
-    private func doneText(_ client: Client) -> String {
-        switch client.action {
-        case .copy(_, let then): then == nil ? "Copied — paste in Terminal" : "URL copied"
-        case .open: "Opening…"
-        }
-    }
-
-    private func isAvailable(_ client: Client) -> Bool {
-        guard case .open(_, let scheme) = client.action, let probe = URL(string: scheme) else { return true }
-        return NSWorkspace.shared.urlForApplication(toOpen: probe) != nil
-    }
-
-    private func run(_ client: Client) {
-        switch client.action {
-        case .copy(let text, let then):
-            copy(text, key: client.name)
-            if let then { openURL(then) }
-        case .open(let url, _):
-            openURL(url)
-            flash(client.name)
-        }
-    }
-
-    private func copy(_ text: String, key: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        flash(key)
+        .animation(.snappy(duration: 0.2), value: setUp)
+        .task(id: mcpURL) { setUp = Set(clients.filter { AssistantConfigInstaller.isSetUp($0.config, url: mcpURL) }.map(\.name)) }
     }
 
     private func flash(_ key: String) {
@@ -318,6 +302,215 @@ private struct QuickSetupGrid: View {
         let json = String(decoding: config, as: UTF8.self)
         let encoded = json.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? json
         return URL(string: "vscode:mcp/install?\(encoded)")!
+    }
+}
+
+private func copyToPasteboard(_ text: String) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
+}
+
+/// Shows exactly what will be added and where, then either copies it or writes it.
+private struct AssistantSetupPopover: View {
+    let client: AssistantClient
+    let mcpURL: URL
+    let onFinish: (Bool) -> Void
+    @Environment(\.openURL) private var openURL
+    @State private var outcome: Outcome?
+    @State private var copied: String?
+
+    private enum Outcome: Equatable {
+        case added(AssistantConfigFile.MergeResult)
+        case failed(String)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                AssistantMonogram(name: client.name, size: 30)
+                Text(client.name).font(.system(size: 15, weight: .semibold))
+                Spacer()
+            }
+            if let config = client.config {
+                fileSetup(config)
+            } else if let page = client.connectorPage {
+                connectorSetup(page)
+            }
+        }
+        .padding(16)
+        .frame(width: 420)
+        .animation(.snappy(duration: 0.22), value: outcome)
+        .animation(.snappy(duration: 0.22), value: copied)
+    }
+
+    @ViewBuilder private func fileSetup(_ config: AssistantConfigFile) -> some View {
+        Text("Adds Postmere to **~/\(config.path)**. Everything else in the file stays as it is.")
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        codeBox(config.snippet(url: mcpURL.absoluteString))
+        if let command = client.command {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Or run this in Terminal").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                HStack(alignment: .top, spacing: 8) {
+                    Text(command)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button(copied == "command" ? "Copied" : "Copy") { copy(command, as: "command") }
+                        .controlSize(.small)
+                }
+            }
+        }
+        HStack(spacing: 8) {
+            Button(copied == "config" ? "Copied" : "Copy Configuration") {
+                copy(config.snippet(url: mcpURL.absoluteString), as: "config")
+            }
+            if let link = client.link, NSWorkspace.shared.urlForApplication(toOpen: URL(string: link.scheme)!) != nil {
+                Button("Open \(client.name)") { openURL(link.url) }
+                    .help("Install with \(client.name)’s own link instead")
+            }
+            Spacer()
+            Button("Add to \(client.name)") { install(config) }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(outcome == .added(.added) || outcome == .added(.updated) || outcome == .added(.unchanged))
+        }
+        .controlSize(.regular)
+        if let outcome { result(outcome, config: config) }
+    }
+
+    @ViewBuilder private func result(_ outcome: Outcome, config: AssistantConfigFile) -> some View {
+        switch outcome {
+        case .added(let change):
+            VStack(alignment: .leading, spacing: 6) {
+                Label(change == .unchanged ? "Already set up in ~/\(config.path)"
+                      : change == .updated ? "Updated ~/\(config.path)" : "Added to ~/\(config.path)",
+                      systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(SettingsTint.green)
+                Text(client.next)
+                    .font(.system(size: 12))
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Show in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([AssistantConfigInstaller.fileURL(config)])
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 12))
+            }
+            .transition(.opacity.combined(with: .move(edge: .top)))
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+                .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder private func connectorSetup(_ page: URL) -> some View {
+        Text("\(client.name) adds Postmere as a custom connector on the web. \(client.next)")
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        codeBox(mcpURL.absoluteString)
+        HStack {
+            Button(copied == "url" ? "Copied" : "Copy URL") { copy(mcpURL.absoluteString, as: "url") }
+            Spacer()
+            Button("Copy URL & Open \(client.name)") {
+                copy(mcpURL.absoluteString, as: "url")
+                openURL(page)
+                onFinish(false)
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+        }
+    }
+
+    private func codeBox(_ text: String) -> some View {
+        ScrollView {
+            Text(text)
+                .font(.system(size: 11.5, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+        }
+        .frame(maxHeight: 150)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(PostmereTheme.rule.opacity(0.3), in: .rect(cornerRadius: 8, style: .continuous))
+    }
+
+    private func copy(_ text: String, as key: String) {
+        copyToPasteboard(text)
+        copied = key
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            if copied == key { copied = nil }
+        }
+    }
+
+    private func install(_ config: AssistantConfigFile) {
+        do {
+            let change = try AssistantConfigInstaller.install(config, url: mcpURL)
+            outcome = .added(change)
+            onFinish(true)
+        } catch {
+            outcome = .failed(error.localizedDescription)
+        }
+    }
+}
+
+/// Reads and writes assistants' config files in the real home folder. The sandbox
+/// allows only these files and folders (see postmere.entitlements).
+enum AssistantConfigInstaller {
+    /// The person's home folder, not the app's sandbox container.
+    static var home: URL {
+        if let entry = getpwuid(getuid()), let path = entry.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: path), isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    static func fileURL(_ config: AssistantConfigFile) -> URL {
+        home.appending(path: config.path)
+    }
+
+    static func isSetUp(_ config: AssistantConfigFile?, url: URL) -> Bool {
+        guard let config, let text = try? String(contentsOf: fileURL(config), encoding: .utf8) else { return false }
+        return (try? config.merged(text, url: url.absoluteString).result) == .unchanged
+    }
+
+    @discardableResult
+    static func install(_ config: AssistantConfigFile, url: URL) throws -> AssistantConfigFile.MergeResult {
+        let file = fileURL(config)
+        let manager = FileManager.default
+        var existing: String?
+        if manager.fileExists(atPath: file.path) {
+            do { existing = try String(contentsOf: file, encoding: .utf8) }
+            catch { throw InstallError.access(config.path) }
+        }
+        let (text, result) = try config.merged(existing, url: url.absoluteString)
+        guard result != .unchanged else { return result }
+        do {
+            try manager.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            // A file directly in the home folder can't be swapped in from a temporary
+            // copy under the sandbox, so it's written in place.
+            let inHome = !config.path.contains("/")
+            try Data(text.utf8).write(to: file, options: inHome ? [] : [.atomic])
+        } catch {
+            throw InstallError.access(config.path)
+        }
+        return result
+    }
+
+    enum InstallError: LocalizedError {
+        case access(String)
+        var errorDescription: String? {
+            switch self {
+            case .access(let path): "Postmere couldn’t write ~/\(path). Copy the configuration and add it by hand."
+            }
+        }
     }
 }
 
