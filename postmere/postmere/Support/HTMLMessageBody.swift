@@ -167,6 +167,8 @@ struct HTMLMessageBody: View {
         :root { color-scheme: light dark; overflow-y: hidden !important; --postmere-quote-ink: \(ink); }
         body { margin: 0; display: flow-root; font: 14px -apple-system, sans-serif; overflow-wrap: anywhere; }
         img, table { max-width: 100% !important; }
+        /* "anywhere" would let a column shrink to one letter (GitHub's Status heading). */
+        table { overflow-wrap: break-word; }
         img { object-fit: contain; }
         pre { white-space: pre-wrap; }
         </style>
