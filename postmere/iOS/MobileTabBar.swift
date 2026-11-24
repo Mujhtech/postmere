@@ -281,17 +281,71 @@ struct MobileAccountSwitcher: View {
 
 // MARK: - Triage tab
 
-/// The Triage tab: a pass in progress, or what's waiting and a button to start.
+/// Where a triage pass draws from. Chosen on the Triage tab, never taken silently
+/// from whatever the mail list happens to show.
+enum MobileTriageSource: Hashable {
+    case inbox
+    case tab(UUID)
+    case mailbox(Mailbox)
+
+    init(_ raw: String) {
+        if raw.hasPrefix("tab:"), let id = UUID(uuidString: String(raw.dropFirst(4))) { self = .tab(id) }
+        else if raw.hasPrefix("mailbox:"), let mailbox = Mailbox(rawValue: String(raw.dropFirst(8))) { self = .mailbox(mailbox) }
+        else { self = .inbox }
+    }
+
+    var raw: String {
+        switch self {
+        case .inbox: "inbox"
+        case .tab(let id): "tab:\(id.uuidString)"
+        case .mailbox(let mailbox): "mailbox:\(mailbox.rawValue)"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .inbox: "tray.fill"
+        case .tab: "rectangle.split.3x1.fill"
+        case .mailbox(let mailbox): mailbox.mobileSymbol
+        }
+    }
+}
+
+/// The Triage tab: a pass in progress, or a choice of what to go through and a button to start.
 struct MobileTriageTab: View {
     let runtime: MailRuntime
     let isActive: Bool
     @Environment(\.postmereAccent) private var palette
+    @AppStorage("mobileTriageSource") private var sourceRaw = "inbox"
+    @State private var waiting: [MailMessage] = []
 
     private var store: MailStore { runtime.store }
-    private var waiting: [MailMessage] {
-        (store.mailboxViewData.map { Array($0.messages) } ?? []).filter { !$0.isDraft && $0.mailbox != .outbox }
-    }
     private var unread: Int { waiting.count(where: \.isUnread) }
+
+    /// The chosen source, falling back to Inbox when its tab was removed or hidden.
+    private var source: MobileTriageSource {
+        let chosen = MobileTriageSource(sourceRaw)
+        if case .tab(let id) = chosen, !store.visibleInboxSplits.contains(where: { $0.id == id }) { return .inbox }
+        return chosen
+    }
+
+    private func title(_ source: MobileTriageSource) -> String {
+        switch source {
+        case .inbox: "Inbox"
+        case .tab(let id): store.visibleInboxSplits.first { $0.id == id }?.name ?? "Inbox"
+        case .mailbox(let mailbox): mailbox.title
+        }
+    }
+
+    private var accountNote: String? {
+        store.selectedAccount.map { " · \(MailAccount.scopeLabel(for: $0))" }
+    }
+
+    private struct LoadKey: Equatable {
+        let source: MobileTriageSource
+        let revision: Int
+        let account: String?
+    }
 
     var body: some View {
         if let session = runtime.triage {
@@ -304,16 +358,20 @@ struct MobileTriageTab: View {
                     .foregroundStyle(palette.accent)
                     .frame(width: 76, height: 76)
                     .background(palette.accent.opacity(0.12), in: Circle())
+                    .symbolEffect(.bounce, value: source)
                 Text(unread == 0 ? "You’re caught up" : "\(min(unread, 40)) to triage")
                     .font(.system(size: 28, weight: .bold))
+                    .contentTransition(.numericText(value: Double(unread)))
+                sourcePicker
                 Text(unread == 0
-                     ? "Nothing unread in \(store.selectedMailbox.title). You can still go through recent mail."
+                     ? "Nothing unread in \(title(source)). You can still go through recent mail."
                      : "One conversation at a time: archive, snooze, reply or skip. Suggestions show what each one needs.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 300)
-                Button { runtime.startTriage(waiting, store: store) } label: {
+                    .contentTransition(.opacity)
+                Button { start() } label: {
                     Text(unread == 0 ? "Review Recent Mail" : "Start Triage")
                         .font(.headline)
                         .frame(maxWidth: 260, minHeight: 44)
@@ -329,28 +387,88 @@ struct MobileTriageTab: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .aboveMobileTabBar()
             .background(Mobile.background)
-            .task { await runtime.triageSuggestions.prefetch(Array(waiting.filter(\.isUnread).prefix(12)), session: runtime.backend) }
+            .animation(MobileMotion.quick, value: source)
+            .animation(MobileMotion.quick, value: unread)
+            .task(id: LoadKey(source: source, revision: store.mailboxDataRevision, account: store.selectedAccount)) {
+                waiting = candidates(source)
+                await runtime.triageSuggestions.prefetch(Array(waiting.filter(\.isUnread).prefix(12)), session: runtime.backend)
+            }
             #if DEBUG
             .task(id: waiting.count) {
-                if ProcessInfo.processInfo.arguments.contains("-PostmereStartTriage"), !waiting.isEmpty {
-                    runtime.startTriage(waiting, store: store)
-                }
+                if ProcessInfo.processInfo.arguments.contains("-PostmereStartTriage"), !waiting.isEmpty { start() }
             }
             #endif
         }
+    }
+
+    /// "Triage from Inbox ▾": every place a pass can draw from, with unread counts.
+    private var sourcePicker: some View {
+        Menu {
+            Picker("Triage from", selection: Binding(get: { source }, set: { sourceRaw = $0.raw })) {
+                option(.inbox)
+                if !store.visibleInboxSplits.isEmpty {
+                    Section("Inbox tabs") {
+                        ForEach(store.visibleInboxSplits) { split in option(.tab(split.id)) }
+                    }
+                }
+                Section {
+                    option(.mailbox(.needsReply))
+                    option(.mailbox(.newSenders))
+                    option(.mailbox(.followUps))
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: source.symbol).font(.system(size: 12, weight: .semibold))
+                Text("From \(title(source))\(accountNote ?? "")").lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 10, weight: .bold)).foregroundStyle(.tertiary)
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(palette.accent)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 34)
+            .background(palette.accent.opacity(0.12), in: Capsule())
+            .contentTransition(.interpolate)
+        }
+        .accessibilityLabel("Triage from \(title(source))")
+        .accessibilityHint("Choose which mail to go through")
+    }
+
+    private func option(_ option: MobileTriageSource) -> some View {
+        let count = candidates(option).count(where: \.isUnread)
+        return Label {
+            Text(title(option))
+            if count > 0 { Text("\(count) unread") }
+        } icon: {
+            Image(systemName: option.symbol)
+        }
+        .tag(option)
+    }
+
+    private func candidates(_ source: MobileTriageSource) -> [MailMessage] {
+        switch source {
+        case .inbox: store.triageCandidates(mailbox: .inbox)
+        case .tab(let id): store.triageCandidates(mailbox: .inbox, splitID: id)
+        case .mailbox(let mailbox): store.triageCandidates(mailbox: mailbox)
+        }
+    }
+
+    private func start() {
+        runtime.startTriage(waiting, store: store, title: title(source))
     }
 }
 
 extension MailRuntime {
     /// Works through conversations one at a time, likely-important first, with bulk
     /// mail offered as one decision. Unread mail is the work; with none, recent mail.
-    func startTriage(_ rows: [MailMessage], store: MailStore) {
+    /// `title` names where the mail came from; by default, the list on screen.
+    func startTriage(_ rows: [MailMessage], store: MailStore, title: String? = nil) {
         let candidates = rows.filter { !$0.isDraft && $0.mailbox != .outbox }
         let unread = candidates.filter(\.isUnread)
         let queue = Array((unread.isEmpty ? candidates : unread).prefix(40))
         let ids = triageSuggestions.ordered(queue.map(\.id))
         guard !ids.isEmpty else { return }
-        let title = store.selectedInboxSplitID.flatMap { id in store.visibleInboxSplits.first { $0.id == id }?.name }
+        let title = title ?? store.selectedInboxSplitID.flatMap { id in store.visibleInboxSplits.first { $0.id == id }?.name }
             ?? store.selectedMailbox.title
         withAnimation(.snappy) {
             triage = TriageSession(title: title, ids: ids, batch: triageSuggestions.batch(in: ids))
