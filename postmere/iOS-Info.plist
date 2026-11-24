@@ -32,6 +32,8 @@
 		<key>UISceneConfigurations</key>
 		<dict/>
 	</dict>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>PostmereAPNSEnvironment</key>

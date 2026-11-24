@@ -4,8 +4,6 @@
 <dict>
 	<key>aps-environment</key>
 	<string>$(APS_ENVIRONMENT)</string>
-	<key>com.apple.developer.mail-client</key>
-	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.mujhtech.postmere</string>
