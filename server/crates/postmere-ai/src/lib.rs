@@ -31,7 +31,16 @@ use postmere_core::{
 
 const SUMMARY_TASK: &str = "Summarize the conversation in a short paragraph in text. Include only the most relevant decisions, dates, or action items in items. Cite each item's source messages. Omit items when the paragraph is sufficient.";
 const SUGGESTIONS_TASK: &str = "Act as the user's mail assistant reviewing this conversation. In text, write one or two short sentences, addressed to the user, on what the conversation needs from them now. Then suggest at most four optional organization actions: needs_reply, archive, or follow_up, most useful first. Each suggestion must name a supplied message_id, include that same ID in its source_ids, and explain its reason in one short sentence in text. Use kind=suggestion. Include a future due_at for follow_up; for all other actions it must be null. Suggest nothing when no action helps. Do not claim to apply actions.";
-const ASK_TASK: &str = "Answer the user's question using only the retrieved mail. Write the answer in text as short, direct prose addressed to the user, leading with the answer itself. Each source lists its labels (Gmail labels or Outlook categories) when it has any. For how many or count questions, never count the supplied sources: they are only the most relevant examples. Use retrieval instead: matching_labels gives the messages and conversations under each label whose name matches the question, and matching_messages and matching_conversations count every indexed message matching the question's words. Prefer a matching label's count when the question names a kind of mail, and say what the number is based on. Cite claims in items with source_ids. Explain gaps. Retrieval covers only indexed mail in the selected accounts, not all provider history or calendar.";
+/// Shared WHERE clause for Ask: $1 accounts (empty for all), $2 the tsquery
+/// (empty for none), $3 a window in days back from now (NULL for none). A
+/// window skips spam and trash, which nobody means by "what did I miss".
+macro_rules! ask_filter {
+    () => {
+        "m.deleted_at IS NULL AND a.disabled_at IS NULL AND a.status='connected' AND (cardinality($1::uuid[])=0 OR m.account_id=ANY($1)) AND ($2='' OR m.search_vector @@ to_tsquery('english',$2)) AND ($3::int IS NULL OR (m.sent_at >= now() - make_interval(days => $3::int) AND NOT coalesce(m.normalized->'provider_labels','[]'::jsonb) ?| array['SPAM','TRASH']))"
+    };
+}
+
+const ASK_TASK: &str = "Answer the user's question using only the retrieved mail. Write the answer in text as short, direct prose addressed to the user, leading with the answer itself. Each source lists its labels (Gmail labels or Outlook categories) when it has any. For how many or count questions, never count the supplied sources: they are only the most relevant examples. Use retrieval instead: matching_labels gives the messages and conversations under each label whose name matches the question, and matching_messages and matching_conversations count every indexed message matching the question's words. Prefer a matching label's count when the question names a kind of mail, and say what the number is based on. Cite claims in items with source_ids. Explain gaps. Retrieval covers only indexed mail in the selected accounts, not all provider history or calendar. retrieval.today is the current date: use it to interpret relative dates and to say how recent mail is. When retrieval.window_days is set, the question asked about that recent period and the sources are mail from it, newest first; answer from them as a briefing of what arrived and what needs attention rather than saying the period cannot be determined.";
 /// Messages and conversations under each label or category whose name matches
 /// the question. Gmail names come from the cached catalog; Outlook stores
 /// category names on each message.
@@ -57,13 +66,17 @@ const LABEL_COUNTS: &str = "SELECT name, sum(messages)::bigint, sum(conversation
 /// what that service keeps.
 fn data_notice(provider: &AiProvider) -> String {
     let name = &provider.name;
-    let mut notice = format!("Selected message text and your instructions are sent to {name} through your Postmere server.");
+    let mut notice = format!(
+        "Selected message text and your instructions are sent to {name} through your Postmere server."
+    );
     if provider.web_search {
         notice.push_str(" Sender details use the sender’s name and email address to research public web profiles; message content is excluded from that lookup.");
     }
     notice.push_str(" Attachments are excluded from all AI requests.");
     if provider.zero_retention {
-        notice.push_str(&format!(" Your administrator reports that {name} keeps no copy of these requests."));
+        notice.push_str(&format!(
+            " Your administrator reports that {name} keeps no copy of these requests."
+        ));
     } else if name == "OpenAI" {
         notice.push_str(" Postmere requests store=false for OpenAI responses. Provider abuse-monitoring retention may still apply.");
     } else {
@@ -371,7 +384,13 @@ async fn ask(
             "Enter a question up to 4,000 bytes and at most 50 accounts.",
         ));
     }
-    let terms = retrieval_terms(&input.question);
+    let window = time_window_days(&input.question);
+    let mut terms = retrieval_terms(&input.question);
+    // "What did I miss this week?" has no words to search for once the time
+    // phrase is removed: read the newest mail in the window instead.
+    if window.is_some() && terms == NO_TERMS {
+        terms = String::new();
+    }
     let mut tx = auth.begin(&state.pool).await?;
     if !input.account_ids.is_empty() {
         let count: i64 = sqlx::query_scalar(
@@ -386,13 +405,29 @@ async fn ask(
     }
     // Stemmed prefix matching over subjects, label names, categories and
     // bodies; label and subject matches rank first.
-    let rows = sqlx::query("SELECT m.id,m.account_id,m.sent_at,m.normalized,m.label_text FROM mail_messages m JOIN provider_accounts a ON a.id=m.account_id AND a.workspace_id=m.workspace_id AND a.user_id=m.user_id WHERE m.deleted_at IS NULL AND a.disabled_at IS NULL AND a.status='connected' AND (cardinality($1::uuid[])=0 OR m.account_id=ANY($1)) AND m.search_vector @@ to_tsquery('english',$2) ORDER BY ts_rank_cd(m.search_vector,to_tsquery('english',$2)) DESC,m.sent_at DESC LIMIT 20")
-        .bind(&input.account_ids).bind(&terms).fetch_all(&mut *tx).await?;
+    // Within a window, newest first unless the words rank a match higher.
+    // Without one, relevance decays gently with age so last week's match
+    // outranks an equally relevant one from years ago.
+    let mut rows = sqlx::query(concat!("SELECT m.id,m.account_id,m.sent_at,m.normalized,m.label_text FROM mail_messages m JOIN provider_accounts a ON a.id=m.account_id AND a.workspace_id=m.workspace_id AND a.user_id=m.user_id WHERE ", ask_filter!(), " ORDER BY CASE WHEN $2='' THEN 0 ELSE ts_rank_cd(m.search_vector,to_tsquery('english',$2)) / (1 + ln(1 + greatest(extract(epoch FROM now()-m.sent_at),0)/2592000)) END DESC, m.sent_at DESC LIMIT 20"))
+        .bind(&input.account_ids).bind(&terms).bind(window).fetch_all(&mut *tx).await?;
+    // Words that match nothing in the window still leave the period itself to describe.
+    if rows.is_empty() && window.is_some() && !terms.is_empty() {
+        terms = String::new();
+        rows = sqlx::query(concat!("SELECT m.id,m.account_id,m.sent_at,m.normalized,m.label_text FROM mail_messages m JOIN provider_accounts a ON a.id=m.account_id AND a.workspace_id=m.workspace_id AND a.user_id=m.user_id WHERE ", ask_filter!(), " ORDER BY m.sent_at DESC LIMIT 20"))
+            .bind(&input.account_ids).bind(&terms).bind(window).fetch_all(&mut *tx).await?;
+    }
     // The model sees at most 20 messages, so counts come from the database.
-    let (matching_messages, matching_conversations): (i64, i64) = sqlx::query_as("SELECT count(*), count(DISTINCT m.account_id::text||':'||m.provider_thread_id) FROM mail_messages m JOIN provider_accounts a ON a.id=m.account_id AND a.workspace_id=m.workspace_id AND a.user_id=m.user_id WHERE m.deleted_at IS NULL AND a.disabled_at IS NULL AND a.status='connected' AND (cardinality($1::uuid[])=0 OR m.account_id=ANY($1)) AND m.search_vector @@ to_tsquery('english',$2)")
-        .bind(&input.account_ids).bind(&terms).fetch_one(&mut *tx).await?;
-    let labels: Vec<(String, i64, i64)> = sqlx::query_as(LABEL_COUNTS)
-        .bind(&input.account_ids).bind(&terms).fetch_all(&mut *tx).await?;
+    let (matching_messages, matching_conversations): (i64, i64) = sqlx::query_as(concat!("SELECT count(*), count(DISTINCT m.account_id::text||':'||m.provider_thread_id) FROM mail_messages m JOIN provider_accounts a ON a.id=m.account_id AND a.workspace_id=m.workspace_id AND a.user_id=m.user_id WHERE ", ask_filter!()))
+        .bind(&input.account_ids).bind(&terms).bind(window).fetch_one(&mut *tx).await?;
+    let labels: Vec<(String, i64, i64)> = if terms.is_empty() {
+        vec![]
+    } else {
+        sqlx::query_as(LABEL_COUNTS)
+            .bind(&input.account_ids)
+            .bind(&terms)
+            .fetch_all(&mut *tx)
+            .await?
+    };
     tx.commit().await?;
     let sources = bound_sources(rows.iter().map(source_from_row).collect());
     if sources.is_empty() {
@@ -403,9 +438,11 @@ async fn ask(
         .into_iter()
         .map(|(name, messages, conversations)| json!({"name":name,"messages":messages,"conversations":conversations}))
         .collect();
-    let task=json!({"task":ASK_TASK,"question":input.question,"retrieval":{
+    let task = json!({"task":ASK_TASK,"question":input.question,"retrieval":{
+        "today":chrono::Utc::now().format("%A %-d %B %Y").to_string(),"window_days":window,
         "matching_messages":matching_messages,"matching_conversations":matching_conversations,
-        "messages_supplied":sources.len(),"matching_labels":labels}}).to_string();
+        "messages_supplied":sources.len(),"matching_labels":labels}})
+    .to_string();
     if accepts_event_stream(&headers) {
         let request = build_request(
             &state.config.ai_model,
@@ -456,12 +493,20 @@ fn source_from_row(row: &sqlx::postgres::PgRow) -> Source {
             .chars()
             .take(500)
             .collect(),
-        sender: value["from"]["email"]
-            .as_str()
-            .unwrap_or("")
-            .chars()
-            .take(254)
-            .collect(),
+        sender: {
+            let email = value["from"]["email"].as_str().unwrap_or("");
+            let name = value["from"]["name"]
+                .as_str()
+                .unwrap_or("")
+                .trim()
+                .replace(['<', '>', '"'], "");
+            let sender = if name.is_empty() || name.eq_ignore_ascii_case(email) {
+                email.to_string()
+            } else {
+                format!("{name} <{email}>")
+            };
+            sender.chars().take(320).collect()
+        },
         text: value["text_body"]
             .as_str()
             .unwrap_or("")
@@ -470,7 +515,11 @@ fn source_from_row(row: &sqlx::postgres::PgRow) -> Source {
             .collect(),
         labels: {
             let gmail: String = row.try_get("label_text").unwrap_or_default();
-            let categories = value["categories"].as_array().into_iter().flatten().filter_map(Value::as_str);
+            let categories = value["categories"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
             std::iter::once(gmail.as_str())
                 .chain(categories)
                 .filter(|name| !name.is_empty())
@@ -493,13 +542,183 @@ fn bound_sources(sources: Vec<Source>) -> Vec<Source> {
         })
         .collect()
 }
+/// Matches nothing, so a question with no searchable words retrieves nothing.
+const NO_TERMS: &str = "postmere_no_matching_terms_7fd78";
+
+/// The recent period a question asks about, in days back from now:
+/// "today" is 1, "this week" 7, "last 10 days" 10, "what did I miss" 3.
+fn time_window_days(question: &str) -> Option<i32> {
+    let text = format!(
+        " {} ",
+        question
+            .to_lowercase()
+            .replace(|c: char| !c.is_alphanumeric(), " ")
+    );
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let number = |word: &str| -> Option<i32> {
+        word.parse::<i32>().ok().or(match word {
+            "one" | "a" => Some(1),
+            "two" | "couple" => Some(2),
+            "three" | "few" => Some(3),
+            "four" => Some(4),
+            "five" => Some(5),
+            "six" => Some(6),
+            "seven" => Some(7),
+            "eight" => Some(8),
+            "nine" => Some(9),
+            "ten" => Some(10),
+            "fourteen" => Some(14),
+            _ => None,
+        })
+    };
+    // "last 10 days", "past two weeks", "3 days ago"
+    for (index, word) in words.iter().enumerate() {
+        let unit = match *word {
+            "day" | "days" => 1,
+            "week" | "weeks" => 7,
+            "month" | "months" => 31,
+            _ => continue,
+        };
+        let count = index.checked_sub(1).and_then(|i| number(words[i]));
+        if let Some(count) = count.filter(|count| *count > 0) {
+            return Some((count * unit).clamp(1, 366));
+        }
+    }
+    let has = |phrase: &str| text.contains(&format!(" {phrase} "));
+    if has("today") || has("this morning") || has("tonight") {
+        return Some(1);
+    }
+    if has("yesterday") {
+        return Some(2);
+    }
+    if has("this week") || has("last week") || has("past week") || has("weekend") {
+        return Some(7);
+    }
+    if has("this month") || has("last month") || has("past month") {
+        return Some(31);
+    }
+    if has("this year") {
+        return Some(366);
+    }
+    if has("miss")
+        || has("missed")
+        || has("recently")
+        || has("lately")
+        || has("recent")
+        || has("catch up")
+    {
+        return Some(3);
+    }
+    None
+}
+
 fn retrieval_terms(question: &str) -> String {
     const STOP: &[&str] = &[
-        "the", "and", "what", "when", "where", "which", "who", "how", "does", "did", "was", "were",
-        "for", "about", "with", "from", "have", "has", "this", "that", "can", "could", "would",
-        "should", "mail", "email", "messages", "tell", "find", "many", "much", "number", "count",
-        "total", "my", "me", "any", "all", "get", "got", "there", "are", "is", "do", "you", "emails",
-        "mails", "message", "show", "list", "give", "know", "need", "want", "please", "inbox",
+        "the",
+        "and",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "how",
+        "does",
+        "did",
+        "was",
+        "were",
+        "for",
+        "about",
+        "with",
+        "from",
+        "have",
+        "has",
+        "this",
+        "that",
+        "can",
+        "could",
+        "would",
+        "should",
+        "mail",
+        "email",
+        "messages",
+        "tell",
+        "find",
+        "many",
+        "much",
+        "number",
+        "count",
+        "total",
+        "my",
+        "me",
+        "any",
+        "all",
+        "get",
+        "got",
+        "there",
+        "are",
+        "is",
+        "do",
+        "you",
+        "emails",
+        "mails",
+        "message",
+        "show",
+        "list",
+        "give",
+        "know",
+        "need",
+        "want",
+        "please",
+        "inbox",
+        // Time phrases become a date window instead of search words.
+        "today",
+        "yesterday",
+        "last",
+        "past",
+        "few",
+        "couple",
+        "days",
+        "day",
+        "week",
+        "weeks",
+        "month",
+        "months",
+        "year",
+        "recent",
+        "recently",
+        "lately",
+        "latest",
+        "new",
+        "newest",
+        "miss",
+        "missed",
+        "since",
+        "ago",
+        "in",
+        "of",
+        "the",
+        "so",
+        "far",
+        "up",
+        "on",
+        "catch",
+        "happened",
+        "happening",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "fourteen",
+        "anything",
+        "important",
+        "summary",
+        "summarize",
     ];
     let terms: Vec<String> = question
         .split(|c: char| !c.is_alphanumeric())
@@ -508,10 +727,14 @@ fn retrieval_terms(question: &str) -> String {
         .take(12)
         .collect();
     if terms.is_empty() {
-        "postmere_no_matching_terms_7fd78".into()
+        NO_TERMS.into()
     } else {
         // Prefix matching after stemming: "reject" also finds "rejected".
-        terms.iter().map(|term| format!("{term}:*")).collect::<Vec<_>>().join(" | ")
+        terms
+            .iter()
+            .map(|term| format!("{term}:*"))
+            .collect::<Vec<_>>()
+            .join(" | ")
     }
 }
 
@@ -1219,6 +1442,37 @@ mod tests {
         assert_eq!(
             retrieval_terms("How many rejection emails do I have?"),
             "rejection:*"
+        );
+    }
+    #[test]
+    fn time_phrases_become_a_window_not_search_words() {
+        assert_eq!(
+            time_window_days("What did I miss in the last few days?"),
+            Some(3)
+        );
+        assert_eq!(time_window_days("Anything important today?"), Some(1));
+        assert_eq!(time_window_days("What needs my reply this week?"), Some(7));
+        assert_eq!(time_window_days("Invoices in the last 10 days"), Some(10));
+        assert_eq!(
+            time_window_days("Receipts from the past two weeks"),
+            Some(14)
+        );
+        assert_eq!(
+            time_window_days("Any invoices or receipts this month?"),
+            Some(31)
+        );
+        assert_eq!(time_window_days("When is the project due?"), None);
+        assert_eq!(
+            retrieval_terms("What did I miss in the last few days?"),
+            NO_TERMS
+        );
+        assert_eq!(
+            retrieval_terms("Any invoices or receipts this month?"),
+            "invoices:* | or:* | receipts:*"
+        );
+        assert_eq!(
+            retrieval_terms("What's the latest from Product Hunt?"),
+            "product:* | hunt:*"
         );
     }
     #[tokio::test]
