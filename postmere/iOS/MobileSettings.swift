@@ -118,7 +118,7 @@ struct MobileSettings: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 28)
             }
-            .background(Color(uiColor: .systemGroupedBackground))
+            .mobileSettingsCanvas()
             .buttonStyle(.plain)
             .tint(palette.accent)
             .navigationTitle("Settings")
@@ -198,8 +198,7 @@ struct MobileSettings: View {
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
-            .background(Color(uiColor: .secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .mobileSettingsCard()
         }
     }
 
@@ -290,8 +289,7 @@ struct MobileSettings: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)
             VStack(spacing: 0, content: content)
-                .background(Color(uiColor: .secondarySystemGroupedBackground),
-                            in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .mobileSettingsCard()
             if let footer {
                 Text(footer).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16)
             }
@@ -388,8 +386,7 @@ struct MobileSettings: View {
                     .font(.body.weight(.semibold))
                     .foregroundStyle(PostmereTheme.destructiveInk)
                     .frame(maxWidth: .infinity, minHeight: 44)
-                    .background(Color(uiColor: .secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .mobileSettingsCard(cornerRadius: 18)
             }
             .disabled(session.isBusy)
             .confirmationDialog("Sign out of this workspace?", isPresented: $confirmsSignOut, titleVisibility: .visible) {
@@ -594,6 +591,7 @@ private struct MobileSnippetLibrary: View {
                     .listRowBackground(Color.clear)
             }
         }
+        .mobileSettingsCanvas()
         .navigationTitle("Snippets & Templates")
     }
 }
@@ -648,6 +646,7 @@ private struct MobileAISettings: View {
             }
             if let error { Text(error).foregroundStyle(PostmereTheme.destructiveInk) }
         }
+        .mobileSettingsCanvas()
         .navigationTitle("AI")
         .task {
             do {

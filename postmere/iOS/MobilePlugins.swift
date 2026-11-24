@@ -190,6 +190,7 @@ struct MobilePluginSettings: View {
             }
         }
         .tint(palette.accent)
+        .mobileSettingsCanvas()
         .navigationTitle("Plugins")
         .task { await plugins.refreshCatalog(session: runtime.backend) }
     }

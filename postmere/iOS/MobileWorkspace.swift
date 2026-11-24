@@ -47,6 +47,7 @@ struct MobileSharedThreadsScreen: View {
                 ProgressView()
             }
         }
+        .mobileSettingsCanvas()
         .navigationTitle("Shared with Team")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await reload() }
@@ -480,6 +481,7 @@ struct MobileMembersSettings: View {
                 Section { Text(error).foregroundStyle(PostmereTheme.destructiveInk) }
             }
         }
+        .mobileSettingsCanvas()
         .navigationTitle("Members")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }

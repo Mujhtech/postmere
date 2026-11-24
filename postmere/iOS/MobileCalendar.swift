@@ -296,6 +296,7 @@ struct MobileBookingLinksScreen: View {
             }
         }
         .overlay { if !loaded { ProgressView() } }
+        .mobileSettingsCanvas()
         .navigationTitle("Booking Links")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

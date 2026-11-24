@@ -251,3 +251,39 @@ struct MobileAIGlowBorder: View {
         .allowsHitTesting(false)
     }
 }
+
+// MARK: - Settings surfaces
+
+/// The Mac Settings window's look on the phone: a warm canvas with paper cards
+/// edged by a hairline, instead of the system's cool grey.
+enum MobileSettingsStyle {
+    static let canvas = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.071, green: 0.078, blue: 0.075, alpha: 1)
+            : UIColor(red: 0.945, green: 0.941, blue: 0.922, alpha: 1)
+    })
+    static let card = PostmereTheme.paper
+    static let edge = PostmereTheme.rule.opacity(0.75)
+}
+
+extension View {
+    /// A settings group card.
+    func mobileSettingsCard(cornerRadius: CGFloat = 22) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return background(MobileSettingsStyle.card, in: shape)
+            .overlay { shape.strokeBorder(MobileSettingsStyle.edge, lineWidth: 0.5) }
+    }
+
+    /// The settings canvas behind a screen, including lists pushed inside Settings.
+    func mobileSettingsCanvas() -> some View {
+        scrollContentBackground(.hidden)
+            .background { MobileSettingsStyle.canvas.ignoresSafeArea() }
+            .containerBackground(MobileSettingsStyle.canvas, for: .navigation)
+    }
+
+    /// List rows drawn as paper cards on the settings canvas.
+    func mobileSettingsRows() -> some View {
+        listRowBackground(MobileSettingsStyle.card)
+    }
+}
+

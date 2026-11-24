@@ -84,7 +84,9 @@ struct MobileMailbox: View {
         }
         .overlay(alignment: .bottom) { MobileActionToast(store: store).padding(.bottom, showsTabBar ? barHeight + 12 : 74) }
         .environment(presenter)
-        .sheet(isPresented: $showsSettings) { MobileSettings(runtime: runtime) }
+        .sheet(isPresented: $showsSettings) {
+            MobileSettings(runtime: runtime).presentationBackground(MobileSettingsStyle.canvas)
+        }
         .sheet(item: $presenter.task) { MobileTaskSheet(task: $0, runtime: runtime) }
         .fullScreenCover(isPresented: Binding(get: { runtime.triage != nil && !compact },
                                               set: { if !$0 { runtime.triage = nil } })) {

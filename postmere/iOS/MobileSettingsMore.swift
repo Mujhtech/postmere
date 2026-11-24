@@ -72,6 +72,7 @@ struct MobileAccountsSettings: View {
                 Section { Text(error).foregroundStyle(PostmereTheme.destructiveInk) }
             }
         }
+        .mobileSettingsCanvas()
         .navigationTitle("Accounts")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
@@ -298,6 +299,7 @@ struct MobileNotificationSettings: View {
                 }
             }
         }
+        .mobileSettingsCanvas()
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.inline)
         .task { await notifications.refreshAuthorization() }
@@ -398,6 +400,7 @@ struct MobileInboxTabsSettings: View {
                 Text("Mail from VIPs lands in Important. Use is:vip in any search or tab.")
             }
         }
+        .mobileSettingsCanvas()
         .navigationTitle("Inbox Tabs")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { EditButton() }
@@ -501,6 +504,7 @@ struct MobileVIPSettings: View {
                 }
             }
         }
+        .mobileSettingsCanvas()
         .navigationTitle("VIPs")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -569,6 +573,7 @@ struct MobileSenderRulesSettings: View {
                 }
             }
         }
+        .mobileSettingsCanvas()
         .navigationTitle("Sender Rules")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -619,6 +624,7 @@ struct MobileSenderPhotoSettings: View {
                 Text("Sends a hash of the sender’s address to Gravatar.")
             }
         }
+        .mobileSettingsCanvas()
         .navigationTitle("Sender Photos")
         .navigationBarTitleDisplayMode(.inline)
     }
