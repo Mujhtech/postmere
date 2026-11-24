@@ -179,7 +179,7 @@ async fn native_sign_in_survives_age_restart_and_rotation_until_revoked() {
             LoginRequest {
                 email: email.clone(),
                 password: "persistent session fixture password".into(),
-                workspace_id: workspace,
+                workspace_id: Some(workspace),
             },
             &Uuid::new_v4().to_string(),
         )
@@ -411,7 +411,7 @@ async fn bounded_rotation_that_expires_while_transferring_push_registration_roll
             LoginRequest {
                 email,
                 password: "persistent session fixture password".into(),
-                workspace_id: workspace,
+                workspace_id: Some(workspace),
             },
             &Uuid::new_v4().to_string(),
         )
