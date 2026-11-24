@@ -126,7 +126,7 @@ struct MobileMessageDetailsSheet: View {
             }
             .task(id: canFetch ? attempt : nil) { await load() }
         }
-        .presentationDetents([.medium, .large])
+        .mobileSheetDetents()
     }
 
     private func row(_ label: String, _ value: String) -> some View {
@@ -246,7 +246,7 @@ struct MobileActivitySheet: View {
             }
             .task(id: attempt) { await load() }
         }
-        .presentationDetents([.medium, .large])
+        .mobileSheetDetents()
     }
 
     private func metric(_ title: String, value: Int, enabled: Bool, symbol: String) -> some View {

@@ -251,6 +251,10 @@ private struct MailboxScreen: View {
                 debugOpened = true
                 open(first)
             }
+            if ProcessInfo.processInfo.arguments.contains("-PostmereOpenMailboxes"), rows != nil, !debugOpened {
+                debugOpened = true
+                showsMailboxes = true
+            }
         }
         #endif
         .sheet(isPresented: $showsMailboxes) {
@@ -928,7 +932,7 @@ private struct MobileMailboxSheet: View {
             List {
                 ForEach(groups.indices, id: \.self) { index in
                     Section {
-                        ForEach(groups[index].filter { $0 != .outbox || !store.outgoingQueue.isEmpty }) { row($0) }
+                        ForEach(groups[index].filter { $0 != .outbox || !store.outgoingQueue.isEmpty }) { row($0).mobileSheetRows() }
                     }
                 }
                 Section("Library") {
@@ -940,13 +944,15 @@ private struct MobileMailboxSheet: View {
                     } label: {
                         Label { Text("Files") } icon: { Image(systemName: "paperclip").foregroundStyle(.secondary) }
                     }
+                    .mobileSheetRows()
                     if runtime.backend.canAccessWorkspace {
                         NavigationLink { MobileSharedThreadsScreen(runtime: runtime) } label: {
                             Label { Text("Shared with Team") } icon: {
                                 Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(.secondary)
                             }
                         }
-                        }
+                        .mobileSheetRows()
+                    }
                 }
                 if !store.savedViews.isEmpty {
                     Section("Views") {
@@ -970,16 +976,18 @@ private struct MobileMailboxSheet: View {
                                 Button("Delete", systemImage: "trash", role: .destructive) { store.deleteSavedView(view.id) }
                                 Button("Edit", systemImage: "pencil") { editing = view }.tint(.blue)
                             }
-                                }
+                            .mobileSheetRows()
+                        }
                     }
                 }
                 if MailAccount.allCases.count > 1 {
                     Section("Accounts") {
-                        accountRow(nil, title: "All accounts", detail: nil)
+                        accountRow(nil, title: "All accounts", detail: nil).mobileSheetRows()
                         ForEach(MailAccount.allCases) { account in
                             accountRow(account.rawValue, title: account.title,
                                        detail: account.title == account.email ? nil : account.email)
-                                    }
+                                .mobileSheetRows()
+                        }
                     }
                 }
             }
@@ -993,7 +1001,7 @@ private struct MobileMailboxSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .mobileSheetDetents()
         .sheet(item: $editing) { MobileSaveViewSheet(store: store, editing: $0) }
     }
 

@@ -53,7 +53,7 @@ struct MobileSnippetSheet: View {
             }
             .sheet(isPresented: $creates) { MobileSnippetEditor(store: store, body: store.draftBody) }
         }
-        .presentationDetents([.medium, .large])
+        .mobileSheetDetents()
     }
 
     private var list: some View {
@@ -379,7 +379,7 @@ struct MobileAIWriterSheet: View {
             }
             .task { await loadSettings() }
         }
-        .presentationDetents([.medium, .large])
+        .mobileSheetDetents()
     }
 
     private var isFailure: Bool { if case .failed = phase { true } else { false } }

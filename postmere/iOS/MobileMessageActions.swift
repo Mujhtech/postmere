@@ -414,7 +414,7 @@ struct MobilePrivateNoteSheet: View {
             }
             .task { focused = true }
         }
-        .presentationDetents([.medium, .large])
+        .mobileSheetDetents()
     }
 }
 
@@ -502,7 +502,7 @@ struct MobileLabelsSheet: View {
             }
             .task(id: refreshRevision) { await editor.refresh() }
         }
-        .presentationDetents([.medium, .large])
+        .mobileSheetDetents()
     }
 }
 

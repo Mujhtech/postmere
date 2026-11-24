@@ -582,7 +582,7 @@ struct MobileUnsubscribeSheet: View {
                 catch { self.error = error.localizedDescription }
             }
         }
-        .presentationDetents([.medium, .large])
+        .mobileSheetDetents()
     }
 
     private func requestOneClick(_ url: URL) async {
@@ -753,7 +753,7 @@ struct MobileSenderSheet: View {
             .task(id: lookup) { await load(lookup) }
             .onDisappear { research.cancel() }
         }
-        .presentationDetents([.medium, .large])
+        .mobileSheetDetents()
     }
 
     // MARK: Identity
@@ -1273,7 +1273,7 @@ struct MobileSuggestionsSheet: View {
             }
             .task(id: run.requestID) { await run.load(session: runtime.backend) }
         }
-        .presentationDetents([.medium, .large])
+        .mobileSheetDetents()
     }
 
     private func card(_ index: Int) -> some View {
@@ -1438,7 +1438,7 @@ struct MobileShareSheet: View {
             }
             .task { await load() }
         }
-        .presentationDetents([.medium, .large])
+        .mobileSheetDetents()
     }
 
     private func load() async {

@@ -368,7 +368,7 @@ struct MobileSaveViewSheet: View {
                 matches = store.messages.count { store.matchesSavedView($0, criteria: criteria) }
             }
         }
-        .presentationDetents([.medium, .large])
+        .mobileSheetDetents()
     }
 
     private func save() {

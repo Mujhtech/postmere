@@ -212,7 +212,7 @@ private struct MobileSenderFilterSheet: View {
             }
             .onAppear { input = initial; focused = true }
         }
-        .presentationDetents([.medium, .large])
+        .mobileSheetDetents()
     }
 
     private func apply(_ sender: String) {
@@ -263,6 +263,6 @@ private struct MobileSearchTipsSheet: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done", systemImage: "checkmark") { dismiss() } }
             }
         }
-        .presentationDetents([.medium, .large])
+        .mobileSheetDetents()
     }
 }

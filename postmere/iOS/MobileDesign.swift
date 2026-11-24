@@ -287,3 +287,61 @@ extension View {
     }
 }
 
+// MARK: - Expandable sheets
+
+extension EnvironmentValues {
+    /// True while a medium/large sheet is pulled up to full height.
+    @Entry var mobileSheetExpanded = false
+}
+
+/// Compact, a sheet keeps the system's glass. Pulled up to full height, it takes
+/// the Settings look: the warm canvas behind, and lists drawn on it.
+private struct MobileSheetSurface: ViewModifier {
+    let detents: Set<PresentationDetent>
+    @State private var detent: PresentationDetent
+
+    init(detents: Set<PresentationDetent>, initial: PresentationDetent) {
+        self.detents = detents
+        var start = initial
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-PostmereSheetsLarge"), detents.contains(.large) { start = .large }
+        #endif
+        _detent = State(initialValue: start)
+    }
+
+    func body(content: Content) -> some View {
+        let expanded = detent == .large
+        content
+            .scrollContentBackground(expanded ? .hidden : .automatic)
+            .background {
+                MobileSettingsStyle.canvas
+                    .ignoresSafeArea()
+                    .opacity(expanded ? 1 : 0)
+                    .animation(.smooth(duration: 0.3), value: expanded)
+            }
+            .environment(\.mobileSheetExpanded, expanded)
+            .presentationDetents(detents, selection: $detent)
+    }
+}
+
+/// List rows that become paper cards when their sheet is expanded.
+private struct MobileSheetRows: ViewModifier {
+    @Environment(\.mobileSheetExpanded) private var expanded
+
+    func body(content: Content) -> some View {
+        content.listRowBackground(expanded ? MobileSettingsStyle.card : nil)
+    }
+}
+
+extension View {
+    /// Medium and large detents with the glass-to-Settings surface change.
+    func mobileSheetDetents(_ detents: Set<PresentationDetent> = [.medium, .large],
+                            initial: PresentationDetent = .medium) -> some View {
+        modifier(MobileSheetSurface(detents: detents, initial: initial))
+    }
+
+    /// Apply to a list's sections inside an expandable sheet.
+    func mobileSheetRows() -> some View {
+        modifier(MobileSheetRows())
+    }
+}
