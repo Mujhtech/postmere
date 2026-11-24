@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 postmere-core.workspace = true
+postmere-push.workspace = true
 postmere-providers.workspace = true
 postmere-mcp-auth.workspace = true
 postmere-mcp-operations.workspace = true

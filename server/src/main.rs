@@ -111,6 +111,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let triage_worker = postmere_ai::spawn_triage_worker(state.clone());
             let webhook_worker = postmere_webhooks::spawn_worker(state.clone(), webhooks.clone());
             let push_worker = if push.configured() {
+                postmere_push::spawn_live_activity_worker(state.clone(), push.clone());
                 Some(postmere_push::spawn_worker(state.clone(), push.clone()))
             } else {
                 tracing::info!(

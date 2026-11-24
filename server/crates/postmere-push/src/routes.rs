@@ -25,6 +25,7 @@ pub fn router() -> Router<AppState> {
                 .patch(update_preferences)
                 .delete(unregister),
         )
+        .merge(crate::live::router())
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
 }
 

@@ -130,6 +130,7 @@ pub async fn process_one(state: &AppState, service: &PushService) -> Result<bool
                 .preference
                 .delivery_expiration(Utc::now(), item.expires_at),
             payload,
+            kind: crate::PushKind::Alert,
         })
         .await;
     let status = match result {

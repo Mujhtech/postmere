@@ -23,6 +23,8 @@ pub(crate) enum Kind {
     Accounts,
     Mail,
     Outbox,
+    /// A connected assistant used a tool.
+    Assistants,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
