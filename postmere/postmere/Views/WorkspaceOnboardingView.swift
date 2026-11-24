@@ -24,14 +24,15 @@ struct WorkspaceOnboardingView: View {
     @State private var movingForward = true
     @State private var arrived = false
     @State private var serverURL: String
-    @State private var workspaceID = ""
     @State private var email = ""
     @State private var password = ""
+    /// Held only while the person picks between workspaces, to finish signing in.
+    @State private var pendingSecret: String?
     @State private var inputIssue: (field: Field, message: String)?
     @FocusState private var focusedField: Field?
 
     private enum Page: Int { case welcome, workspace, identity, inbox, notifications, defaultMail }
-    private enum Field: Hashable { case server, workspace, email, password }
+    private enum Field: Hashable { case server, email, password }
 
     init(session: BackendSession, notifications: MailNotificationService, defaultMail: DefaultMailAppService? = nil,
          offersInboxSetup: Bool = true,
@@ -61,9 +62,6 @@ struct WorkspaceOnboardingView: View {
         GeometryReader { geometry in
             let compact = geometry.size.width < 560 || geometry.size.height < 570
             VStack(spacing: 0) {
-                masthead
-                    .padding(.horizontal, compact ? 22 : 38)
-                    .padding(.top, compact ? 12 : 22)
                 GeometryReader { area in
                     ScrollView {
                         Group {
@@ -110,13 +108,12 @@ struct WorkspaceOnboardingView: View {
             await Task.yield()
             guard !Task.isCancelled else { return }
             switch page {
-            case .workspace: focusedField = serverURL.isEmpty ? .server : .workspace
+            case .workspace: focusedField = .server
             case .identity: focusedField = .email
             default: focusedField = nil
             }
         }
         .onChange(of: serverURL) { if inputIssue?.field == .server { inputIssue = nil } }
-        .onChange(of: workspaceID) { if inputIssue?.field == .workspace { inputIssue = nil } }
         .onChange(of: session.errorMessage) {
             if let error = session.errorMessage { AccessibilityNotification.Announcement(error).post() }
         }
@@ -128,18 +125,7 @@ struct WorkspaceOnboardingView: View {
         .onChange(of: session.accounts.isEmpty) {
             if page == .inbox, session.canAccessWorkspace, !session.accounts.isEmpty { finishInbox() }
         }
-        .onDisappear { password = "" }
-    }
-
-    private var masthead: some View {
-        HStack(spacing: 8) {
-            Image(nsImage: NSApplication.shared.applicationIconImage)
-                .resizable().interpolation(.high).frame(width: 31, height: 31)
-                .accessibilityHidden(true)
-            Text("Postmere")
-                .font(.system(size: 21, weight: .medium, design: .serif))
-            Spacer()
-        }
+        .onDisappear { password = ""; pendingSecret = nil }
     }
 
     private var pageTransition: AnyTransition {
@@ -236,21 +222,65 @@ struct WorkspaceOnboardingView: View {
 
     private var workspacePage: some View {
         VStack(alignment: .leading, spacing: 20) {
-            heading("Find your workspace", "Enter the server address and workspace ID from your administrator.")
+            heading("Connect to your server", "Enter the Postmere server address from your administrator.")
             field("Server URL", id: .server) {
                 TextField("Server URL", text: $serverURL, prompt: Text(verbatim: "https://mail.example.com"))
                     .textContentType(.URL)
-                    .onSubmit { if validateServer() { focusedField = .workspace } }
-            }
-            field("Workspace ID", id: .workspace) {
-                TextField("Workspace ID", text: $workspaceID, prompt: Text("Paste your workspace ID"))
                     .onSubmit(continueFromWorkspace)
             }
             navigation(primary: "Continue", back: .welcome, action: continueFromWorkspace)
         }
     }
 
-    private var identityPage: some View {
+    @ViewBuilder private var identityPage: some View {
+        if let choices = session.workspaceChoices, pendingSecret != nil {
+            workspaceChoicePage(choices)
+                .transition(pageTransition)
+        } else {
+            credentialsPage
+        }
+    }
+
+    /// Shown when the password was right and the person belongs to several workspaces.
+    private func workspaceChoicePage(_ choices: [BackendSession.WorkspaceChoice]) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            heading("Choose a workspace", "\(email.trimmingCharacters(in: .whitespacesAndNewlines)) belongs to \(choices.count) workspaces. You can switch later from the account menu.")
+            VStack(spacing: 8) {
+                ForEach(choices) { choice in
+                    Button { choose(choice) } label: {
+                        HStack(spacing: 12) {
+                            Text(String(choice.name.prefix(1)).uppercased())
+                                .font(.system(size: 15, weight: .semibold, design: .serif))
+                                .foregroundStyle(palette.accentInk)
+                                .frame(width: 34, height: 34)
+                                .background(palette.accentInk.opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(choice.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(.primary)
+                                Text(choice.roleTitle).font(.system(size: 12)).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "arrow.right").foregroundStyle(.tertiary).accessibilityHidden(true)
+                        }
+                        .padding(12)
+                        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .background(PostmereTheme.rule.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(choice.name), \(choice.roleTitle)")
+                }
+            }
+            if let error = session.errorMessage { feedback(error) }
+            Button("Use a different account") {
+                pendingSecret = nil
+                session.cancelWorkspaceChoice()
+                focusedField = .email
+            }
+            .buttonStyle(.link)
+        }
+        .disabled(session.isBusy)
+    }
+
+    private var credentialsPage: some View {
         VStack(alignment: .leading, spacing: 20) {
             heading("Sign in to Postmere", "Use your workspace credentials for \(URL(string: serverURL.trimmingCharacters(in: .whitespacesAndNewlines))?.host ?? "this server").")
             field("Email address", id: .email) {
@@ -374,7 +404,11 @@ struct WorkspaceOnboardingView: View {
     private func go(to destination: Page) {
         inputIssue = nil
         focusedField = nil
-        if page == .identity { password = "" }
+        if page == .identity {
+            password = ""
+            pendingSecret = nil
+            session.cancelWorkspaceChoice()
+        }
         movingForward = destination.rawValue > page.rawValue
         withAnimation(reduceMotion ? nil : .smooth(duration: 0.30)) { page = destination }
     }
@@ -397,10 +431,6 @@ struct WorkspaceOnboardingView: View {
 
     private func continueFromWorkspace() {
         guard validateServer() else { return }
-        guard UUID(uuidString: workspaceID.trimmingCharacters(in: .whitespacesAndNewlines)) != nil else {
-            showIssue("Enter the full workspace ID supplied by your administrator.", in: .workspace)
-            return
-        }
         go(to: .identity)
     }
 
@@ -410,10 +440,25 @@ struct WorkspaceOnboardingView: View {
         let secret = password
         password = ""
         focusedField = nil
+        finishSignIn(secret: secret, workspaceID: nil)
+    }
+
+    private func choose(_ choice: BackendSession.WorkspaceChoice) {
+        guard let secret = pendingSecret, !session.isBusy else { return }
+        finishSignIn(secret: secret, workspaceID: choice.id)
+    }
+
+    private func finishSignIn(secret: String, workspaceID: UUID?) {
         onHoldSetup(true)
         Task {
             await session.login(email: email, password: secret, workspaceID: workspaceID, serverURL: serverURL)
-            if !session.canAccessWorkspace {
+            let choosing = session.workspaceChoices != nil && !session.canAccessWorkspace
+            withAnimation(reduceMotion ? nil : .smooth(duration: 0.30)) {
+                pendingSecret = choosing ? secret : nil
+            }
+            if choosing {
+                onHoldSetup(false)
+            } else if !session.canAccessWorkspace {
                 onHoldSetup(false)
                 focusedField = .password
             } else if offersInboxSetup && session.accounts.isEmpty {
@@ -422,22 +467,5 @@ struct WorkspaceOnboardingView: View {
                 finishInbox()
             }
         }
-    }
-}
-
-struct OnboardingActionStyle: ButtonStyle {
-    @Environment(\.postmereAccent) private var palette
-    @Environment(\.isEnabled) private var enabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 14, weight: .semibold))
-            .padding(.horizontal, 23).frame(minHeight: 40)
-            .foregroundStyle(.white)
-            .background(palette.accent.gradient, in: .capsule)
-            .opacity(enabled ? (configuration.isPressed ? 0.86 : 1) : 0.5)
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }

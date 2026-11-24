@@ -36,6 +36,15 @@ final class BackendSession {
     var errorMessage: String?
     var statusMessage: String?
     var baseURL: String
+    /// Set when the password was right and the person belongs to several
+    /// workspaces: the sign-in screen asks which one, then signs in again.
+    private(set) var workspaceChoices: [WorkspaceChoice]?
+    /// The signed-in person's workspaces, for the switcher. Empty until loaded.
+    private(set) var workspaces: [WorkspaceChoice] = []
+    private(set) var isSwitchingWorkspace = false
+    var currentWorkspace: WorkspaceChoice? {
+        credential.flatMap { current in workspaces.first { $0.id == current.workspaceID } }
+    }
     @ObservationIgnored private let storage: any BackendCredentialStorage
     @ObservationIgnored private let configuration: URLSessionConfiguration
     @ObservationIgnored private let preferences: UserDefaults
@@ -60,7 +69,32 @@ final class BackendSession {
     }
     var realtimeGeneration: UUID? { canAccessWorkspace ? generation : nil }
 
-    nonisolated struct Login: Encodable, Sendable { let email: String; let password: String; let workspaceId: UUID }
+    /// `workspaceId` is left out to let the server pick: someone in one workspace is
+    /// signed straight in, someone in several gets the list to choose from.
+    nonisolated struct Login: Encodable, Sendable { let email: String; let password: String; let workspaceId: UUID? }
+    nonisolated struct WorkspaceChoice: Codable, Sendable, Identifiable, Equatable {
+        let id: UUID
+        let name: String
+        let role: String
+        var roleTitle: String { role.prefix(1).uppercased() + role.dropFirst() }
+    }
+    nonisolated enum LoginReply: Decodable, Sendable {
+        case session(SessionResponse)
+        case chooseWorkspace([WorkspaceChoice])
+
+        private enum Keys: String, CodingKey { case workspaceRequired, workspaces }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: Keys.self)
+            if try container.decodeIfPresent(Bool.self, forKey: .workspaceRequired) == true {
+                self = .chooseWorkspace(try container.decode([WorkspaceChoice].self, forKey: .workspaces))
+            } else {
+                self = .session(try SessionResponse(from: decoder))
+            }
+        }
+    }
+    nonisolated struct WorkspaceList: Decodable, Sendable { let current: UUID; let workspaces: [WorkspaceChoice] }
+    nonisolated struct Switch: Encodable, Sendable { let workspaceId: UUID }
     nonisolated struct Logout: Encodable, Sendable {
         let signedOutAt: Date?
         let revokeMcp: Bool
@@ -188,7 +222,31 @@ final class BackendSession {
         }
     }
 
-    func login(email: String, password: String, workspaceID: String, serverURL: String? = nil) async {
+    /// The workspace ID inside pasted text. Copies from terminals, chats and
+    /// documents can carry labels, quotes, invisible characters or typographic
+    /// dashes, so take the one UUID present rather than requiring exact input.
+    nonisolated static func workspaceID(from text: String) -> UUID? {
+        let dashes: Set<Character> = ["\u{2010}", "\u{2011}", "\u{2012}", "\u{2013}", "\u{2014}", "\u{2212}", "\u{FE63}", "\u{FF0D}"]
+        let cleaned = String(text.compactMap { character -> Character? in
+            if dashes.contains(character) { return "-" }
+            return character.isASCII ? character : " "
+        })
+        let pattern = #"[0-9A-Fa-f]{8}-?[0-9A-Fa-f]{4}-?[0-9A-Fa-f]{4}-?[0-9A-Fa-f]{4}-?[0-9A-Fa-f]{12}"#
+        let matches = cleaned.matches(of: try! Regex(pattern))
+        guard matches.count == 1 else { return nil }
+        let hex = cleaned[matches[0].range].filter { $0 != "-" }
+        guard hex.count == 32 else { return nil }
+        let i = hex.startIndex
+        func part(_ from: Int, _ length: Int) -> Substring {
+            let start = hex.index(i, offsetBy: from)
+            return hex[start..<hex.index(start, offsetBy: length)]
+        }
+        return UUID(uuidString: "\(part(0, 8))-\(part(8, 4))-\(part(12, 4))-\(part(16, 4))-\(part(20, 12))")
+    }
+
+    /// Signs in. With no workspace the server picks the only one, or returns the
+    /// list in `workspaceChoices`; call again with the chosen ID.
+    func login(email: String, password: String, workspaceID: UUID? = nil, serverURL: String? = nil) async {
         guard !isBusy, !isWaitingForSignOut, credential == nil else { return }
         isBusy = true
         generation = UUID()
@@ -199,16 +257,24 @@ final class BackendSession {
         var issued: (BackendHTTPClient, String)?
         var savedToken = false
         do {
-            guard let workspace = UUID(uuidString: workspaceID.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-                throw BackendError.response(400, "Enter the workspace ID supplied by your server administrator.")
-            }
             let loginEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
             let client = try BackendHTTPClient(baseURL: serverURL ?? baseURL, configuration: configuration)
-            let response: SessionResponse = try await client.request("POST", "/v1/auth/login",
-                body: Login(email: loginEmail, password: password, workspaceId: workspace))
-            issued = (client, response.token)
+            let reply: LoginReply = try await client.request("POST", "/v1/auth/login",
+                body: Login(email: loginEmail, password: password, workspaceId: workspaceID))
             guard requestGeneration == generation else { throw BackendError.notConnected }
-            guard response.workspaceId == workspace,
+            let response: SessionResponse
+            switch reply {
+            case .chooseWorkspace(let choices):
+                guard workspaceID == nil, choices.count > 1, Set(choices.map(\.id)).count == choices.count else {
+                    throw BackendError.invalidResponse
+                }
+                workspaceChoices = choices
+                return
+            case .session(let session):
+                response = session
+            }
+            issued = (client, response.token)
+            guard workspaceID.map({ $0 == response.workspaceId }) != false,
                   Self.validLifetime(expiresAt: response.expiresAt, absoluteExpiresAt: response.absoluteExpiresAt), !response.token.isEmpty,
                   response.persistent.map({ $0 == (response.expiresAt == nil) }) != false,
                   ["owner", "admin", "member"].contains(response.role) else { throw BackendError.invalidResponse }
@@ -217,7 +283,7 @@ final class BackendSession {
             guard issuedCredential.isValid(at: .now) else { throw BackendError.invalidResponse }
             let me: Me = try await client.request("GET", "/v1/auth/me", token: response.token)
             guard requestGeneration == generation else { throw BackendError.notConnected }
-            guard me.userId == response.userId, me.workspaceId == workspace,
+            guard me.userId == response.userId, me.workspaceId == response.workspaceId,
                   me.sessionId == response.sessionId, me.role == response.role,
                   me.email.caseInsensitiveCompare(loginEmail) == .orderedSame else { throw BackendError.invalidResponse }
             let saved = try canonicalCredential(issuedCredential, me: me)
@@ -233,9 +299,11 @@ final class BackendSession {
             // The session is installed. A later account-list failure should not
             // revoke a valid session; 401 handling clears it independently.
             issued = nil
+            workspaceChoices = nil
             try await refreshAccounts()
             guard requestGeneration == generation else { return }
             statusMessage = "Connected to your Postmere workspace."
+            await refreshWorkspaces()
         } catch {
             if let (client, token) = issued {
                 if savedToken { try? await storage.delete() }
@@ -243,6 +311,86 @@ final class BackendSession {
                     body: Logout(signedOutAt: nil, revokeMcp: false))
             }
             if requestGeneration == generation { errorMessage = error.localizedDescription }
+        }
+    }
+
+    /// Back from the workspace picker to email and password.
+    func cancelWorkspaceChoice() {
+        workspaceChoices = nil
+    }
+
+    /// Loads the workspaces this person belongs to, for the switcher.
+    func refreshWorkspaces() async {
+        guard canAccessWorkspace, let current = credential else { workspaces = []; return }
+        let requestGeneration = generation
+        guard let list: WorkspaceList = try? await request("GET", "/v1/auth/workspaces"),
+              requestGeneration == generation, list.current == current.workspaceID,
+              Set(list.workspaces.map(\.id)).count == list.workspaces.count else { return }
+        if workspaces != list.workspaces { workspaces = list.workspaces }
+    }
+
+    /// Moves this device to another of the person's workspaces without asking for
+    /// the password again. The new sign-in is verified and saved before the old one
+    /// is ended, so a failure leaves the current workspace exactly as it was.
+    /// Assistant connections in the old workspace are kept.
+    func switchWorkspace(to workspaceID: UUID) async {
+        guard !isBusy, !isWaitingForSignOut, canAccessWorkspace, let previous = credential, let client = transport,
+              previous.workspaceID != workspaceID else { return }
+        isBusy = true
+        isSwitchingWorkspace = true
+        defer { isBusy = false; isSwitchingWorkspace = false }
+        errorMessage = nil
+        statusMessage = nil
+        let startGeneration = generation
+        var issued: String?
+        do {
+            let response: SessionResponse = try await client.request("POST", "/v1/auth/switch", token: previous.token,
+                                                                      body: Switch(workspaceId: workspaceID))
+            issued = response.token
+            guard startGeneration == generation else { throw BackendError.notConnected }
+            guard response.workspaceId == workspaceID, response.userId == previous.userID,
+                  Self.validLifetime(expiresAt: response.expiresAt, absoluteExpiresAt: response.absoluteExpiresAt), !response.token.isEmpty,
+                  response.persistent.map({ $0 == (response.expiresAt == nil) }) != false,
+                  ["owner", "admin", "member"].contains(response.role) else { throw BackendError.invalidResponse }
+            let issuedCredential = BackendCredential(baseURL: client.baseURL.absoluteString, token: response.token,
+                expiresAt: response.expiresAt, userID: response.userId, workspaceID: response.workspaceId, absoluteExpiresAt: response.absoluteExpiresAt)
+            let me: Me = try await client.request("GET", "/v1/auth/me", token: response.token)
+            guard startGeneration == generation else { throw BackendError.notConnected }
+            guard me.userId == previous.userID, me.workspaceId == workspaceID,
+                  me.sessionId == response.sessionId, me.role == response.role else { throw BackendError.invalidResponse }
+            let saved = try canonicalCredential(issuedCredential, me: me)
+            guard saved.isValid(at: .now) else { throw BackendError.invalidResponse }
+            try await storage.save(saved)
+            guard startGeneration == generation else { throw BackendError.notConnected }
+            // From here the new workspace is the saved one. Reset everything tied
+            // to the old one (pending responses, accounts, registry) and install it.
+            let known = workspaces
+            clearSession()
+            credential = saved
+            transport = client
+            baseURL = saved.baseURL
+            lastLifetimeCheck = .now
+            workspaces = known
+            issued = nil
+            let installedGeneration = generation
+            // End the old sign-in on this device. Push moves with the new session.
+            if let pushInstallationID {
+                let _: BackendEmpty? = try? await client.request("DELETE", "/v1/push/devices/\(pushInstallationID.uuidString)",
+                                                                 token: previous.token)
+            }
+            let _: BackendEmpty? = try? await client.request("POST", "/v1/auth/logout", token: previous.token,
+                body: Logout(signedOutAt: nil, revokeMcp: false))
+            guard installedGeneration == generation else { return }
+            try? await refreshAccounts()
+            guard installedGeneration == generation else { return }
+            await refreshWorkspaces()
+            statusMessage = "Switched to \(currentWorkspace?.name ?? "your workspace")."
+        } catch {
+            if let issued {
+                let _: BackendEmpty? = try? await client.request("POST", "/v1/auth/logout", token: issued,
+                    body: Logout(signedOutAt: nil, revokeMcp: false))
+            }
+            if startGeneration == generation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -347,6 +495,8 @@ final class BackendSession {
         savedSessionFailures = 0
         accountsGeneration = UUID()
         accounts = []
+        workspaces = []
+        workspaceChoices = nil
         accountCatalogState = .pending
         disconnectingAccountIDs = []
         RemoteAccountRegistry.accounts = []

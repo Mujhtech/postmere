@@ -135,6 +135,20 @@ struct SidebarView: View {
 
             Divider()
 
+            if runtime.backend.workspaces.count > 1 {
+                HStack {
+                    WorkspaceSwitcher(session: runtime.backend)
+                        .foregroundStyle(sidebarSecondary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 9)
+                .transition(.opacity)
+            } else {
+                // Loads the list so the switcher appears once there is a choice.
+                WorkspaceSwitcher(session: runtime.backend).frame(width: 0, height: 0).hidden()
+            }
+
             HStack(spacing: 6) {
                 SettingsLink {
                     HStack(spacing: 8) {

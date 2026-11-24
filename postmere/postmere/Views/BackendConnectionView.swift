@@ -7,7 +7,8 @@ struct BackendConnectionView: View {
     var onSync: @MainActor @Sendable () async -> Void
     @State private var email = ""
     @State private var password = ""
-    @State private var workspaceID = ""
+    /// Held only while choosing between workspaces after a correct password.
+    @State private var pendingSecret: String?
     @State private var connection = MailAccountConnection()
     @State private var calendarAccess = false
     @State private var accountToDisconnect: BackendAccount?
@@ -26,7 +27,9 @@ struct BackendConnectionView: View {
         Form {
             if session.isConnected {
                 Section("Workspace") {
-                    SettingsRow(serverHost, symbol: "building.2", tint: SettingsTint.indigo, subtitle: "Keeps accounts in sync and sends scheduled mail") {
+                    SettingsRow(session.currentWorkspace?.name ?? serverHost, symbol: "building.2", tint: SettingsTint.indigo,
+                                subtitle: session.currentWorkspace == nil ? "Keeps accounts in sync and sends scheduled mail"
+                                    : "\(serverHost) · \(session.currentWorkspace?.roleTitle ?? "")") {
                         HStack(spacing: 8) {
                             Button { Task { await onSync() } } label: { PostmereIcon("arrow.clockwise", size: 12) }
                                 .controlSize(.small)
@@ -39,8 +42,19 @@ struct BackendConnectionView: View {
                                 .help("Also revokes this workspace’s assistant connections")
                         }
                     }
+                    if session.workspaces.count > 1, let current = session.currentWorkspace {
+                        Picker("Switch workspace", selection: Binding(get: { current.id }, set: { id in
+                            Task { await session.switchWorkspace(to: id) }
+                        })) {
+                            ForEach(session.workspaces) { workspace in
+                                Text("\(workspace.name) · \(workspace.roleTitle)").tag(workspace.id)
+                            }
+                        }
+                        .disabled(isManagingAccounts)
+                    }
                     statusMessages
                 }
+                .task(id: session.realtimeGeneration) { await session.refreshWorkspaces() }
                 Section("Mail accounts") {
                     ForEach(session.accounts) { account in
                         accountRow(account)
@@ -80,25 +94,43 @@ struct BackendConnectionView: View {
                 Section {
                     SettingsRow("Sign in to your workspace", symbol: "building.2", tint: SettingsTint.indigo,
                                 subtitle: "Use the details from your administrator") { EmptyView() }
-                    TextField("Server", text: $session.baseURL, prompt: Text("https://mail.example.com"))
-                        .textContentType(.URL).autocorrectionDisabled()
-                    TextField("Workspace ID", text: $workspaceID).autocorrectionDisabled()
-                    TextField("Email", text: $email).textContentType(.username).autocorrectionDisabled()
-                    SecureField("Password", text: $password).textContentType(.password)
-                    HStack {
-                        if session.isBusy { ProgressView().controlSize(.small) }
-                        Spacer()
-                        Button("Sign In") {
-                            let secret = password
-                            password = ""
-                            Task {
-                                await session.login(email: email, password: secret, workspaceID: workspaceID)
-                                if session.isConnected { await onSync() }
+                    if let choices = session.workspaceChoices, pendingSecret != nil {
+                        Text("\(email) belongs to \(choices.count) workspaces. Choose one to open.")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                        ForEach(choices) { choice in
+                            Button { signIn(choice.id) } label: {
+                                HStack(spacing: 9) {
+                                    WorkspaceMonogram(name: choice.name, size: 22)
+                                    Text(choice.name)
+                                    Spacer()
+                                    Text(choice.roleTitle).foregroundStyle(.secondary)
+                                }
+                                .contentShape(.rect)
                             }
+                            .buttonStyle(.plain)
                         }
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(session.isBusy || email.isEmpty || password.isEmpty || workspaceID.isEmpty || session.baseURL.isEmpty)
-                        .buttonStyle(.borderedProminent)
+                        HStack {
+                            if session.isBusy { ProgressView().controlSize(.small) }
+                            Spacer()
+                            Button("Cancel") { pendingSecret = nil; session.cancelWorkspaceChoice() }
+                        }
+                    } else {
+                        TextField("Server", text: $session.baseURL, prompt: Text("https://mail.example.com"))
+                            .textContentType(.URL).autocorrectionDisabled()
+                        TextField("Email", text: $email).textContentType(.username).autocorrectionDisabled()
+                        SecureField("Password", text: $password).textContentType(.password)
+                        HStack {
+                            if session.isBusy { ProgressView().controlSize(.small) }
+                            Spacer()
+                            Button("Sign In") {
+                                pendingSecret = password
+                                password = ""
+                                signIn(nil)
+                            }
+                            .keyboardShortcut(.defaultAction)
+                            .disabled(session.isBusy || email.isEmpty || password.isEmpty || session.baseURL.isEmpty)
+                            .buttonStyle(.borderedProminent)
+                        }
                     }
                     statusMessages
                 }
@@ -118,6 +150,7 @@ struct BackendConnectionView: View {
         }
         .formStyle(.grouped)
         .onDisappear(perform: connection.cancel)
+        .onDisappear { pendingSecret = nil }
         .sheet(item: $renaming) { account in
             AccountNamingSheet(account: account, session: session)
         }
@@ -208,6 +241,16 @@ struct BackendConnectionView: View {
             .accessibilityLabel("Manage \(account.email)")
         }
         .padding(.vertical, 1)
+    }
+
+    /// Signs in, then once more with the chosen workspace when the person is in several.
+    private func signIn(_ workspaceID: UUID?) {
+        guard let secret = pendingSecret, !session.isBusy else { return }
+        Task {
+            await session.login(email: email, password: secret, workspaceID: workspaceID)
+            if session.workspaceChoices == nil || session.isConnected { pendingSecret = nil }
+            if session.isConnected { await onSync() }
+        }
     }
 
     private func connect(_ provider: String, reconnecting account: BackendAccount? = nil) {
