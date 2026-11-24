@@ -14,7 +14,10 @@ struct PostmereMobileApp: App {
             MobileRoot(runtime: runtime)
                 .environment(runtime)
                 .postmereStyle()
-                .preferredColorScheme(appearance.colorScheme)
+                // Set on the window, like the Mac does on NSApp: sheets already open
+                // follow at once, and System resumes live changes.
+                .onChange(of: appearance, initial: true) { MailAppearance.applyToWindows(appearance) }
+                .onAppear { MailAppearance.applyToWindows(appearance) }
                 .onOpenURL { url in
                     if let route = PostmereLink.route(for: url) {
                         MobileRouter.shared.pending = route
@@ -30,6 +33,7 @@ struct PostmereMobileApp: App {
         .onChange(of: scenePhase) {
             switch scenePhase {
             case .active:
+                MailAppearance.applyToWindows(appearance)
                 Task {
                     await runtime.backend.expireSessionIfNeeded()
                     await runtime.notifications.refreshAuthorization()
@@ -111,6 +115,25 @@ private struct MobileRoot: View {
         .onChange(of: runtime.backend.canAccessWorkspace) {
             runtime.reconcileWorkspaceAccess()
             if runtime.backend.canAccessWorkspace { Task { await runtime.sync() } }
+        }
+    }
+}
+
+extension MailAppearance {
+    var interfaceStyle: UIUserInterfaceStyle {
+        switch self {
+        case .system: .unspecified
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+
+    /// Every window, and every sheet presented in it, takes the chosen appearance.
+    @MainActor static func applyToWindows(_ mode: MailAppearance) {
+        for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
+            for window in scene.windows where window.overrideUserInterfaceStyle != mode.interfaceStyle {
+                window.overrideUserInterfaceStyle = mode.interfaceStyle
+            }
         }
     }
 }

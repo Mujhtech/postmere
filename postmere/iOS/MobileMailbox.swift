@@ -71,6 +71,15 @@ struct MobileMailbox: View {
                     if arguments.contains("-PostmereOpenAccounts") { switchesAccount = true }
                     if arguments.contains("-PostmereOpenCompose") { store.beginCompose() }
                     if arguments.contains("-PostmereOpenSettings") { showsSettings = true }
+                    if arguments.contains("-PostmereCycleAppearance") {
+                        // Switches Dark then Light in-process, with Settings open, for screenshots.
+                        Task {
+                            try? await Task.sleep(for: .seconds(6))
+                            UserDefaults.standard.set(MailAppearance.dark.rawValue, forKey: MailAppearance.preferenceKey)
+                            try? await Task.sleep(for: .seconds(6))
+                            UserDefaults.standard.set(MailAppearance.light.rawValue, forKey: MailAppearance.preferenceKey)
+                        }
+                    }
                 }
                 #endif
             } else {
@@ -937,7 +946,7 @@ private struct MobileMailboxSheet: View {
                                 Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(.secondary)
                             }
                         }
-                    }
+                        }
                 }
                 if !store.savedViews.isEmpty {
                     Section("Views") {
@@ -961,7 +970,7 @@ private struct MobileMailboxSheet: View {
                                 Button("Delete", systemImage: "trash", role: .destructive) { store.deleteSavedView(view.id) }
                                 Button("Edit", systemImage: "pencil") { editing = view }.tint(.blue)
                             }
-                        }
+                                }
                     }
                 }
                 if MailAccount.allCases.count > 1 {
@@ -970,7 +979,7 @@ private struct MobileMailboxSheet: View {
                         ForEach(MailAccount.allCases) { account in
                             accountRow(account.rawValue, title: account.title,
                                        detail: account.title == account.email ? nil : account.email)
-                        }
+                                    }
                     }
                 }
             }
