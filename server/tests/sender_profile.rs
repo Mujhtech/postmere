@@ -109,7 +109,9 @@ impl Fixture {
         let pool = db::connect(&url).await.unwrap();
         db::migrate(&pool).await.unwrap();
         let mut config = common::config(url);
-        config.ai = Some(postmere_core::config::AiProvider::openai("fixture-never-transmitted"));
+        config.ai = Some(postmere_core::config::AiProvider::openai(
+            "fixture-never-transmitted",
+        ));
         let mut state = AppState::new(pool.clone(), config).await.unwrap();
         state.http = reqwest::Client::builder()
             .no_proxy()

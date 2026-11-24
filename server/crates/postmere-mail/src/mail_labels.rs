@@ -181,15 +181,16 @@ pub(crate) async fn store_label_names(
     .execute(&mut **tx)
     .await?;
     sqlx::query(concat!(
-        "UPDATE mail_messages m SET label_text=", label_text!(),
-        " WHERE m.account_id=$1 AND m.deleted_at IS NULL AND m.label_text IS DISTINCT FROM ", label_text!()
+        "UPDATE mail_messages m SET label_text=",
+        label_text!(),
+        " WHERE m.account_id=$1 AND m.deleted_at IS NULL AND m.label_text IS DISTINCT FROM ",
+        label_text!()
     ))
     .bind(account)
     .execute(&mut **tx)
     .await?;
     Ok(())
 }
-
 
 async fn label_session(
     state: &AppState,
