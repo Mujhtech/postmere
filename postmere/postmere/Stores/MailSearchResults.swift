@@ -235,21 +235,16 @@ extension MailStore {
 }
 
 extension MailStore {
-    /// One conversation per row from a mailbox or inbox tab, newest first, for a triage
-    /// pass. Independent of what the mail list is showing or filtering; only the chosen
-    /// account applies.
-    func triageCandidates(mailbox: Mailbox, splitID: UUID? = nil) -> [MailMessage] {
+    /// Triage follows the chosen account and source, independently of the mail list's filters.
+    func triageRequest(mailbox: Mailbox, splitID: UUID? = nil) -> MailSearchRequest {
         let splits = visibleInboxSplits
         let index = mailbox == .inbox ? splits.firstIndex { $0.id == splitID } : nil
         var earlier: [MailCriteriaMatcher] = []
         if let index, inboxSplitOverlapPolicy == .firstMatch { earlier = splits[..<index].map { matcher($0.criteria) } }
         let context = MailSearchContext(vipContacts: vipContacts, referenceDate: .now, labelIDsByName: labelIDsByName)
-        let request = MailSearchRequest(accounts: searchableAccounts, account: selectedAccount, mailbox: mailbox,
-                                        saved: nil, split: index.map { matcher(splits[$0].criteria) }, earlierSplits: earlier,
-                                        query: parsedQuery(""), context: context, unreadOnly: false,
-                                        attachmentsOnly: false, selectedID: nil)
-        let rows = request.run(messages, interactive: true, cancellable: false)
-            .filter { !$0.isDraft && $0.mailbox != .outbox }
-        return MailSearchRequest.representatives(rows, preferred: nil)
+        return MailSearchRequest(accounts: searchableAccounts, account: selectedAccount, mailbox: mailbox,
+                                 saved: nil, split: index.map { matcher(splits[$0].criteria) }, earlierSplits: earlier,
+                                 query: parsedQuery(""), context: context, unreadOnly: false, attachmentsOnly: false,
+                                 selectedID: nil)
     }
 }

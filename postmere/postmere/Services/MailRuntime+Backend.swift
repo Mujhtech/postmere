@@ -1,12 +1,10 @@
 import Foundation
 
 extension MailRuntime {
-    func syncBackend(refreshProvider: Bool = true, refreshAccounts: Bool = false) async {
+    func syncBackend(_ demand: BackendMailSyncDemand = [.cache, .catalog, .provider]) async {
         guard let generation = backend.realtimeGeneration, let scope = backend.scope else { return }
         if let until = mailSyncRateLimit, until > .now { return }
-        pendingMailSync.insert(.cache)
-        if refreshProvider { pendingMailSync.insert(.provider) }
-        if refreshAccounts || refreshProvider { pendingMailSync.insert(.catalog) }
+        pendingMailSync.formUnion(demand)
         // A hint arriving during a read may refer to a later commit. Keep one
         // follow-up read, combining hints from every window, push and the stream.
         guard !isSyncingBackend else { return }
@@ -36,13 +34,16 @@ extension MailRuntime {
     }
 
     private func readMailCache(demand: BackendMailSyncDemand, generation: UUID, scope: String) async throws {
-        if demand.contains(.catalog) || backend.accountCatalogState != .loaded {
-            try await backend.refreshAccounts()
-            guard backend.realtimeGeneration == generation else { return }
-            nextAccountCatalogCheck = Date.now.addingTimeInterval(300)
-            for account in backend.accounts { mailSyncStatuses[account.id] = account.syncStatus }
+        // A push or mail-only event reads the cached mailbox immediately. Catalog
+        // changes and explicit refreshes force a lookup. Foreground sync can reuse one.
+        var refreshed = false
+        if demand.contains(.catalog) || demand.contains(.provider) || backend.accountCatalogState != .loaded {
+            refreshed = try await backend.refreshAccountsIfNeeded(force: demand.contains(.catalog))
         }
         guard backend.realtimeGeneration == generation else { return }
+        for account in backend.accounts where refreshed || mailSyncStatuses[account.id] == nil {
+            mailSyncStatuses[account.id] = account.syncStatus
+        }
         let accounts = RemoteAccountRegistry.accounts.filter {
             $0.scope == scope && backend.isAccountConnected($0.accountID, scope: scope)
         }

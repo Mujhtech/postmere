@@ -238,6 +238,10 @@ struct BackendClientFixtures {
 
     static func sizeFixtures() async throws {
         let transport = try client()
+        let payload = Data((0..<40_001).map { UInt8(truncatingIfNeeded: $0) })
+        _ = reset { _, fixture in fixture.response(200, body: payload) }
+        let received = try await transport.raw("GET", "/v1/mail/messages")
+        check(received == payload, "Reading a response across buffer boundaries changed its contents")
         _ = reset { _, fixture in fixture.response(200, headers: ["Content-Length": String(40 * 1024 * 1024 + 1)], body: Data([65])) }
         await error("Declared response size", matches: { if case BackendError.tooLarge = $0 { return true }; return false }) { _ = try await transport.raw("GET", "/v1/mail/messages") }
         try await Task.sleep(for: .milliseconds(50))

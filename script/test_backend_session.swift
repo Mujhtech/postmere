@@ -467,9 +467,17 @@ struct BackendSessionFixtures {
         check(RemoteAccountRegistry.accounts.first?.localID.hasPrefix("remote:\(session.scope ?? "missing"):") == true, "Provider identity is not scoped to the active session")
 
         let restoredStore = SessionMemoryStore(person.credential); let restored = fixture(restoredStore); install(person)
+        SessionFixtureProtocol.recorder = SessionRequestRecorder()
         await restored.restore()
         check(restored.credential?.token == person.token && restored.accounts.count == 1 && restored.canAccessWorkspace && !restored.isRestoring,
               "Valid saved identity did not unlock the workspace after verification")
+        let automatic = try? await restored.refreshAccountsIfNeeded(force: false)
+        check(automatic == false && SessionFixtureProtocol.recorder.values.filter { $0.path == "/v1/mail/accounts" }.count == 1,
+              "The first automatic mail sync fetched the catalog again after restoration")
+        let manual = try? await restored.refreshAccountsIfNeeded(force: true)
+        let periodic = try? await restored.refreshAccountsIfNeeded(force: false, now: .now.addingTimeInterval(301))
+        check(manual == true && periodic == true && SessionFixtureProtocol.recorder.values.filter { $0.path == "/v1/mail/accounts" }.count == 3,
+              "Explicit refresh or the periodic fallback failed to refresh the catalog")
 
         let wrong = SessionPersona("other@example.test")
         let mismatchStore = SessionMemoryStore(person.credential); let mismatch = fixture(mismatchStore); install(wrong)

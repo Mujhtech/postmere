@@ -88,13 +88,17 @@ final class MailPlugins {
     }
 
     func reset() {
+        // Views reload cards when the revision changes. Bumping it for a reset that
+        // cleared nothing made a card that loads while signed out reset again,
+        // forever: the reader froze when a message opened before the session did.
+        let hadState = !catalog.isEmpty || catalogScope != nil || !results.isEmpty || catalogState != .idle
         catalog = []
         catalogState = .idle
         catalogScope = nil
         results.removeAll()
         loading.removeAll()
         running.removeAll()
-        revision += 1
+        if hadState { revision += 1 }
     }
 
     // MARK: Messages

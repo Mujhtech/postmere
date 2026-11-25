@@ -129,13 +129,35 @@ struct TranslatableMessageBody<Original: View>: View {
 
     /// The message's language when it is clearly not the reader's own.
     @concurrent static func foreignLanguage(in text: String, comparedTo target: Locale.Language) async -> Locale.Language? {
-        guard text.count >= 40 else { return nil }
+        let prose = readableWords(text)
+        guard prose.count >= 8 else { return nil }
         let recognizer = NLLanguageRecognizer()
-        recognizer.processString(text)
-        guard let (language, confidence) = recognizer.languageHypotheses(withMaximum: 1).first,
+        recognizer.processString(prose.joined(separator: " "))
+        let hypotheses = recognizer.languageHypotheses(withMaximum: 3)
+        guard let (language, confidence) = hypotheses.max(by: { $0.value < $1.value }),
               confidence >= 0.8, language != .undetermined else { return nil }
         let detected = Locale.Language(identifier: language.rawValue)
         guard detected.languageCode != target.languageCode else { return nil }
+        // Close to the reader's own language is not foreign enough to offer a translation.
+        if let own = hypotheses.first(where: { Locale.Language(identifier: $0.key.rawValue).languageCode == target.languageCode }),
+           own.value >= 0.1 { return nil }
         return detected
+    }
+
+    /// Words a person would read. Newsletters fill their text with tracking links,
+    /// encoded IDs and addresses, which a language model reads as some other language.
+    nonisolated static func readableWords(_ text: String) -> [String] {
+        text.split(whereSeparator: \.isWhitespace).compactMap { raw -> String? in
+            let token = String(raw)
+            let lower = token.lowercased()
+            if lower.contains("://") || lower.hasPrefix("www.") || token.contains("@") { return nil }
+            let word = token.trimmingCharacters(in: .punctuationCharacters.union(.symbols))
+            guard word.count >= 2, word.count <= 24 else { return nil }
+            // Encoded IDs mix letters with digits or switch case mid-word.
+            guard word.allSatisfy({ $0.isLetter || $0 == "'" || $0 == "’" || $0 == "-" }) else { return nil }
+            let inner = word.dropFirst()
+            if inner.contains(where: \.isUppercase) && inner.contains(where: \.isLowercase) { return nil }
+            return word
+        }
     }
 }

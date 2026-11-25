@@ -130,7 +130,7 @@ struct BackendPushFixtures {
         let storage = PushFixtureStorage()
         let session = BackendSession(storage: storage, configuration: RealtimeFixtureProtocol.configuration(), preferences: defaults)
         session.baseURL = credential.baseURL
-        await session.login(email: "fixture@example.test", password: "fixture-only-password", workspaceID: credential.workspaceID.uuidString)
+        await session.login(email: "fixture@example.test", password: "fixture-only-password", workspaceID: credential.workspaceID)
         try realtimeCheck(session.canAccessWorkspace && session.credential?.expiresAt == nil
                           && session.credential?.absoluteExpiresAt == nil, "Persistent fixture workspace did not sign in")
         let account = RemoteAccountRegistry.accounts[0]

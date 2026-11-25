@@ -37,12 +37,34 @@ struct MobileSignIn: View {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.6).delay(0.1)) { arrived = true }
         }
         .onChange(of: serverURL) { if issue?.field == .server { issue = nil } }
+        // A message left from signing out, or a failed attempt, clears once they type again.
+        .onChange(of: email) { clearSessionMessage() }
+        .onChange(of: password) { if !password.isEmpty { clearSessionMessage() } }
         .onDisappear { password = ""; pendingSecret = nil }
     }
 
     // MARK: Pages
 
     private var welcome: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                welcomeContent
+                    .frame(maxWidth: 480, minHeight: geometry.size.height)
+                    .frame(maxWidth: .infinity)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            primaryButton("Get started") { go(to: .workspace) }
+                .padding(.horizontal, 24)
+                .frame(maxWidth: 480)
+                .padding(.bottom, 12)
+        }
+        .opacity(arrived || reduceMotion ? 1 : 0)
+        .offset(y: arrived || reduceMotion ? 0 : 10)
+    }
+
+    private var welcomeContent: some View {
         VStack(spacing: 0) {
             Spacer(minLength: 24)
             OnboardingPostage(compact: false, arrived: arrived)
@@ -65,12 +87,7 @@ struct MobileSignIn: View {
                 .padding(.horizontal, 36)
                 .padding(.top, 18)
             Spacer(minLength: 24)
-            primaryButton("Get started") { go(to: .workspace) }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 12)
         }
-        .opacity(arrived || reduceMotion ? 1 : 0)
-        .offset(y: arrived || reduceMotion ? 0 : 10)
     }
 
     private var step: some View {
@@ -114,7 +131,10 @@ struct MobileSignIn: View {
                 }
             }
             .padding(.horizontal, 24)
+            .frame(maxWidth: 480)
             .padding(.vertical, 12)
+            .frame(maxWidth: .infinity)
+            .background { bottomBarFade }
         }
         .task(id: page) {
             await Task.yield()
@@ -235,6 +255,20 @@ struct MobileSignIn: View {
         .animation(.smooth(duration: 0.5), value: page)
     }
 
+    /// The page's paper behind the bottom button, fading in above it, so fields and
+    /// messages scroll away beneath it instead of showing through.
+    private var bottomBarFade: some View {
+        VStack(spacing: 0) {
+            LinearGradient(colors: [PostmereTheme.paper.opacity(0), PostmereTheme.paper],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: 20)
+            PostmereTheme.paper
+        }
+        .padding(.top, -20)
+        .ignoresSafeArea(edges: .bottom)
+        .allowsHitTesting(false)
+    }
+
     private var host: String {
         URL(string: serverURL.trimmingCharacters(in: .whitespacesAndNewlines))?.host ?? "this server"
     }
@@ -319,6 +353,11 @@ struct MobileSignIn: View {
         }
         movingForward = destination.rawValue > page.rawValue
         withAnimation(reduceMotion ? nil : .smooth(duration: 0.32)) { page = destination }
+    }
+
+    private func clearSessionMessage() {
+        guard !session.isBusy, session.errorMessage != nil else { return }
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { session.errorMessage = nil }
     }
 
     private func validateServer() -> Bool {

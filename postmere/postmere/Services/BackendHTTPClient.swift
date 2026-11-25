@@ -129,10 +129,19 @@ nonisolated struct BackendHTTPClient: Sendable {
         guard !(300...399).contains(response.statusCode) else { throw BackendError.redirect }
         guard response.expectedContentLength <= maximumBytes else { throw BackendError.tooLarge }
         var data = Data()
+        // Append to Data in blocks while still enforcing the limit on untrusted lengths.
+        let blockSize = 16 * 1024
+        var block: [UInt8] = []
+        block.reserveCapacity(blockSize)
         for try await byte in bytes {
-            guard data.count < maximumBytes else { throw BackendError.tooLarge }
-            data.append(byte)
+            guard data.count + block.count < maximumBytes else { throw BackendError.tooLarge }
+            block.append(byte)
+            if block.count == blockSize {
+                data.append(contentsOf: block)
+                block.removeAll(keepingCapacity: true)
+            }
         }
+        data.append(contentsOf: block)
         guard (200...299).contains(response.statusCode) else {
             throw Self.responseError(status: response.statusCode, path: path, data: data, retryAfter: response.value(forHTTPHeaderField: "Retry-After"))
         }
@@ -194,17 +203,7 @@ nonisolated struct BackendHTTPClient: Sendable {
     static func decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        decoder.dateDecodingStrategy = .custom { value in
-            let text = try value.singleValueContainer().decode(String.self)
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let date = formatter.date(from: text) { return date }
-            formatter.formatOptions = [.withInternetDateTime]
-            guard let date = formatter.date(from: text) else {
-                throw DecodingError.dataCorrupted(.init(codingPath: value.codingPath, debugDescription: "Invalid timestamp"))
-            }
-            return date
-        }
+        decoder.dateDecodingStrategy = .iso8601
         return decoder
     }
 

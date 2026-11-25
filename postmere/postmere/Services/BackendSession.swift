@@ -1,10 +1,23 @@
 import Foundation
 import Observation
 import CryptoKit
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @MainActor
 @Observable
 final class BackendSession {
+    /// How messages name this device: "this Mac", "this iPhone" or "this iPad".
+    static var thisDevice: String {
+        #if os(macOS)
+        "this Mac"
+        #else
+        ProcessInfo.processInfo.isiOSAppOnMac ? "this Mac"
+            : (UIDevice.current.userInterfaceIdiom == .pad ? "this iPad" : "this iPhone")
+        #endif
+    }
+
     enum AccountCatalogState: Equatable {
         case pending, loading, loaded
         case failed(String)
@@ -51,6 +64,7 @@ final class BackendSession {
     @ObservationIgnored private var transport: BackendHTTPClient?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var accountsGeneration = UUID()
+    @ObservationIgnored private(set) var nextAccountCatalogCheck = Date.distantPast
     @ObservationIgnored private var lastLabelCatalog: (account: String, labels: [ProviderLabel])?
     @ObservationIgnored var onAccountCatalogChanged: (() -> Void)?
     @ObservationIgnored var pushInstallationID: UUID?
@@ -460,12 +474,12 @@ final class BackendSession {
             preferences.removeObject(forKey: "postmerePendingSignOutDate.v1")
         } else { scheduleSignOutRetry() }
         if deletionError == nil {
-            statusMessage = "Signed out on this Mac."
+            statusMessage = "Signed out on \(Self.thisDevice)."
             if revocationError == nil { errorMessage = nil }
             else if queueError == nil {
-                errorMessage = "Server sign-out is pending and will retry when Postmere can reconnect. This Mac is signed out, but the server session may remain active until revocation is confirmed."
+                errorMessage = "Server sign-out is pending and will retry when Postmere can reconnect. \(Self.thisDevice.capitalizedFirst) is signed out, but the server session may remain active until revocation is confirmed."
             } else {
-                errorMessage = "This Mac is signed out, but server revocation failed and could not be saved for retry. Revoke the session from your workspace before trusting that server access has ended."
+                errorMessage = "\(Self.thisDevice.capitalizedFirst) is signed out, but server revocation failed and could not be saved for retry. Revoke the session from your workspace before trusting that server access has ended."
             }
         } else {
             statusMessage = "Signed out of this open window."
@@ -644,6 +658,7 @@ final class BackendSession {
             // Reject ambiguous IDs while retaining the previously installed registry.
             guard Set(result.map(\.id)).count == result.count else { throw BackendError.invalidResponse }
             if accounts != result { accounts = result }
+            nextAccountCatalogCheck = Date.now.addingTimeInterval(300)
             if accountCatalogState != .loaded { accountCatalogState = .loaded }
             installAccountRegistry(scope: scope)
         } catch {
@@ -652,6 +667,13 @@ final class BackendSession {
             }
             throw error
         }
+    }
+
+    /// A restore, login, or account edit may already have fetched the catalog for this session.
+    func refreshAccountsIfNeeded(force: Bool, now: Date = .now) async throws -> Bool {
+        guard force || accountCatalogState != .loaded || now >= nextAccountCatalogCheck else { return false }
+        try await refreshAccounts()
+        return true
     }
 
     private func installAccountRegistry(scope: String) {
@@ -696,7 +718,7 @@ final class BackendSession {
         accountsGeneration = UUID()
         accounts.removeAll { $0.id == id }
         installAccountRegistry(scope: accountScope)
-        statusMessage = "Account disconnected. Cached mail and drafts remain on this Mac."
+        statusMessage = "Account disconnected. Cached mail and drafts remain on \(Self.thisDevice)."
     }
 
     // MARK: Assistants
@@ -945,4 +967,8 @@ final class BackendSession {
             if cleanupGeneration == generation { errorMessage = "Your workspace session ended, but its saved Keychain token could not be removed. Sign in again to replace it." }
         }
     }
+}
+
+private extension String {
+    var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }

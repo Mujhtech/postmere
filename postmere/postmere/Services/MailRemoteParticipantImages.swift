@@ -30,6 +30,7 @@ final class MailRemoteParticipantImages {
                 for task in inFlight.values { task.cancel() }
                 inFlight.removeAll()
                 cache.removeAllObjects()
+                locations.removeAllObjects()
                 session?.invalidateAndCancel()
                 session = nil
             }
@@ -42,6 +43,7 @@ final class MailRemoteParticipantImages {
     @ObservationIgnored private let configuration: URLSessionConfiguration
     @ObservationIgnored private var session: URLSession?
     @ObservationIgnored private let cache = NSCache<NSString, CachedPhoto>()
+    @ObservationIgnored private let locations = NSCache<NSString, CachedLocation>()
     @ObservationIgnored private var inFlight: [URL: Task<CachedPhoto, Never>] = [:]
 
     init(source: Source, preferences: UserDefaults = .standard, configuration: URLSessionConfiguration = .ephemeral,
@@ -65,6 +67,8 @@ final class MailRemoteParticipantImages {
         configuration.timeoutIntervalForRequest = 8
         configuration.timeoutIntervalForResource = 12
         self.configuration = configuration
+        locations.countLimit = 256
+        locations.totalCostLimit = 128 * 1024
         cache.countLimit = 256
         cache.totalCostLimit = 24 * 1024 * 1024
     }
@@ -75,8 +79,24 @@ final class MailRemoteParticipantImages {
         let website: String?
     }
 
+    private final class CachedLocation {
+        let value: (url: URL, website: String?)?
+        init(_ value: (url: URL, website: String?)?) { self.value = value }
+    }
+
     private func location(for address: String) -> (url: URL, website: String?)? {
-        guard enabled, let email = MailSenderDomain.email(in: address) else { return nil }
+        // An address can be checked during rendering, again when its task starts,
+        // and by every other visible message from the same sender.
+        guard enabled, source != .websiteIcon || iconDomains != nil else { return nil }
+        let key = address as NSString
+        if let cached = locations.object(forKey: key) { return cached.value }
+        let result = resolve(address)
+        locations.setObject(CachedLocation(result), forKey: key, cost: address.utf8.count)
+        return result
+    }
+
+    private func resolve(_ address: String) -> (url: URL, website: String?)? {
+        guard let email = MailSenderDomain.email(in: address) else { return nil }
         switch source {
         case .gravatar:
             let hash = SHA256.hash(data: Data(email.utf8)).map { String(format: "%02x", $0) }.joined()

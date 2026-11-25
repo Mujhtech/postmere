@@ -82,7 +82,13 @@ struct HTMLMessageBody: View {
         .onDisappear { page?.stopLoading() }
     }
 
-    private var isVisible: Bool { revealed && layout.hasDocumentLayout }
+    private var isVisible: Bool {
+        #if os(iOS)
+        // A phone can show the final document's text while remote images are downloading.
+        if layout.measuredPass == .display && layout.height > 1 { return true }
+        #endif
+        return revealed && layout.measuredPass != nil
+    }
 
     private func renderedMessage(_ page: WebPage) -> some View {
         MessageWebView(page: page, documentHeight: layout.height,
@@ -93,8 +99,7 @@ struct HTMLMessageBody: View {
     }
 
     private func loadMessage(_ source: Source) async {
-        // Reveal when the final pass is ready, or after a short wait so slow
-        // image servers never hold the message back.
+        // Cap the wait if the inspection pass, tracker rules or image downloads are slow.
         revealed = false
         let reveal = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(1500))
@@ -142,7 +147,7 @@ struct HTMLMessageBody: View {
             loadedSource = source
         } catch {
             guard !Task.isCancelled else { return }
-            if layout.hasDocumentLayout { imageError = "Some message content could not be loaded." }
+            if layout.measuredPass != nil { imageError = "Some message content could not be loaded." }
             else { failed = true }
         }
     }
@@ -157,8 +162,16 @@ struct HTMLMessageBody: View {
 
     @concurrent private static func document(html: String, remoteImages: Bool, ink: String) async -> String {
         let images = remoteImages ? "data: https:" : "data:"
+        #if os(iOS)
+        // Without this, an email that has no viewport tag of its own is laid out as a
+        // 980px desktop page and shrunk whole. At the phone's width, the reader script
+        // scales down only what is actually wider than the screen.
+        let viewport = #"<meta name="viewport" content="width=device-width, initial-scale=1">"#
+        #else
+        let viewport = ""
+        #endif
         return """
-        <!doctype html><html><head><meta charset="utf-8">
+        <!doctype html><html><head><meta charset="utf-8">\(viewport)
         <meta name="postmere-image-pass" content="\(remoteImages ? "display" : "inspect")">
         <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src \(images); form-action 'none'; base-uri 'none'">
         <meta http-equiv="x-dns-prefetch-control" content="off">
@@ -314,9 +327,11 @@ private struct HTMLWheelRouter: NSViewRepresentable {
 /// Measures the body independently of the viewport so widening the reader can also shrink its height.
 @Observable
 private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
+    enum Pass { case inspection, display }
+
     var height: CGFloat = 1
     var needsReaderViewport = false
-    var hasDocumentLayout = false
+    var measuredPass: Pass?
     var hasRemoteImages = false
 
     var blockedTrackerCount = 0
@@ -324,15 +339,36 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
 
     func makePage(quoteContext: MailQuoteContext?, readingFont: MailReadingFont, size: Double) -> WebPage {
         height = 1
-        hasDocumentLayout = false
+        measuredPass = nil
         needsReaderViewport = false
         blockedTrackerCount = 0
         hasRemoteImages = false
         let controller = WKUserContentController()
         controller.add(self, contentWorld: .defaultClient, name: "messageLayout")
         pageController = controller
-        let measure = #"""
+        #if os(iOS)
+        let fitsWidth = "true"
+        #else
+        let fitsWidth = "false"
+        #endif
+        let measure = "const fitsWidth = \(fitsWidth);\n" + #"""
         let analyzed = false;
+        let fitZoom = 1;
+        // A phone shows the whole email, as Mail does: content laid out wider than the
+        // screen (a 600px newsletter table, a fixed-width banner) is scaled down to fit.
+        // Measured at full size each time, in one synchronous layout, so nothing flickers.
+        const fitWidth = () => {
+            const body = document.body;
+            if (!fitsWidth || !body) return;
+            body.style.removeProperty('zoom');
+            const root = document.documentElement;
+            const available = root.clientWidth;
+            const natural = Math.max(root.scrollWidth, body.scrollWidth);
+            const zoom = available > 0 && natural > available + 1 ? Math.max(0.3, available / natural) : 1;
+            fitZoom = zoom;
+            if (zoom < 1) body.style.setProperty('zoom', String(zoom));
+        };
+        let displayPass = false;
         let lastHeight, lastViewport, lastWidth;
         let needsReaderViewport = false;
         let hasOrdinaryImages = false;
@@ -368,8 +404,10 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
             const root = document.documentElement;
             // The root's scrollHeight includes the viewport even for a short email.
             const rootOverflow = root.scrollHeight > root.clientHeight ? root.scrollHeight : 0;
+            // Zoomed, the body's own scrollHeight is in unscaled units; its box is not.
+            const contentHeight = fitZoom < 1 ? box.height : Math.max(box.height, body.scrollHeight);
             const height = Math.ceil(Math.max(rootOverflow,
-                window.scrollY + box.top + Math.max(box.height, body.scrollHeight) + bottomMargin));
+                window.scrollY + box.top + contentHeight + bottomMargin * fitZoom));
             // If stretching the web surface to its last measured content height
             // changes the content height again, the email depends on its viewport.
             if (lastHeight !== undefined && window.innerHeight === lastHeight &&
@@ -379,7 +417,7 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
             lastHeight = height;
             lastViewport = window.innerHeight;
             lastWidth = window.innerWidth;
-            window.webkit.messageHandlers.messageLayout.postMessage({ height, needsReaderViewport });
+            window.webkit.messageHandlers.messageLayout.postMessage({ height, needsReaderViewport, displayPass });
         };
         document.addEventListener('securitypolicyviolation', event => {
             if (event.effectiveDirective !== 'img-src') return;
@@ -388,6 +426,7 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
         });
         document.addEventListener('DOMContentLoaded', () => {
             if (!document.body) return;
+            displayPass = document.querySelector('meta[name="postmere-image-pass"]')?.content === 'display';
             document.querySelectorAll('a[target]').forEach(link => link.target = '_self');
             document.documentElement.style.setProperty('overflow-y', 'hidden', 'important');
             // Some newsletters put the whole message in a fixed-height scrolling wrapper.
@@ -411,6 +450,7 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
                     element.style.setProperty('max-height', 'none', 'important');
                     element.style.setProperty('overflow-y', 'visible', 'important');
                 }
+                fitWidth();
                 report();
             };
             let pending = false;
@@ -433,7 +473,7 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
                     if (resolved !== value) node.setAttribute(attr, resolved);
                 }
             }
-            if (document.querySelector('meta[name="postmere-image-pass"]').content === 'display') return;
+            if (displayPass) return;
             const displayURLs = new Set();
             const remoteStyles = [];
             let hasRemoteStyleSheet = false;
@@ -548,7 +588,7 @@ private final class MessageHTMLLayout: NSObject, WKScriptMessageHandler {
         let nextHeight = max(1, height)
         if nextHeight != self.height { self.height = nextHeight }
         needsReaderViewport = values["needsReaderViewport"] as? Bool == true
-        hasDocumentLayout = true
+        measuredPass = values["displayPass"] as? Bool == true ? .display : .inspection
     }
 }
 

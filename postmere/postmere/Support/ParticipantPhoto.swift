@@ -117,15 +117,14 @@ struct ParticipantPhoto: View {
             }
         }
         .task(id: key) {
-            let email = MailSenderDomain.email(in: address) ?? ""
-            var result = await photos.photo(email: email, enlarged: enlarged).map {
+            var result = await photos.photo(email: address, enlarged: enlarged).map {
                 MailRemoteParticipantImages.Photo(image: $0, website: nil)
             }
             if result == nil, gravatar.enabled, !Task.isCancelled {
-                result = await gravatar.photo(email: email)
+                result = await gravatar.photo(email: address)
             }
             if result == nil, icons.enabled, !Task.isCancelled {
-                result = await icons.photo(email: email)
+                result = await icons.photo(email: address)
             }
             guard !Task.isCancelled else { return }
             photo = result
@@ -134,11 +133,10 @@ struct ParticipantPhoto: View {
     }
 
     private func cachedPhoto() -> MailRemoteParticipantImages.Photo? {
-        guard let email = MailSenderDomain.email(in: address) else { return nil }
-        if let image = MailContactPhotos.shared.cachedPhoto(email: email, enlarged: enlarged) {
+        if let image = MailContactPhotos.shared.cachedPhoto(email: address, enlarged: enlarged) {
             return .init(image: image, website: nil)
         }
-        return MailRemoteParticipantImages.gravatar.cachedPhoto(email: email)
-            ?? MailRemoteParticipantImages.websiteIcons.cachedPhoto(email: email)
+        return MailRemoteParticipantImages.gravatar.cachedPhoto(email: address)
+            ?? MailRemoteParticipantImages.websiteIcons.cachedPhoto(email: address)
     }
 }

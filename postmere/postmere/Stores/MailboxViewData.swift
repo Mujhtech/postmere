@@ -25,6 +25,50 @@ nonisolated struct MailboxViewKey: Equatable, Sendable {
     let preferredRepresentative: UUID?
 }
 
+/// Mobile mailboxes fold messages into threads. Preserve the source order of
+/// each newest representative, including when the snapshot contains date ties.
+nonisolated struct ConversationRows: Sendable {
+    let rows: [MailMessage]
+    /// Single-message rows implicitly represent their own ID.
+    let members: [UUID: Set<UUID>]
+
+    init?(_ messages: [MailMessage]) {
+        var groups: [String: [Int]] = [:]
+        for index in messages.indices {
+            guard !Task.isCancelled else { return nil }
+            groups[messages[index].searchConversationKey, default: []].append(index)
+        }
+        if groups.count == messages.count {
+            rows = messages
+            members = [:]
+            return
+        }
+
+        var leaders: [Int: [Int]] = [:]
+        for group in groups.values {
+            guard !Task.isCancelled else { return nil }
+            let newest = group.reduce(group[0]) { messages[$1].sentAt > messages[$0].sentAt ? $1 : $0 }
+            leaders[newest] = group
+        }
+        var rows: [MailMessage] = []
+        var members: [UUID: Set<UUID>] = [:]
+        rows.reserveCapacity(groups.count)
+        for index in messages.indices {
+            guard !Task.isCancelled else { return nil }
+            guard let group = leaders[index] else { continue }
+            var row = messages[index]
+            if group.count > 1 {
+                row.isUnread = group.contains { messages[$0].isUnread }
+                row.isStarred = group.contains { messages[$0].isStarred }
+                members[row.id] = Set(group.map { messages[$0].id })
+            }
+            rows.append(row)
+        }
+        self.rows = rows
+        self.members = members
+    }
+}
+
 nonisolated struct MailboxViewData: Sendable {
     struct Section: Identifiable, Sendable {
         let id: String
@@ -35,13 +79,29 @@ nonisolated struct MailboxViewData: Sendable {
     let key: MailboxViewKey
     let messages: [MailMessage]
     let conversationCounts: [UUID: Int]
-    let sections: [Section]
     let rowPositions: [UUID: Int]
+    #if os(iOS)
+    let conversations: ConversationRows
+    #else
+    let sections: [Section]
     let overview: InboxOverview
+    #endif
 
     init?(key: MailboxViewKey, request: MailSearchRequest, snapshot: [MailMessage], overviewTitle: String?) {
         let messages = request.run(snapshot, interactive: false)
         guard !Task.isCancelled else { return nil }
+        self.key = key
+        self.messages = messages
+        self.conversationCounts = Self.conversationCounts(in: snapshot, for: messages)
+        guard !Task.isCancelled else { return nil }
+        #if os(iOS)
+        guard let conversations = ConversationRows(messages) else { return nil }
+        self.conversations = conversations
+        var positions: [UUID: Int] = [:]
+        positions.reserveCapacity(messages.count)
+        for index in messages.indices { positions[messages[index].id] = index }
+        self.rowPositions = positions
+        #else
         // A date section normally occupies a contiguous slice, even in a filtered inbox.
         // Keep the same message storage for both the flat list and its sections.
         var ranges: [String: [Range<Int>]] = [:]
@@ -57,8 +117,6 @@ nonisolated struct MailboxViewData: Sendable {
                 start = end
             }
         }
-        self.key = key
-        self.messages = messages
         var sections: [Section] = []
         var positions: [UUID: Int] = [:]
         positions.reserveCapacity(messages.count)
@@ -70,9 +128,8 @@ nonisolated struct MailboxViewData: Sendable {
         }
         self.sections = sections
         self.rowPositions = positions
-        self.conversationCounts = Self.conversationCounts(in: snapshot, for: messages)
-        guard !Task.isCancelled else { return nil }
         self.overview = InboxOverview(messages: snapshot, visible: messages, request: request, title: overviewTitle)
+        #endif
     }
 
     static func conversationCounts(in messages: [MailMessage], for visible: [MailMessage]) -> [UUID: Int] {

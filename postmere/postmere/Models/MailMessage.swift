@@ -239,7 +239,7 @@ nonisolated struct MailUnsubscribeHeaders: Codable, Equatable, Sendable {
 }
 
 /// A practical address-list parser for the local composer, without looking up contacts or domains.
-struct MailAddressList {
+nonisolated struct MailAddressList {
     var addresses: [String] = []
     var invalid: [String] = []
 
@@ -408,7 +408,7 @@ struct MailMessage: Codable, nonisolated Equatable, Identifiable {
 
     var mailAccount: MailAccount { MailAccount(rawValue: account) ?? .unassigned }
     var accountLabel: String { MailAccount.scopeLabel(for: account, providerEmail: providerAccountEmail) }
-    var displaySubject: String { Self.displaySubject(subject) }
+    nonisolated var displaySubject: String { Self.displaySubject(subject) }
 
     // Newsletter preheaders often end in invisible padding that wraps into an empty line.
     private nonisolated static let previewPadding = CharacterSet.whitespacesAndNewlines.union(
@@ -419,7 +419,7 @@ struct MailMessage: Codable, nonisolated Equatable, Identifiable {
         preview.trimmingCharacters(in: Self.previewPadding)
     }
 
-    static func displaySubject(_ subject: String) -> String {
+    nonisolated static func displaySubject(_ subject: String) -> String {
         subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(No subject)" : subject
     }
 

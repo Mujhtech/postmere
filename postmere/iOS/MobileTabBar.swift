@@ -124,6 +124,11 @@ struct MobileTabBar: View {
 }
 
 extension EnvironmentValues {
+    var mobileToolbarVerticalEdge: HorizontalEdge? {
+        if #available(iOS 27.1, *) { return toolbarVerticalEdge }
+        return nil
+    }
+
     /// Height of the floating tab bar, which each tab keeps its bottom content above.
     @Entry var mobileTabBarInset: CGFloat = 0
 }
@@ -170,6 +175,11 @@ struct MobileHomeAccessory: View {
             .padding(.horizontal, 15)
             .frame(height: 44)
             .glassEffect(.regular.interactive(), in: Capsule())
+            .onChange(of: MobileRouter.shared.command) {
+                guard MobileRouter.shared.command == .search else { return }
+                focused = true
+                MobileRouter.shared.command = nil
+            }
             if !focused {
                 // Drawn at exactly the field's height: a prominent glass button style
                 // would add its own padding around the label.
@@ -196,17 +206,32 @@ struct MobileHomeAccessory: View {
 
 /// Touch and hold Home: every account, or all of them together. The sheet is only
 /// as tall as its rows, up to a cap, after which the list scrolls.
-struct MobileAccountSwitcher: View {
+struct MobileAccountSwitcherSheet: ViewModifier {
     let runtime: MailRuntime
+    @Binding var isPresented: Bool
+    @State private var availableHeight: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { availableHeight = $0 }
+            .sheet(isPresented: $isPresented) {
+                MobileAccountSwitcher(runtime: runtime, availableHeight: availableHeight)
+            }
+    }
+}
+
+private struct MobileAccountSwitcher: View {
+    let runtime: MailRuntime
+    let availableHeight: CGFloat
     @Environment(\.dismiss) private var dismiss
     @Environment(\.postmereAccent) private var palette
     @State private var contentHeight: CGFloat = 180
 
     private var store: MailStore { runtime.store }
     private let headerHeight: CGFloat = 58
-    /// The device's height, not the sheet's, so the cap doesn't depend on itself.
-    private var screenHeight: CGFloat {
-        (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.screen.bounds.height ?? 800
+    private var sheetHeight: CGFloat {
+        let preferred = headerHeight + contentHeight
+        return availableHeight > 0 ? min(preferred, availableHeight * 0.55) : preferred
     }
 
     var body: some View {
@@ -233,15 +258,16 @@ struct MobileAccountSwitcher: View {
                                 detail: account.title == account.email ? nil : account.email, address: account.email)
                         }
                     }
-                    .background(Mobile.raised, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .mobileSettingsCard(cornerRadius: 18)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 12)
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentSize.height }) { contentHeight = $1 }
             }
-        .presentationDetents([.height(min(headerHeight + contentHeight, screenHeight * 0.55))])
+        .presentationDetents([.height(sheetHeight)])
         .presentationDragIndicator(.hidden)
+        .mobileSheetSurface()
     }
 
     private func row(_ id: String?, title: String, detail: String?, address: String?) -> some View {
@@ -311,16 +337,35 @@ enum MobileTriageSource: Hashable {
     }
 }
 
+/// Keep only the forty conversations a pass can use, along with the picker's full unread count.
+nonisolated struct MobileTriageQueue {
+    let messages: [MailMessage]
+    let unread: Int
+
+    init(rows: [MailMessage], groupByConversation: Bool = false) {
+        let eligible = rows.filter { !$0.isDraft && $0.mailbox != .outbox }
+        let candidates = groupByConversation ? MailSearchRequest.representatives(eligible, preferred: nil) : eligible
+        let unreadRows = candidates.lazy.filter(\.isUnread)
+        unread = unreadRows.count
+        messages = unread == 0 ? Array(candidates.prefix(40)) : Array(unreadRows.prefix(40))
+    }
+
+    @concurrent static func load(_ request: MailSearchRequest, from snapshot: [MailMessage]) async -> Self {
+        let alreadyGrouped = request.split != nil || request.mailbox?.isConversationQueue == true
+        return Self(rows: request.run(snapshot), groupByConversation: !alreadyGrouped)
+    }
+}
+
 /// The Triage tab: a pass in progress, or a choice of what to go through and a button to start.
 struct MobileTriageTab: View {
     let runtime: MailRuntime
     let isActive: Bool
     @Environment(\.postmereAccent) private var palette
     @AppStorage("mobileTriageSource") private var sourceRaw = "inbox"
-    @State private var waiting: [MailMessage] = []
+    @State private var queues: [MobileTriageSource: MobileTriageQueue] = [:]
+    @State private var preparedFor: InboxTabCountKey?
 
     private var store: MailStore { runtime.store }
-    private var unread: Int { waiting.count(where: \.isUnread) }
 
     /// The chosen source, falling back to Inbox when its tab was removed or hidden.
     private var source: MobileTriageSource {
@@ -343,15 +388,17 @@ struct MobileTriageTab: View {
 
     private struct LoadKey: Equatable {
         let source: MobileTriageSource
-        let revision: Int
-        let account: String?
+        let mailbox: InboxTabCountKey
     }
 
     var body: some View {
         if let session = runtime.triage {
             MobileTriageScreen(session: session, runtime: runtime, isActive: isActive)
-        } else {
-            VStack(spacing: 16) {
+        } else if isActive {
+            let key = LoadKey(source: source, mailbox: store.inboxTabCountKey)
+            let queue = preparedFor == key.mailbox ? queues[key.source] : nil
+            let unread = queue?.unread ?? 0
+            let introduction = VStack(spacing: 16) {
                 Spacer()
                 Image(systemName: "rectangle.stack.fill")
                     .font(.system(size: 34))
@@ -359,11 +406,11 @@ struct MobileTriageTab: View {
                     .frame(width: 76, height: 76)
                     .background(palette.accent.opacity(0.12), in: Circle())
                     .symbolEffect(.bounce, value: source)
-                Text(unread == 0 ? "You’re caught up" : "\(min(unread, 40)) to triage")
+                Text(queue.map { $0.unread == 0 ? "You’re caught up" : "\($0.messages.count) to triage" } ?? "Loading mail…")
                     .font(.system(size: 28, weight: .bold))
                     .contentTransition(.numericText(value: Double(unread)))
                 sourcePicker
-                Text(unread == 0
+                Text(queue != nil && unread == 0
                      ? "Nothing unread in \(title(source)). You can still go through recent mail."
                      : "One conversation at a time: archive, snooze, reply or skip. Suggestions show what each one needs.")
                     .font(.subheadline)
@@ -371,33 +418,29 @@ struct MobileTriageTab: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 300)
                     .contentTransition(.opacity)
-                Button { start() } label: {
-                    Text(unread == 0 ? "Review Recent Mail" : "Start Triage")
+                Button { if let queue { start(queue, for: key) } } label: {
+                    Text(queue?.unread == 0 ? "Review Recent Mail" : "Start Triage")
                         .font(.headline)
                         .frame(maxWidth: 260, minHeight: 44)
                 }
                 .buttonStyle(.glassProminent)
                 .tint(palette.accent)
-                .disabled(waiting.isEmpty)
+                .disabled(queue?.messages.isEmpty != false)
                 .padding(.top, 8)
                 Spacer()
                 Spacer()
             }
             .padding(.horizontal, 28)
+            ViewThatFits(in: .vertical) {
+                introduction
+                ScrollView { introduction.frame(maxWidth: .infinity) }
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .aboveMobileTabBar()
             .background(Mobile.background)
             .animation(MobileMotion.quick, value: source)
             .animation(MobileMotion.quick, value: unread)
-            .task(id: LoadKey(source: source, revision: store.mailboxDataRevision, account: store.selectedAccount)) {
-                waiting = candidates(source)
-                await runtime.triageSuggestions.prefetch(Array(waiting.filter(\.isUnread).prefix(12)), session: runtime.backend)
-            }
-            #if DEBUG
-            .task(id: waiting.count) {
-                if ProcessInfo.processInfo.arguments.contains("-PostmereStartTriage"), !waiting.isEmpty { start() }
-            }
-            #endif
+            .task(id: key) { await loadQueues(for: key) }
         }
     }
 
@@ -435,7 +478,7 @@ struct MobileTriageTab: View {
     }
 
     private func option(_ option: MobileTriageSource) -> some View {
-        let count = candidates(option).count(where: \.isUnread)
+        let count = preparedFor == store.inboxTabCountKey ? queues[option]?.unread ?? 0 : 0
         return Label {
             Text(title(option))
             if count > 0 { Text("\(count) unread") }
@@ -445,16 +488,41 @@ struct MobileTriageTab: View {
         .tag(option)
     }
 
-    private func candidates(_ source: MobileTriageSource) -> [MailMessage] {
+    private func request(for source: MobileTriageSource) -> MailSearchRequest {
         switch source {
-        case .inbox: store.triageCandidates(mailbox: .inbox)
-        case .tab(let id): store.triageCandidates(mailbox: .inbox, splitID: id)
-        case .mailbox(let mailbox): store.triageCandidates(mailbox: mailbox)
+        case .inbox: store.triageRequest(mailbox: .inbox)
+        case .tab(let id): store.triageRequest(mailbox: .inbox, splitID: id)
+        case .mailbox(let mailbox): store.triageRequest(mailbox: mailbox)
         }
     }
 
-    private func start() {
-        runtime.startTriage(waiting, store: store, title: title(source))
+    private func loadQueues(for key: LoadKey) async {
+        guard !Task.isCancelled, key.mailbox == store.inboxTabCountKey else { return }
+        if preparedFor != key.mailbox {
+            queues = [:]
+            preparedFor = key.mailbox
+        }
+        let snapshot = store.messages
+        let sources: [MobileTriageSource] = [.inbox] + store.visibleInboxSplits.map { .tab($0.id) }
+            + [.mailbox(.needsReply), .mailbox(.newSenders), .mailbox(.followUps)]
+        // Publish the selected source first so the pass can start while other counts load.
+        for source in [key.source] + sources where queues[source] == nil {
+            let queue = await MobileTriageQueue.load(request(for: source), from: snapshot)
+            guard !Task.isCancelled, key.mailbox == store.inboxTabCountKey else { return }
+            queues[source] = queue
+        }
+        guard let queue = queues[key.source], !Task.isCancelled else { return }
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-PostmereStartTriage") { start(queue, for: key) }
+        #endif
+        if queue.unread > 0 {
+            await runtime.triageSuggestions.prefetch(Array(queue.messages.prefix(12)), session: runtime.backend)
+        }
+    }
+
+    private func start(_ queue: MobileTriageQueue, for key: LoadKey) {
+        guard source == key.source, store.inboxTabCountKey == key.mailbox else { return }
+        runtime.startTriage(queue, store: store, title: title(key.source))
     }
 }
 
@@ -462,11 +530,8 @@ extension MailRuntime {
     /// Works through conversations one at a time, likely-important first, with bulk
     /// mail offered as one decision. Unread mail is the work; with none, recent mail.
     /// `title` names where the mail came from; by default, the list on screen.
-    func startTriage(_ rows: [MailMessage], store: MailStore, title: String? = nil) {
-        let candidates = rows.filter { !$0.isDraft && $0.mailbox != .outbox }
-        let unread = candidates.filter(\.isUnread)
-        let queue = Array((unread.isEmpty ? candidates : unread).prefix(40))
-        let ids = triageSuggestions.ordered(queue.map(\.id))
+    func startTriage(_ queue: MobileTriageQueue, store: MailStore, title: String? = nil) {
+        let ids = triageSuggestions.ordered(queue.messages.map(\.id))
         guard !ids.isEmpty else { return }
         let title = title ?? store.selectedInboxSplitID.flatMap { id in store.visibleInboxSplits.first { $0.id == id }?.name }
             ?? store.selectedMailbox.title

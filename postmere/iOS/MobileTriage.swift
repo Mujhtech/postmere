@@ -51,9 +51,11 @@ struct MobileTriageScreen: View {
                         .disabled(session.decisions.isEmpty)
                 }
             }
-            .task(id: session.index) {
+            .task(id: isActive ? session.index : nil) {
+                guard isActive else { return }
                 // Another prefetch may still be running; keep asking until this card has its suggestion.
                 for _ in 0..<6 {
+                    guard !Task.isCancelled else { return }
                     await prefetch()
                     if suggestion != nil || Task.isCancelled { break }
                     try? await Task.sleep(for: .seconds(3))
