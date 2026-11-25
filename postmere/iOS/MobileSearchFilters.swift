@@ -182,6 +182,7 @@ private struct MobileSenderFilterSheet: View {
                         .submitLabel(.done)
                         .onSubmit { if !value.isEmpty { apply(value) } }
                 }
+                .mobileSheetRows()
                 Section {
                     ForEach(suggestions) { message in
                         Button { apply(message.senderEmail) } label: {
@@ -196,10 +197,12 @@ private struct MobileSenderFilterSheet: View {
                         }
                     }
                 }
+                .mobileSheetRows()
                 if canRemove {
                     Section {
                         Button("Remove Filter", role: .destructive) { onDone(nil); dismiss() }
                     }
+                    .mobileSheetRows()
                 }
             }
             .navigationTitle("From")
@@ -256,6 +259,7 @@ private struct MobileSearchTipsSheet: View {
                 } footer: {
                     Text("Spaces mean all conditions must match. Use OR for alternatives, quotes for phrases, and a minus sign to leave something out. Search covers mail on this iPhone; use Search Online for older mail.")
                 }
+                .mobileSheetRows()
             }
             .navigationTitle("Search Tips")
             .navigationBarTitleDisplayMode(.inline)

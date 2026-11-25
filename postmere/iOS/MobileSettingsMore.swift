@@ -182,6 +182,7 @@ struct MobileAccountRenameSheet: View {
                         }
                     }
                 }
+                .mobileSheetRows()
                 Section {
                     TextField("Work, Personal…", text: $name).focused($focused).submitLabel(.done).onSubmit(save)
                     HStack {
@@ -195,7 +196,9 @@ struct MobileAccountRenameSheet: View {
                 } footer: {
                     Text(isNew ? "Connected. Give it a name to tell your accounts apart, or skip." : "Leave empty to show the address.")
                 }
-                if let error { Section { Text(error).foregroundStyle(PostmereTheme.destructiveInk) } }
+                .mobileSheetRows()
+                if let error { Section { Text(error).foregroundStyle(PostmereTheme.destructiveInk) }
+                .mobileSheetRows() }
             }
             .navigationTitle(isNew ? "Name Account" : "Rename Account")
             .navigationBarTitleDisplayMode(.inline)
@@ -210,6 +213,7 @@ struct MobileAccountRenameSheet: View {
             .onAppear { name = account.name ?? ""; focused = true }
         }
         .presentationDetents([.medium])
+        .mobileSheetSurface()
     }
 
     private func save() {
@@ -424,12 +428,15 @@ struct MobileInboxTabEditor: View {
         NavigationStack {
             Form {
                 Section { TextField("Name, like Receipts", text: $split.name) }
+                .mobileSheetRows()
                 MailCriteriaFields(criteria: $split.criteria, showsMailbox: false)
-                if let error { Section { Text(error).foregroundStyle(PostmereTheme.destructiveInk) } }
+                if let error { Section { Text(error).foregroundStyle(PostmereTheme.destructiveInk) }
+                .mobileSheetRows() }
                 if isExisting {
                     Section {
                         Button("Remove Tab", role: .destructive) { store.deleteInboxSplit(split.id); dismiss() }
                     }
+                    .mobileSheetRows()
                 }
             }
             .navigationTitle(isExisting ? "Edit Tab" : "New Tab")
@@ -444,6 +451,7 @@ struct MobileInboxTabEditor: View {
                 }
             }
         }
+        .mobileSheetSurface()
     }
 }
 

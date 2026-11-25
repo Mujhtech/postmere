@@ -210,8 +210,10 @@ struct MobileOnlineSearchSheet: View {
                 } footer: {
                     Text("Searches \(Brand.providerName(account?.provider) ?? "your provider") directly, using its search syntax, so older mail shows up too.")
                 }
+                .mobileSheetRows()
                 if let error {
                     Section { Text(error).foregroundStyle(PostmereTheme.destructiveInk) }
+                    .mobileSheetRows()
                 }
                 if !results.isEmpty {
                     Section("\(results.count)\(hasMore ? "+" : "") results") {
@@ -233,10 +235,12 @@ struct MobileOnlineSearchSheet: View {
                             .disabled(busy)
                         }
                     }
+                    .mobileSheetRows()
                 } else if searched && !busy {
                     Section {
                         Text("Nothing found. Try different words.").foregroundStyle(.secondary)
                     }
+                    .mobileSheetRows()
                 }
             }
             .navigationTitle("Search Online")
@@ -258,6 +262,7 @@ struct MobileOnlineSearchSheet: View {
             }
             .onChange(of: accountID) { results = []; cursor = nil; hasMore = false; searched = false }
         }
+        .mobileSheetSurface()
     }
 
     private func search(more: Bool) async {
@@ -320,6 +325,7 @@ struct MobileSaveViewSheet: View {
                 Section {
                     TextField("Name", text: $name).focused($focused).submitLabel(.done).onSubmit(save)
                 }
+                .mobileSheetRows()
                 Section {
                     TextField("Search rule", text: $criteria.query, prompt: Text("from:alex has:attachment"))
                         .textInputAutocapitalization(.never)
@@ -338,6 +344,7 @@ struct MobileSaveViewSheet: View {
                 } footer: {
                     if let matches { Text("\(matches) message\(matches == 1 ? "" : "s") match right now.") }
                 }
+                .mobileSheetRows()
             }
             .navigationTitle(editing == nil ? "Save as View" : "Edit View")
             .navigationBarTitleDisplayMode(.inline)

@@ -44,10 +44,15 @@ struct MobileEventEditor: UIViewControllerRepresentable {
     }
 }
 
-extension MailMessage {
-    /// Dates and times mentioned in the message, offered as calendar events.
-    var calendarSuggestions: [MailDateSuggestion] {
-        Array(MailDateDetector.suggestions(in: ([subject] + paragraphs).joined(separator: "\n")).prefix(5))
+/// The inputs to date detection can change as the selected message is hydrated.
+struct MobileCalendarSuggestionSource: Equatable, Sendable {
+    let messageID: UUID
+    let subject: String
+    let paragraphs: [String]
+
+    @concurrent func suggestions() async -> [MailDateSuggestion] {
+        guard !Task.isCancelled else { return [] }
+        return Array(MailDateDetector.suggestions(in: ([subject] + paragraphs).joined(separator: "\n")).prefix(5))
     }
 }
 
@@ -123,6 +128,7 @@ struct MobileAvailabilitySheet: View {
             }
             .task(id: "\(day.timeIntervalSince1970)|\(duration)|\(checksCalendar)") { await load() }
         }
+        .mobileSheetSurface()
     }
 
     private var dayStrip: some View {
@@ -464,6 +470,7 @@ struct MobileCreateBookingLinkSheet: View {
                         }
                     }
                 }
+                .mobileSheetRows()
                 Section {
                     HStack(spacing: 6) {
                         ForEach(1...7, id: \.self) { day in
@@ -496,8 +503,10 @@ struct MobileCreateBookingLinkSheet: View {
                 } footer: {
                     Text("Times follow \(TimeZone.current.identifier). Anyone with the link can book; your calendar is checked first.")
                 }
+                .mobileSheetRows()
                 if let error {
                     Section { Text(error).foregroundStyle(PostmereTheme.destructiveInk) }
+                    .mobileSheetRows()
                 }
             }
             .navigationTitle("New Booking Link")
@@ -515,6 +524,7 @@ struct MobileCreateBookingLinkSheet: View {
             .onAppear { accountID = accountID ?? accounts.first?.id }
             .task(id: accountID) { await loadCalendars() }
         }
+        .mobileSheetSurface()
     }
 
     private func label(_ minute: Int) -> String {

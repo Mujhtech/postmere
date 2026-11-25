@@ -289,13 +289,8 @@ extension View {
 
 // MARK: - Expandable sheets
 
-extension EnvironmentValues {
-    /// True while a medium/large sheet is pulled up to full height.
-    @Entry var mobileSheetExpanded = false
-}
-
-/// Compact, a sheet keeps the system's glass. Pulled up to full height, it takes
-/// the Settings look: the warm canvas behind, and lists drawn on it.
+/// Half and full height alike, a sheet has the Settings look: the warm canvas
+/// behind and lists drawn on it, so pulling it up never changes its colours.
 private struct MobileSheetSurface: ViewModifier {
     let detents: Set<PresentationDetent>
     @State private var detent: PresentationDetent
@@ -310,38 +305,28 @@ private struct MobileSheetSurface: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        let expanded = detent == .large
         content
-            .scrollContentBackground(expanded ? .hidden : .automatic)
-            .background {
-                MobileSettingsStyle.canvas
-                    .ignoresSafeArea()
-                    .opacity(expanded ? 1 : 0)
-                    .animation(.smooth(duration: 0.3), value: expanded)
-            }
-            .environment(\.mobileSheetExpanded, expanded)
+            .mobileSheetSurface()
             .presentationDetents(detents, selection: $detent)
     }
 }
 
-/// List rows that become paper cards when their sheet is expanded.
-private struct MobileSheetRows: ViewModifier {
-    @Environment(\.mobileSheetExpanded) private var expanded
-
-    func body(content: Content) -> some View {
-        content.listRowBackground(expanded ? MobileSettingsStyle.card : nil)
-    }
-}
-
 extension View {
-    /// Medium and large detents with the glass-to-Settings surface change.
+    /// The Settings look for any sheet, whatever its size: the warm canvas behind
+    /// and lists drawn on it.
+    func mobileSheetSurface() -> some View {
+        scrollContentBackground(.hidden)
+            .presentationBackground(MobileSettingsStyle.canvas)
+    }
+
+    /// Medium and large detents on the Settings canvas.
     func mobileSheetDetents(_ detents: Set<PresentationDetent> = [.medium, .large],
                             initial: PresentationDetent = .medium) -> some View {
         modifier(MobileSheetSurface(detents: detents, initial: initial))
     }
 
-    /// Apply to a list's sections inside an expandable sheet.
+    /// List rows drawn as paper cards in a sheet, as in Settings.
     func mobileSheetRows() -> some View {
-        modifier(MobileSheetRows())
+        mobileSettingsRows()
     }
 }
