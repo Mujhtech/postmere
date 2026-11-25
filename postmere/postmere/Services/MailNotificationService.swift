@@ -16,13 +16,48 @@ protocol MailNotificationClient {
 @MainActor
 private final class SystemMailNotificationClient: MailNotificationClient {
     private let center = UNUserNotificationCenter.current()
-    func setDelegate(_ delegate: any UNUserNotificationCenterDelegate) { center.delegate = delegate }
+    func setDelegate(_ delegate: any UNUserNotificationCenterDelegate) {
+        center.delegate = delegate
+        center.setNotificationCategories([MailNotificationAction.messageCategory])
+    }
     func authorizationStatus() async -> UNAuthorizationStatus { await center.notificationSettings().authorizationStatus }
     func requestAuthorization() async throws { _ = try await center.requestAuthorization(options: [.alert, .sound, .badge]) }
     func pendingRequests() async -> [UNNotificationRequest] { await center.pendingNotificationRequests() }
     func add(_ request: UNNotificationRequest) async throws { try await center.add(request) }
     func removePending(_ identifiers: [String]) { center.removePendingNotificationRequests(withIdentifiers: identifiers) }
     func removeDelivered(_ identifiers: [String]) { center.removeDeliveredNotifications(withIdentifiers: identifiers) }
+}
+
+/// What can be done to a message straight from its notification.
+nonisolated enum MailNotificationAction: String, Sendable {
+    case archive = "postmere.archive"
+    case markRead = "postmere.read"
+    case reply = "postmere.reply"
+
+    /// Matches the server's push payload `aps.category`.
+    static let categoryIdentifier = "postmere.message"
+
+    static var messageCategory: UNNotificationCategory {
+        UNNotificationCategory(
+            identifier: categoryIdentifier,
+            actions: [
+                UNTextInputNotificationAction(identifier: reply.rawValue, title: "Reply",
+                                              icon: UNNotificationActionIcon(systemImageName: "arrowshape.turn.up.left"),
+                                              textInputButtonTitle: "Send", textInputPlaceholder: "Reply"),
+                UNNotificationAction(identifier: archive.rawValue, title: "Archive",
+                                     icon: UNNotificationActionIcon(systemImageName: "archivebox")),
+                UNNotificationAction(identifier: markRead.rawValue, title: "Mark as Read",
+                                     icon: UNNotificationActionIcon(systemImageName: "envelope.open")),
+            ],
+            intentIdentifiers: [],
+            options: [.hiddenPreviewsShowTitle])
+    }
+}
+
+/// The message a notification is about: one already on this device, or one the server announced.
+nonisolated enum MailNotificationTarget: Sendable {
+    case local(UUID)
+    case remote(MailPushDestination)
 }
 
 nonisolated enum MailReminderKind: String, Codable, Sendable { case snooze, followup }
@@ -116,6 +151,8 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
     private(set) var lastError: String?
     @ObservationIgnored var openMessage: ((UUID) -> Void)?
     @ObservationIgnored var openRemoteMessage: ((MailPushDestination) -> Void)?
+    /// Archive, Mark as Read or Reply chosen on a notification, without opening the app.
+    @ObservationIgnored var performAction: ((MailNotificationAction, MailNotificationTarget, String?) async -> Void)?
     @ObservationIgnored var validateRemoteDestination: ((MailPushDestination) -> Bool)?
     @ObservationIgnored var shouldPresentRemoteDestination: ((MailPushDestination) async -> Bool)?
     @ObservationIgnored var shouldNotifyLocally: ((MailMessage) -> Bool)?
@@ -375,7 +412,17 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
         content.threadIdentifier = MailReminderPlanning.conversationKey(message)
         content.filterCriteria = message.account
         content.userInfo = ["messageID": message.id.uuidString, "account": message.account]
+        content.categoryIdentifier = MailNotificationAction.categoryIdentifier
         return content
+    }
+
+    /// Tells the person an action they chose on a notification did not happen.
+    func notifyActionFailed(_ body: String) async {
+        let content = UNMutableNotificationContent()
+        content.title = "Postmere"
+        content.body = body
+        content.sound = .default
+        try? await client.add(UNNotificationRequest(identifier: "action-failed.\(UUID().uuidString)", content: content, trigger: nil))
     }
 
     private func trigger(delivery: Date, now: Date) -> UNNotificationTrigger? {
@@ -439,6 +486,19 @@ final class MailNotificationService: NSObject, UNUserNotificationCenterDelegate 
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                            didReceive response: UNNotificationResponse) async {
+        let replyText = (response as? UNTextInputNotificationResponse)?.userText
+        if let action = MailNotificationAction(rawValue: response.actionIdentifier) {
+            let userInfo = response.notification.request.content.userInfo
+            let target: MailNotificationTarget?
+            if let destination = MailPushDestination(userInfo: userInfo) { target = .remote(destination) }
+            else if userInfo["postmere_push"] == nil,
+                    let id = (userInfo["messageID"] as? String).flatMap(UUID.init(uuidString:)) { target = .local(id) }
+            else { target = nil }
+            guard let target else { return }
+            let handler = await MainActor.run { self.performAction }
+            await handler?(action, target, replyText)
+            return
+        }
         if let destination = MailPushDestination(userInfo: response.notification.request.content.userInfo) {
             guard response.actionIdentifier != UNNotificationDismissActionIdentifier else { return }
             await MainActor.run {

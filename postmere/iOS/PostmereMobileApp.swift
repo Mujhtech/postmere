@@ -1,3 +1,4 @@
+import CoreSpotlight
 import SwiftUI
 import UIKit
 
@@ -6,6 +7,7 @@ struct PostmereMobileApp: App {
     @UIApplicationDelegateAdaptor(MobileAppDelegate.self) private var appDelegate
     @AppStorage(MailAppearance.preferenceKey) private var appearance = MailAppearance.system
     @Environment(\.scenePhase) private var scenePhase
+    @State private var foregroundMailGeneration: UUID?
 
     private var runtime: MailRuntime { appDelegate.runtime }
 
@@ -18,6 +20,8 @@ struct PostmereMobileApp: App {
                 // follow at once, and System resumes live changes.
                 .onChange(of: appearance, initial: true) { MailAppearance.applyToWindows(appearance) }
                 .onAppear { MailAppearance.applyToWindows(appearance) }
+                .onContinueUserActivity(MailContinuity.messageActivityType) { runtime.continueActivity($0) }
+                .onContinueUserActivity(CSSearchableItemActionType) { runtime.continueActivity($0) }
                 .onOpenURL { url in
                     if let route = PostmereLink.route(for: url) {
                         MobileRouter.shared.pending = route
@@ -30,6 +34,11 @@ struct PostmereMobileApp: App {
                     }
                 }
         }
+        .commands { MobileCommands(runtime: runtime) }
+        .onChange(of: sessionReadyForMail) {
+            if runtime.backend.realtimeGeneration == nil { foregroundMailGeneration = nil }
+            if scenePhase == .active { Task { await syncForegroundMailIfNeeded() } }
+        }
         .onChange(of: scenePhase) {
             switch scenePhase {
             case .active:
@@ -39,9 +48,10 @@ struct PostmereMobileApp: App {
                     await runtime.notifications.refreshAuthorization()
                     await runtime.synchronizePush(forceStatus: true)
                     MobileAssistantActivities.refresh(runtime: runtime)
-                    await runtime.sync()
+                    await syncForegroundMailIfNeeded()
                 }
             case .background:
+                foregroundMailGeneration = nil
                 MobileWidgetSync.publish(runtime: runtime)
                 appDelegate.saveBeforeSuspension()
             default:
@@ -49,15 +59,34 @@ struct PostmereMobileApp: App {
             }
         }
     }
+
+    private var sessionReadyForMail: UUID? {
+        switch runtime.backend.accountCatalogState {
+        case .pending, .loading: nil
+        case .loaded, .failed: runtime.backend.realtimeGeneration
+        }
+    }
+
+    /// Activation and session restore can finish in either order. The first one
+    /// that sees both ready requests the provider refresh for this foreground visit.
+    private func syncForegroundMailIfNeeded() async {
+        guard UIApplication.shared.applicationState == .active, let generation = sessionReadyForMail,
+              foregroundMailGeneration != generation else { return }
+        foregroundMailGeneration = generation
+        await runtime.syncBackend([.cache, .provider])
+    }
 }
 
 /// Owns the runtime so push callbacks, which can arrive before any scene, always reach it.
 final class MobileAppDelegate: NSObject, UIApplicationDelegate {
     let runtime = MailRuntime()
     private var saveTask: UIBackgroundTaskIdentifier = .invalid
+    /// For App Intents, which run in the app but outside any view.
+    @MainActor static weak var current: MobileAppDelegate?
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        Self.current = self
         runtime.start()
         MobileLiveActivities.start(runtime: runtime)
         MobileAssistantActivities.start(runtime: runtime)
@@ -114,7 +143,6 @@ private struct MobileRoot: View {
         .background(MobileCanvas())
         .onChange(of: runtime.backend.canAccessWorkspace) {
             runtime.reconcileWorkspaceAccess()
-            if runtime.backend.canAccessWorkspace { Task { await runtime.sync() } }
         }
     }
 }

@@ -37,5 +37,12 @@
 			<array><string>public.data</string></array>
 		</dict>
 	</array>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>mujhtech.postmere.message</string>
+		<string>com.apple.corespotlightitem</string>
+	</array>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Postmere adds to-dos it finds in your mail to Reminders when you ask.</string>
 </dict>
 </plist>

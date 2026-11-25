@@ -7,8 +7,41 @@ import WidgetKit
 enum MobileWidgetSync {
     private static var last: MailWidgetSnapshot?
 
+    nonisolated struct Source: Equatable, Sendable {
+        let revision: Int
+        let sessionID: UUID?
+        let accounts: Set<String>
+        let signedIn: Bool
+        let accountLabel: String
+        let accentRGB: Int
+
+        @MainActor init(runtime: MailRuntime) {
+            revision = runtime.store.mailboxDataRevision
+            sessionID = runtime.backend.realtimeGeneration
+            accounts = runtime.store.searchableAccounts
+            signedIn = sessionID != nil && !MailAccount.allCases.isEmpty
+            accountLabel = MailAccount.scopeLabel(for: nil)
+            accentRGB = UserDefaults.standard.object(forKey: PostmereAccent.preferenceKey) as? Int ?? PostmereAccent.defaultRGB
+        }
+    }
+
+    /// Finish the snapshot before the app is suspended.
     static func publish(runtime: MailRuntime) {
-        let snapshot = makeSnapshot(runtime: runtime)
+        save(makeSnapshot(messages: runtime.store.messages, source: Source(runtime: runtime)))
+    }
+
+    static func refresh(runtime: MailRuntime, source: Source) async {
+        guard !Task.isCancelled, source == Source(runtime: runtime) else { return }
+        let snapshot = await prepare(messages: runtime.store.messages, source: source)
+        guard !Task.isCancelled, source == Source(runtime: runtime) else { return }
+        save(snapshot)
+    }
+
+    @concurrent private static func prepare(messages: [MailMessage], source: Source) async -> MailWidgetSnapshot {
+        makeSnapshot(messages: messages, source: source)
+    }
+
+    private static func save(_ snapshot: MailWidgetSnapshot) {
         if last == nil { last = MailWidgetSnapshot.load() }
         guard !snapshot.sameContent(as: last) else { return }
         do {
@@ -20,27 +53,24 @@ enum MobileWidgetSync {
         }
     }
 
-    private static func makeSnapshot(runtime: MailRuntime) -> MailWidgetSnapshot {
-        let store = runtime.store
-        let signedIn = runtime.backend.canAccessWorkspace && !MailAccount.allCases.isEmpty
-        guard signedIn else { return .signedOut }
-        let visible = store.messages.filter { store.isAccountVisible($0) && !$0.isDeletedOnProvider && !$0.isDraft }
+    private nonisolated static func makeSnapshot(messages: [MailMessage], source: Source) -> MailWidgetSnapshot {
+        guard source.signedIn else { return .signedOut }
+        let visible = messages.filter { source.accounts.contains($0.account) && !$0.isDeletedOnProvider && !$0.isDraft }
         let inbox = newestConversations(visible.filter { $0.mailbox == .inbox })
         let waiting = newestConversations(visible.filter(\.needsReply))
-        let rgb = UserDefaults.standard.object(forKey: PostmereAccent.preferenceKey) as? Int ?? PostmereAccent.defaultRGB
         return MailWidgetSnapshot(
             generatedAt: .now,
             isSignedIn: true,
-            accountLabel: MailAccount.scopeLabel(for: nil),
+            accountLabel: source.accountLabel,
             unread: inbox.count(where: \.isUnread),
             needsReply: waiting.count,
             inbox: inbox.prefix(8).map(widgetMessage),
             needsReplyList: waiting.prefix(6).map(widgetMessage),
-            accentRGB: rgb)
+            accentRGB: source.accentRGB)
     }
 
     /// The newest message of each conversation, newest first; a conversation is unread if any message is.
-    private static func newestConversations(_ messages: [MailMessage]) -> [MailMessage] {
+    private nonisolated static func newestConversations(_ messages: [MailMessage]) -> [MailMessage] {
         var byConversation: [UUID: MailMessage] = [:]
         var unread: Set<UUID> = []
         for message in messages {
@@ -57,7 +87,7 @@ enum MobileWidgetSync {
             .sorted { $0.sentAt > $1.sentAt }
     }
 
-    private static func widgetMessage(_ message: MailMessage) -> MailWidgetSnapshot.Message {
+    private nonisolated static func widgetMessage(_ message: MailMessage) -> MailWidgetSnapshot.Message {
         MailWidgetSnapshot.Message(
             id: message.id,
             sender: message.isOutgoing ? "To " + (message.toRecipients.first ?? "") : (message.sender.isEmpty ? message.senderEmail : message.sender),
@@ -77,4 +107,6 @@ final class MobileRouter {
     var pending: PostmereLink.Route?
     /// Settings opens straight to Assistants, from the assistant Live Activity.
     var opensAssistants = false
+    /// The latest menu command or keyboard shortcut for the mailbox screen.
+    var command: MobileCommandRequest?
 }
