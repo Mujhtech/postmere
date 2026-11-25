@@ -1,4 +1,8 @@
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import SwiftUI
 
 /// Third-party marks for services Postmere connects to, used only to say
@@ -131,14 +135,21 @@ struct BrandPair: View {
             BrandTile(brand: first, size: size * 0.72)
             BrandTile(brand: second, size: size * 0.72)
                 .padding(1.5)
-                .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
+                .background(Self.backdrop, in: RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
                 .offset(x: size * 0.28 - 1.5, y: size * 0.28 - 1.5)
         }
         .frame(width: size, height: size, alignment: .topLeading)
         .accessibilityHidden(true)
     }
+
+    #if os(macOS)
+    private static let backdrop = Color(nsColor: .windowBackgroundColor)
+    #else
+    private static let backdrop = Color(uiColor: .secondarySystemGroupedBackground)
+    #endif
 }
 
+#if os(macOS)
 extension Brand {
     /// The mark scaled to fit `side` points, for menus and pickers, which
     /// draw images at their file's own size and ignore SwiftUI frames.
@@ -155,3 +166,4 @@ extension Brand {
         return Image(nsImage: result)
     }
 }
+#endif

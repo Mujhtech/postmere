@@ -1,16 +1,18 @@
 //! Session-bound APNs alerts. SSE refreshes the app; APNs can alert while closed.
+mod live;
 mod routes;
 mod schedule;
 mod sender_policy;
 mod transport;
 mod worker;
 
+pub use live::{process_live_activity, record_assistant_activity, spawn_live_activity_worker};
 use postmere_core::error::AppError;
 pub use routes::router;
 pub use schedule::AccountPreference;
 pub use sender_policy::{SENDER_POLICY_VERSION, SenderPolicy, SenderRoute, SenderRule};
 use std::sync::Arc;
-pub use transport::{DeliveryResult, PushRequest, PushTransport};
+pub use transport::{DeliveryResult, PushKind, PushRequest, PushTransport};
 pub use worker::{process_one, spawn_worker};
 
 pub struct PushService {

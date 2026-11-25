@@ -130,6 +130,7 @@ pub async fn process_one(state: &AppState, service: &PushService) -> Result<bool
                 .preference
                 .delivery_expiration(Utc::now(), item.expires_at),
             payload,
+            kind: crate::PushKind::Alert,
         })
         .await;
     let status = match result {
@@ -280,7 +281,9 @@ fn payload(state: &AppState, auth: &AuthContext, item: &Item) -> Value {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    json!({"aps":{"alert":{"title":"New message","body":subject},"sound":"default","thread-id":thread,"filter-criteria":item.preference.filter_criteria},
+    json!({"aps":{"alert":{"title":"New message","body":subject},"sound":"default","thread-id":thread,
+        // Reply, Archive and Mark as Read on the notification; see MailNotificationAction.
+        "category":"postmere.message","filter-criteria":item.preference.filter_criteria},
         "postmere_push":1,"server_origin":state.config.public_base_url.origin().ascii_serialization(),
         "workspace_id":auth.workspace_id,"user_id":auth.user_id,"account_id":item.account_id,
         "message_id":item.message_id,"filter_criteria":item.preference.filter_criteria})

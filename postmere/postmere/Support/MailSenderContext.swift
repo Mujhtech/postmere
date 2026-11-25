@@ -1,6 +1,6 @@
 import Foundation
 
-enum MailContactIdentity {
+nonisolated enum MailContactIdentity {
     static func email(_ value: String) -> String {
         let parsed = MailAddressList(value)
         return (parsed.addresses.count == 1 ? parsed.addresses[0] : value)
@@ -66,7 +66,7 @@ struct MailSenderContext {
     }
 }
 
-struct MailRecipientSuggestion: Identifiable, Equatable {
+nonisolated struct MailRecipientSuggestion: Identifiable, Equatable {
     let email: String
     let name: String
     let messageCount: Int
@@ -74,20 +74,24 @@ struct MailRecipientSuggestion: Identifiable, Equatable {
     var id: String { email }
 }
 
-enum MailRecipientSuggestions {
+nonisolated struct MailRecipientSuggestions: Sendable {
     private struct Candidate {
         var email: String
         var name: String
         var messages: Set<UUID> = []
         var outgoingCount = 0
         var lastContact: Date
+
+        mutating func record(_ message: MailMessage, name: String) {
+            if self.name.isEmpty { self.name = name }
+            if messages.insert(message.id).inserted, message.isOutgoing { outgoingCount += 1 }
+            lastContact = max(lastContact, message.sentAt)
+        }
     }
 
-    static func suggestions(for input: String, messages: [MailMessage], accountKey: String,
-                            excluding: [String] = [], ownAddresses: [String] = [], limit: Int = 6,
-                            now: Date = .now) -> [MailRecipientSuggestion] {
-        let query = currentToken(in: input).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let excluded = Set((excluding + ownAddresses).map { MailContactIdentity.email($0) })
+    private let candidates: [String: Candidate]
+
+    init(messages: [MailMessage], accountKey: String) {
         var candidates: [String: Candidate] = [:]
         for message in messages {
             guard MailContactIdentity.accountKey(for: message) == accountKey, !message.isDraft,
@@ -99,20 +103,24 @@ enum MailRecipientSuggestions {
                 let parsed = MailAddressList(raw)
                 guard parsed.invalid.isEmpty, parsed.addresses.count == 1 else { continue }
                 let email = parsed.addresses[0].lowercased()
-                guard !excluded.contains(email) else { continue }
-                var candidate = candidates[email] ?? Candidate(email: email, name: name, lastContact: message.sentAt)
-                if candidate.name.isEmpty, !name.isEmpty { candidate.name = name }
-                if candidate.messages.insert(message.id).inserted, message.isOutgoing { candidate.outgoingCount += 1 }
-                candidate.lastContact = max(candidate.lastContact, message.sentAt)
-                candidates[email] = candidate
+                candidates[email, default: Candidate(email: email, name: name, lastContact: message.sentAt)]
+                    .record(message, name: name)
             }
         }
+        self.candidates = candidates
+    }
+
+    func suggestions(for input: String, excluding: [String] = [], ownAddresses: [String] = [],
+                     limit: Int = 6, now: Date = .now) -> [MailRecipientSuggestion] {
+        let query = Self.currentToken(in: input).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let excluded = Set((excluding + ownAddresses).map { MailContactIdentity.email($0) })
         func score(_ candidate: Candidate) -> Double {
             let prefix = !query.isEmpty && (candidate.email.hasPrefix(query) || candidate.name.lowercased().hasPrefix(query)) ? 1000.0 : 0
             let days = max(0, now.timeIntervalSince(candidate.lastContact) / 86_400)
             return prefix + Double(candidate.messages.count + candidate.outgoingCount * 3) + 30 / (days + 1)
         }
-        return candidates.values.filter { query.isEmpty || $0.email.contains(query) || $0.name.localizedCaseInsensitiveContains(query) }
+        return candidates.values.filter { !excluded.contains($0.email) &&
+            (query.isEmpty || $0.email.contains(query) || $0.name.localizedCaseInsensitiveContains(query)) }
             .sorted { lhs, rhs in score(lhs) == score(rhs) ? lhs.email < rhs.email : score(lhs) > score(rhs) }
             .prefix(max(0, min(20, limit))).map {
                 MailRecipientSuggestion(email: $0.email, name: $0.name, messageCount: $0.messages.count, lastContact: $0.lastContact)
@@ -120,6 +128,10 @@ enum MailRecipientSuggestions {
     }
 
     static func currentToken(in input: String) -> String { String(input[tokenStart(in: input)...]) }
+
+    static func completedAddresses(in input: String) -> [String] {
+        MailAddressList(String(input[..<tokenStart(in: input)])).addresses
+    }
 
     static func replacingCurrentToken(in input: String, with suggestion: MailRecipientSuggestion) -> String {
         let prefix = String(input[..<tokenStart(in: input)])
@@ -231,5 +243,24 @@ struct MailRelationship: Equatable {
             }
         }
         return result
+    }
+}
+
+extension MailRelationship {
+    /// "under an hour", "about 3 hours", "about 2 days".
+    static func duration(_ seconds: TimeInterval) -> String {
+        let hours = seconds / 3_600
+        if hours < 1 { return "Within an hour" }
+        if hours < 36 { return "About \(Int(hours.rounded())) hour\(Int(hours.rounded()) == 1 ? "" : "s")" }
+        let days = Int((hours / 24).rounded())
+        return "About \(days) day\(days == 1 ? "" : "s")"
+    }
+
+    /// "9–11 AM" in the current locale's hour style.
+    static func window(from hour: Int) -> String {
+        let calendar = Calendar.current
+        let start = calendar.date(bySettingHour: hour, minute: 0, second: 0, of: .now) ?? .now
+        let end = start.addingTimeInterval(2 * 3_600)
+        return (start..<end).formatted(.interval.hour())
     }
 }

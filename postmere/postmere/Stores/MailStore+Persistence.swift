@@ -100,14 +100,14 @@ extension MailStore {
             while start < waiting.count {
                 let batch = Array(waiting[start..<min(start + 300, waiting.count)])
                 start += batch.count
-                let restored = await Task.detached(priority: .userInitiated) {
+                let restored = await Task.detached(priority: .userInitiated) { [warm] in
                     persistence.loadBodies(for: batch, keepingRichFor: warm)
                 }.value
                 guard let self, !Task.isCancelled else { return }
                 self.applyStoredBodies(restored)
                 let cold = restored.keys.filter { !warm.contains($0) }
                 self.richBodyUnloadedIDs.formUnion(persistence.richBodiesOnDisk(cold))
-                for id in restored.keys where warm.contains(id) { self.noteRichBodyUse(id) }
+                for message in restored.values { self.noteRichBodyUse(message) }
             }
             guard let self, !Task.isCancelled else { return }
             self.bodyFillTask = nil
@@ -150,24 +150,28 @@ extension MailStore {
     }
 
     /// Opening a conversation reads any body or rich body it lacks right away.
-    func loadBodiesNow(forConversationOf id: UUID) {
-        guard let bodySource, let selected = messages.first(where: { $0.id == id }) else { return }
-        let conversation = messages.filter { $0.conversationID == selected.conversationID }
+    func loadSelectedConversationBodies() {
+        guard let bodySource else { return }
+        let conversation = selectedConversation
         let waiting = conversation.filter { StoredMessageBody($0).isEmpty || needsRichBody($0) }
-        if !waiting.isEmpty { applyStoredBodies(bodySource.loadBodies(for: waiting)) }
-        for message in conversation { noteRichBodyUse(message.id) }
+        let restored = waiting.isEmpty ? [:] : bodySource.loadBodies(for: waiting)
+        applyStoredBodies(restored)
+        for message in conversation { noteRichBodyUse(restored[message.id] ?? message) }
+        guard richBodyUses.count > Self.richBodyBudget else { return }
         releaseRichBodies(keeping: Set(conversation.map(\.id)))
     }
 
-    private func noteRichBodyUse(_ id: UUID) {
+    private func noteRichBodyUse(_ message: MailMessage) {
+        guard !message.isDraft, message.mailbox != .outbox,
+              message.bodyHTML != nil || message.bodyRTF != nil else { return }
         richBodyClock &+= 1
-        richBodyUses[id] = richBodyClock
+        richBodyUses[message.id] = richBodyClock
     }
 
     /// Releases the least recently read rich bodies beyond the budget. Only
     /// bodies a save has put on disk are released, so nothing is lost.
     private func releaseRichBodies(keeping current: Set<UUID>) {
-        guard richBodyUses.count > Self.richBodyBudget, let bodySource else { return }
+        guard let bodySource else { return }
         let present = Set(messages.map(\.id))
         richBodyUses = richBodyUses.filter { present.contains($0.key) }
         guard richBodyUses.count > Self.richBodyBudget else { return }

@@ -90,7 +90,7 @@ async fn user(state: &AppState, ws: Uuid, hash: &str) -> SessionResponse {
             LoginRequest {
                 email,
                 password: "MCP transport test password".into(),
-                workspace_id: ws,
+                workspace_id: Some(ws),
             },
             "mcp-transport-fixture",
         )

@@ -7,9 +7,17 @@ nonisolated struct MailAISettings: Codable, Sendable {
     let provider: String
     let model: String
     var styleGuide: String
+    /// Learned from the user's sent mail; empty until they ask for it.
+    var learnedStyle: String? = nil
+    var learnedAt: Date? = nil
     let dataNotice: String
 }
-nonisolated struct MailAISettingsInput: Encodable, Sendable { let enabled: Bool; let styleGuide: String }
+nonisolated struct MailAISettingsInput: Encodable, Sendable {
+    let enabled: Bool
+    let styleGuide: String
+    /// nil leaves the learned style as it is; "" clears it.
+    var learnedStyle: String? = nil
+}
 nonisolated struct MailAIResult: Decodable, Sendable {
     let text: String
     let items: [MailAIItem]

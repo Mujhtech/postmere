@@ -1,4 +1,5 @@
-import AppKit
+import Foundation
+import ImageIO
 import ImageIO
 
 nonisolated struct BackendSenderMarkResponse: Decodable, Sendable {
@@ -71,10 +72,8 @@ private nonisolated final class SenderMarkArtwork: NSObject, XMLParserDelegate {
         let artwork = SenderMarkArtwork()
         parser.delegate = artwork
         guard parser.parse(), parser.parserError == nil, artwork.count > 1,
-              let image = NSImage(data: data) else { return nil }
-        var bounds = CGRect(x: 0, y: 0, width: 160, height: 160)
-        guard let cg = image.cgImage(forProposedRect: &bounds, context: nil, hints: nil),
-              cg.width <= 512, cg.height <= 512 else { return nil }
+              let cg = MailPlatform.rasterizeSVG(data, size: CGSize(width: 160, height: 160)) else { return nil }
+        guard cg.width <= 512, cg.height <= 512 else { return nil }
         let result = NSMutableData()
         guard let target = CGImageDestinationCreateWithData(result, "public.png" as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(target, cg, nil)

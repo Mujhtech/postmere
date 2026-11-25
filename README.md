@@ -1,5 +1,7 @@
 # Postmere
 
+![Postmere's welcome screen: "A home for your mail."](docs/images/onboarding.png)
+
 A native SwiftUI email client for macOS. All Google and Microsoft mail accounts connect through a Rust/PostgreSQL workspace server, with no application-imposed limit on connected accounts. The backend uses a [Cargo workspace of connected feature crates](server/ARCHITECTURE.md).
 
 Messages, unfinished drafts, rich text, attachments, snippets, saved views, sender rules, and private notes persist on this Mac. File attachments are copied into app-owned storage. An interrupted draft can be resumed after launch; a damaged mailbox file is preserved and reported instead of silently overwritten.
@@ -98,3 +100,9 @@ Run the offline regression suites together or select individual suites by name.
 Provider protocol, OAuth, MIME, synchronization, delivery, and account-isolation regressions run in the [Rust workspace suite](server/README.md#verification). Native suites use temporary state, in-memory credentials, intercepted HTTP, and a fake notification center; they do not send real email or request permissions.
 
 The editable layered icon is `postmere/postmere/AppIcon.icon`; its SVG sources and previews are in `design/icon/`.
+
+## License
+
+Postmere is free software: you can redistribute it and/or modify it under the terms of the [GNU Affero General Public License](LICENSE), version 3 or (at your option) any later version. If you run a modified Postmere server for other people, the AGPL requires you to offer them the source of your changes.
+
+Copyright © 2026 Muhideen Mujeeb Adeoye.

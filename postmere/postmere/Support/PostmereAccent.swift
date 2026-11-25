@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// The preference stores the chosen sRGB color. Controls, labels and selections derive their own contrast from it.
@@ -27,7 +26,7 @@ nonisolated struct PostmereAccent: Equatable, Sendable {
         let lightSecondary = RGB(0x414743)
         let darkSecondary = RGB(0xDCE4DF)
 
-        swatch = Color(nsColor: source.color)
+        swatch = Color(.sRGB, red: source.components.x, green: source.components.y, blue: source.components.z)
         accent = Self.adaptive(lightControl, darkControl.legible(on: white, toward: black))
         let lightInk = source.legible(on: white, toward: black, ratio: 5)
         accentInk = Self.adaptive(lightInk, darkInk)
@@ -43,17 +42,15 @@ nonisolated struct PostmereAccent: Equatable, Sendable {
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.rgb == rhs.rgb }
 
     static func rgbValue(of color: Color) -> Int? {
-        guard let srgb = NSColor(color).usingColorSpace(.sRGB) else { return nil }
+        guard let srgb = color.resolve(in: EnvironmentValues()).cgColor
+                .converted(to: CGColorSpace(name: CGColorSpace.sRGB)!, intent: .defaultIntent, options: nil),
+              let c = srgb.components, c.count >= 3 else { return nil }
         func byte(_ component: CGFloat) -> Int { Int((min(1, max(0, component)) * 255).rounded()) }
-        return byte(srgb.redComponent) << 16 | byte(srgb.greenComponent) << 8 | byte(srgb.blueComponent)
+        return byte(c[0]) << 16 | byte(c[1]) << 8 | byte(c[2])
     }
 
     private static func adaptive(_ light: RGB, _ dark: RGB) -> Color {
-        let lightColor = light.color
-        let darkColor = dark.color
-        return Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? darkColor : lightColor
-        })
+        MailPlatform.adaptiveColor(light: light.components, dark: dark.components)
     }
 
     private struct RGB {
@@ -73,7 +70,7 @@ nonisolated struct PostmereAccent: Equatable, Sendable {
             self.b = b
         }
 
-        var color: NSColor { NSColor(srgbRed: r, green: g, blue: b, alpha: 1) }
+        var components: SIMD3<Double> { SIMD3(r, g, b) }
 
         var css: String {
             "rgb(\(Int((r * 255).rounded())), \(Int((g * 255).rounded())), \(Int((b * 255).rounded())))"

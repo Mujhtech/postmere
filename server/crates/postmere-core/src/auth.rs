@@ -189,11 +189,7 @@ impl AuthService {
             role: row.get("role"),
         })
     }
-    pub async fn login(
-        &self,
-        input: LoginRequest,
-        client: &str,
-    ) -> Result<SessionResponse, AppError> {
+    pub async fn login(&self, input: LoginRequest, client: &str) -> Result<LoginOutcome, AppError> {
         self.login_with_lifetime(input, client, true, "native")
             .await
     }
@@ -204,8 +200,91 @@ impl AuthService {
         input: LoginRequest,
         client: &str,
     ) -> Result<SessionResponse, AppError> {
-        self.login_with_lifetime(input, client, false, "mcp_browser")
-            .await
+        // Assistant authorization always names its workspace.
+        if input.workspace_id.is_none() {
+            return Err(AppError::unauthorized());
+        }
+        match self
+            .login_with_lifetime(input, client, false, "mcp_browser")
+            .await?
+        {
+            LoginOutcome::Session(session) => Ok(session),
+            LoginOutcome::ChooseWorkspace(_) => Err(AppError::unauthorized()),
+        }
+    }
+
+    /// The active workspaces this person belongs to, by name.
+    pub async fn workspaces(&self, auth: &AuthContext) -> Result<Vec<WorkspaceChoice>, AppError> {
+        let mut tx = auth.begin_authorized(&self.pool).await?;
+        let rows = Self::memberships(&mut tx, auth.user_id).await?;
+        tx.commit().await?;
+        Ok(rows)
+    }
+
+    /// Start a session in another of this person's workspaces without asking for
+    /// the password again. Only a native app sign-in may do this, and the current
+    /// session stays signed in so the app can switch back.
+    pub async fn switch(
+        &self,
+        auth: &AuthContext,
+        workspace_id: Uuid,
+    ) -> Result<SessionResponse, AppError> {
+        if auth.assistant {
+            return Err(AppError::forbidden());
+        }
+        let mut tx = self.pool.begin().await?;
+        // Same lock order as rotation and logout-all.
+        sqlx::query("SELECT id FROM users WHERE id=$1 FOR UPDATE")
+            .bind(auth.user_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let kind: Option<String> = sqlx::query_scalar(
+            "SELECT s.kind FROM sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON m.workspace_id=s.workspace_id AND m.user_id=s.user_id JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=$1 AND s.user_id=$2 AND s.workspace_id=$3 AND s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at>clock_timestamp()) AND (s.absolute_expires_at IS NULL OR s.absolute_expires_at>clock_timestamp()) AND u.disabled_at IS NULL AND m.revoked_at IS NULL AND w.disabled_at IS NULL FOR SHARE OF s,m,w",
+        )
+        .bind(auth.session_id)
+        .bind(auth.user_id)
+        .bind(auth.workspace_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if kind.ok_or_else(AppError::unauthorized)? != "native" {
+            return Err(AppError::forbidden());
+        }
+        let role: String = sqlx::query_scalar(
+            "SELECT m.role FROM memberships m JOIN workspaces w ON w.id=m.workspace_id WHERE m.user_id=$1 AND m.workspace_id=$2 AND m.revoked_at IS NULL AND w.disabled_at IS NULL FOR SHARE OF m,w",
+        )
+        .bind(auth.user_id)
+        .bind(workspace_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(AppError::not_found)?;
+        let target = AuthContext {
+            assistant: false,
+            user_id: auth.user_id,
+            workspace_id,
+            session_id: Uuid::new_v4(),
+            role,
+        };
+        let result = self.issue(&mut tx, &target, None, "native").await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    async fn memberships(
+        tx: &mut Transaction<'_, Postgres>,
+        user_id: Uuid,
+    ) -> Result<Vec<WorkspaceChoice>, AppError> {
+        let rows = sqlx::query("SELECT w.id,w.name,m.role FROM memberships m JOIN workspaces w ON w.id=m.workspace_id WHERE m.user_id=$1 AND m.revoked_at IS NULL AND w.disabled_at IS NULL ORDER BY lower(w.name),w.id")
+            .bind(user_id)
+            .fetch_all(&mut **tx)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| WorkspaceChoice {
+                id: row.get("id"),
+                name: row.get("name"),
+                role: row.get("role"),
+            })
+            .collect())
     }
     async fn login_with_lifetime(
         &self,
@@ -213,7 +292,7 @@ impl AuthService {
         client: &str,
         persistent: bool,
         kind: &str,
-    ) -> Result<SessionResponse, AppError> {
+    ) -> Result<LoginOutcome, AppError> {
         let password = Zeroizing::new(input.password);
         let email = input.email.trim().to_lowercase();
         if email.len() > 254 || password.is_empty() || password.len() > 1024 {
@@ -226,8 +305,14 @@ impl AuthService {
             .clone()
             .try_acquire_owned()
             .map_err(|_| AppError::rate_limited())?;
-        let row = sqlx::query("SELECT u.id,u.password_hash,m.role FROM users u JOIN memberships m ON m.user_id=u.id JOIN workspaces w ON w.id=m.workspace_id WHERE u.email=$1 AND m.workspace_id=$2 AND u.disabled_at IS NULL AND m.revoked_at IS NULL AND w.disabled_at IS NULL")
-            .bind(&email).bind(input.workspace_id).fetch_optional(&self.pool).await?;
+        // Every path verifies a password hash, real or dummy, so timing doesn't
+        // reveal which addresses have accounts.
+        let row = sqlx::query(
+            "SELECT id,password_hash FROM users WHERE email=$1 AND disabled_at IS NULL",
+        )
+        .bind(&email)
+        .fetch_optional(&self.pool)
+        .await?;
         let hash = row
             .as_ref()
             .map(|r| r.get::<String, _>("password_hash"))
@@ -246,14 +331,31 @@ impl AuthService {
             return Err(AppError::unauthorized());
         }
         let row = row.ok_or_else(AppError::unauthorized)?;
+        let user_id: Uuid = row.get("id");
         let mut tx = self.pool.begin().await?;
+        let workspace_id = match input.workspace_id {
+            Some(id) => id,
+            None => {
+                // Every failure here is the same "credentials invalid", so a
+                // person with no workspace looks like a wrong password.
+                let choices = Self::memberships(&mut tx, user_id).await?;
+                match choices.as_slice() {
+                    [] => return Err(AppError::unauthorized()),
+                    [only] => only.id,
+                    _ => {
+                        tx.commit().await?;
+                        return Ok(LoginOutcome::ChooseWorkspace(choices));
+                    }
+                }
+            }
+        };
         // Recheck and lock identity state after expensive password verification.
         let active = sqlx::query("SELECT m.role FROM memberships m JOIN users u ON u.id=m.user_id JOIN workspaces w ON w.id=m.workspace_id WHERE m.user_id=$1 AND m.workspace_id=$2 AND m.revoked_at IS NULL AND u.disabled_at IS NULL AND w.disabled_at IS NULL AND u.password_hash=$3 FOR SHARE OF m,u,w")
-            .bind(row.get::<Uuid,_>("id")).bind(input.workspace_id).bind(row.get::<String,_>("password_hash")).fetch_optional(&mut *tx).await?.ok_or_else(AppError::unauthorized)?;
+            .bind(user_id).bind(workspace_id).bind(row.get::<String,_>("password_hash")).fetch_optional(&mut *tx).await?.ok_or_else(AppError::unauthorized)?;
         let auth = AuthContext {
             assistant: false,
-            user_id: row.get("id"),
-            workspace_id: input.workspace_id,
+            user_id,
+            workspace_id,
             session_id: Uuid::new_v4(),
             role: active.get("role"),
         };
@@ -266,7 +368,7 @@ impl AuthService {
             )
             .await?;
         tx.commit().await?;
-        Ok(result)
+        Ok(LoginOutcome::Session(result))
     }
     async fn issue(
         &self,
@@ -393,7 +495,32 @@ fn token_hash(token: &str) -> Result<Vec<u8>, AppError> {
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
-    pub workspace_id: Uuid,
+    /// Omitted by apps that let the server pick: a person in one workspace is
+    /// signed straight in, and one in several is asked to choose.
+    #[serde(default)]
+    pub workspace_id: Option<Uuid>,
+}
+
+/// A workspace the signed-in person belongs to, offered when choosing or switching.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkspaceChoice {
+    pub id: Uuid,
+    pub name: String,
+    pub role: String,
+}
+
+/// A sign-in either issues a session or, for someone in several workspaces who
+/// didn't name one, lists them. The list is only returned after the password
+/// has been verified, so it reveals nothing to someone without it.
+pub enum LoginOutcome {
+    Session(SessionResponse),
+    ChooseWorkspace(Vec<WorkspaceChoice>),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SwitchRequest {
+    workspace_id: Uuid,
 }
 
 pub fn router() -> Router<AppState> {
@@ -409,16 +536,44 @@ pub fn router() -> Router<AppState> {
         )
         .route("/v1/auth/logout-all", post(logout_all))
         .route("/v1/auth/me", get(me))
+        .route("/v1/auth/workspaces", get(workspaces))
+        .route(
+            "/v1/auth/switch",
+            post(switch).layer(DefaultBodyLimit::max(4096)),
+        )
 }
 async fn login(
     State(state): State<AppState>,
     client: Option<Extension<ConnectInfo<SocketAddr>>>,
     Json(input): Json<LoginRequest>,
-) -> Result<Json<SessionResponse>, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let client = client
         .map(|Extension(ConnectInfo(addr))| addr.ip().to_string())
         .unwrap_or_else(|| "unknown-peer".into());
-    state.auth.login(input, &client).await.map(Json)
+    match state.auth.login(input, &client).await? {
+        LoginOutcome::Session(session) => Ok(Json(
+            serde_json::to_value(session).map_err(|_| AppError::internal("session_encode"))?,
+        )),
+        LoginOutcome::ChooseWorkspace(workspaces) => Ok(Json(
+            serde_json::json!({"workspace_required": true, "workspaces": workspaces}),
+        )),
+    }
+}
+async fn workspaces(
+    auth: AuthContext,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let workspaces = state.auth.workspaces(&auth).await?;
+    Ok(Json(
+        serde_json::json!({"current": auth.workspace_id, "workspaces": workspaces}),
+    ))
+}
+async fn switch(
+    auth: AuthContext,
+    State(state): State<AppState>,
+    Json(input): Json<SwitchRequest>,
+) -> Result<Json<SessionResponse>, AppError> {
+    state.auth.switch(&auth, input.workspace_id).await.map(Json)
 }
 async fn rotate(
     auth: AuthContext,

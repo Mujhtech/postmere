@@ -1,3 +1,4 @@
+import CoreSpotlight
 import SwiftUI
 
 @main
@@ -26,6 +27,8 @@ struct postmereApp: App {
                         store.operationError = "Postmere couldn’t read this email link."
                     }
                 }
+                .onContinueUserActivity(MailContinuity.messageActivityType) { runtime.continueActivity($0) }
+                .onContinueUserActivity(CSSearchableItemActionType) { runtime.continueActivity($0) }
                 .handlesExternalEvents(preferring: ["mailto:"], allowing: ["mailto:"])
                 .postmereStyle()
         }

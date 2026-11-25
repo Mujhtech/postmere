@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 import Contacts
 import ImageIO
 import Observation
@@ -18,7 +18,7 @@ final class MailContactPhotos {
 
     private init() {
         cache.countLimit = 256
-        for notification in [Notification.Name.CNContactStoreDidChange, NSApplication.didBecomeActiveNotification] {
+        for notification in [Notification.Name.CNContactStoreDidChange, MailPlatform.didBecomeActive] {
             let observer = NotificationCenter.default.addObserver(forName: notification, object: nil, queue: .main) { [weak self] note in
                 let contactsChanged = note.name == .CNContactStoreDidChange
                 MainActor.assumeIsolated { self?.refresh(contactsChanged: contactsChanged) }
@@ -40,13 +40,13 @@ final class MailContactPhotos {
         revision += 1
     }
 
-    func cachedPhoto(email: String, enlarged: Bool) -> CGImage? {
-        guard canRead, !email.isEmpty else { return nil }
+    func cachedPhoto(email address: String, enlarged: Bool) -> CGImage? {
+        guard canRead, let email = MailSenderDomain.email(in: address) else { return nil }
         return cache.object(forKey: "\(enlarged)-\(email)" as NSString)?.image
     }
 
-    func photo(email: String, enlarged: Bool) async -> CGImage? {
-        guard canRead, !email.isEmpty else { return nil }
+    func photo(email address: String, enlarged: Bool) async -> CGImage? {
+        guard canRead, let email = MailSenderDomain.email(in: address) else { return nil }
         let key = "\(enlarged)-\(email)" as NSString
         if let cached = cache.object(forKey: key) { return cached.image }
         let version = revision
@@ -66,6 +66,7 @@ private actor ContactPhotoLookup {
     private let store = CNContactStore()
 
     func photo(email: String, enlarged: Bool) -> CGImage? {
+        guard !Task.isCancelled else { return nil }
         let keys: [CNKeyDescriptor] = enlarged
             ? [CNContactImageDataKey as CNKeyDescriptor, CNContactThumbnailImageDataKey as CNKeyDescriptor]
             : [CNContactThumbnailImageDataKey as CNKeyDescriptor]

@@ -96,7 +96,9 @@ impl SyncTransport for HttpSync {
                 && stale
                 && provider::has_label_scope(provider, &session.credentials)
             {
-                match provider::list_labels(state, provider, &session.credentials.access_token).await {
+                match provider::list_labels(state, provider, &session.credentials.access_token)
+                    .await
+                {
                     Ok(labels) => {
                         batch.checkpoint.label_catalog = Some(labels);
                         batch.checkpoint.label_names_refreshed_at = Some(Utc::now());

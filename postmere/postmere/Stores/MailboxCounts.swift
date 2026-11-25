@@ -19,6 +19,11 @@ final class MailboxCounts {
     @ObservationIgnored private var loading: Task<Void, Never>?
     private(set) var snapshot: SidebarCounts?
 
+    func count(for mailbox: Mailbox) -> Int {
+        guard let snapshot, snapshot.accounts == store.searchableAccounts else { return 0 }
+        return snapshot.mailboxes[mailbox, default: 0]
+    }
+
     var menuBarInbox: MenuBarInbox? {
         guard !store.isOpeningMailbox, let inbox = snapshot?.menuBarInbox,
               inbox.accounts == menuAccounts(connected: dockAccounts()) else { return nil }

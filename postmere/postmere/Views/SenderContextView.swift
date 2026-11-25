@@ -148,7 +148,7 @@ struct SenderContextView: View {
                         companySection(company, in: profile)
                     }
                     if let onDraftIntro, !message.isOutgoing {
-                        Button { onDraftIntro(introPrompt(profile)) } label: {
+                        Button { onDraftIntro(profile.introPrompt(fallbackName: message.sender.isEmpty ? message.senderEmail : message.sender)) } label: {
                             Label("Draft intro", systemImage: "square.and.pencil")
                         }
                         .buttonStyle(.borderedProminent)
@@ -233,13 +233,13 @@ struct SenderContextView: View {
                 fact("Messages", "\(history.fromThem) from them · \(history.fromYou) from you",
                      history.conversations == 1 ? "1 conversation" : "\(history.conversations) conversations")
                 if let time = history.theirReplyTime {
-                    fact("They reply", Self.duration(time), nil)
+                    fact("They reply", MailRelationship.duration(time), nil)
                 }
                 if let time = history.yourReplyTime {
-                    fact("You reply", Self.duration(time), nil)
+                    fact("You reply", MailRelationship.duration(time), nil)
                 }
                 if let hour = history.usualHour {
-                    fact("Usually writes", Self.window(from: hour), "Your time. A good moment to reach them.")
+                    fact("Usually writes", MailRelationship.window(from: hour), "Your time. A good moment to reach them.")
                 }
                 if let subject = history.lastSubject {
                     fact("Last topic", subject, nil)
@@ -285,23 +285,6 @@ struct SenderContextView: View {
                 }
             }
         }
-    }
-
-    /// "under an hour", "about 3 hours", "about 2 days".
-    static func duration(_ seconds: TimeInterval) -> String {
-        let hours = seconds / 3_600
-        if hours < 1 { return "Within an hour" }
-        if hours < 36 { return "About \(Int(hours.rounded())) hour\(Int(hours.rounded()) == 1 ? "" : "s")" }
-        let days = Int((hours / 24).rounded())
-        return "About \(days) day\(days == 1 ? "" : "s")"
-    }
-
-    /// "9–11 AM" in the current locale's hour style.
-    static func window(from hour: Int) -> String {
-        let calendar = Calendar.current
-        let start = calendar.date(bySettingHour: hour, minute: 0, second: 0, of: .now) ?? .now
-        let end = start.addingTimeInterval(2 * 3_600)
-        return (start..<end).formatted(.interval.hour())
     }
 
     // MARK: Public research
@@ -424,23 +407,6 @@ struct SenderContextView: View {
                 .foregroundStyle(palette.accentInk)
             }
         }
-    }
-
-    /// An instruction for the writer built only from cited details.
-    private func introPrompt(_ profile: BackendSenderProfile) -> String {
-        let name = profile.name ?? (message.sender.isEmpty ? message.senderEmail : message.sender)
-        var about = [profile.jobTitle, profile.company ?? profile.publicCompany?.name].compactMap { $0 }.joined(separator: " at ")
-        if about.isEmpty, let company = profile.publicCompany { about = "someone at \(company.name)" }
-        var lines = ["Write a short, specific first email to \(name)\(about.isEmpty ? "" : ", \(about)")."]
-        let points = profile.publicTalkingPoints.map(\.text)
-        if !points.isEmpty {
-            lines.append("Mention one of these naturally: " + points.joined(separator: " / "))
-        } else if let summary = profile.publicCompany?.summary {
-            lines.append("Their company: \(summary)")
-        }
-        if let hiring = profile.publicCompany?.hiring { lines.append("Hiring: \(hiring)") }
-        lines.append("Under 120 words, no flattery, and end with one clear ask. Leave a placeholder like [your ask] if the purpose is unclear.")
-        return lines.joined(separator: "\n")
     }
 
     private func activitySymbol(_ kind: String) -> String {

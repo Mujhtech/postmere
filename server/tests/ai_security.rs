@@ -46,7 +46,9 @@ async fn ai_opt_in_and_retrieval_stay_user_and_workspace_scoped() {
     let pool = db::connect(&url).await.unwrap();
     db::migrate(&pool).await.unwrap();
     let mut config = common::config(url);
-    config.ai = Some(postmere_core::config::AiProvider::openai("fixture-never-transmitted"));
+    config.ai = Some(postmere_core::config::AiProvider::openai(
+        "fixture-never-transmitted",
+    ));
     let mut state = AppState::new(pool.clone(), config).await.unwrap();
     // Even an accidental model call is forced onto a closed loopback port.
     state.http = reqwest::Client::builder()

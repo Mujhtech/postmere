@@ -331,6 +331,17 @@ private func runSearchSessionRegressions() throws {
     var personal = older
     personal.id = UUID()
     personal.account = "Personal"
+    var lead = latest
+    lead.isUnread = false
+    var tied = lead
+    tied.id = UUID()
+    tied.isStarred = true
+    let grouped = ConversationRows([older, personal, lead, tied])
+    try check(grouped?.rows.map(\.id) == [personal.id, lead.id]
+              && grouped?.rows.last?.isUnread == true && grouped?.rows.last?.isStarred == true
+              && grouped?.members[lead.id] == [older.id, lead.id, tied.id],
+              "mobile rows keep the first newest message in source order, aggregate flags, and scope actions to its account")
+
     let store = MailStore(messages: [older, personal, latest])
     store.selectedAccount = "Work"
     store.unreadOnly = true

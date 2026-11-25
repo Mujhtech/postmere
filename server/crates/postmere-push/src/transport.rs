@@ -16,6 +16,18 @@ pub struct PushRequest {
     pub environment: String,
     pub expires_at: DateTime<Utc>,
     pub payload: Value,
+    pub kind: PushKind,
+}
+
+/// What Apple is asked to deliver.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PushKind {
+    /// A notification, sent at low priority.
+    #[default]
+    Alert,
+    /// A Live Activity start, update or end. `urgent` uses high priority,
+    /// which Apple budgets, so only starts and ends ask for it.
+    LiveActivity { urgent: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,18 +190,29 @@ impl PushTransport for APNsTransport {
                     Err(_) => return DeliveryResult::Rejected,
                 };
             authorization.set_sensitive(true);
-            let result = self
+            let (push_type, priority, topic) = match request.kind {
+                PushKind::Alert => ("alert", "5", self.topic.clone()),
+                PushKind::LiveActivity { urgent } => (
+                    "liveactivity",
+                    if urgent { "10" } else { "5" },
+                    format!("{}.push-type.liveactivity", self.topic),
+                ),
+            };
+            let mut builder = self
                 .http
                 .post(format!(
                     "https://{host}/3/device/{}",
                     request.token.as_str()
                 ))
                 .header(reqwest::header::AUTHORIZATION, authorization)
-                .header("apns-push-type", "alert")
-                .header("apns-priority", "5")
-                .header("apns-topic", &self.topic)
-                .header("apns-id", request.id.to_string())
-                .header("apns-collapse-id", request.id.to_string())
+                .header("apns-push-type", push_type)
+                .header("apns-priority", priority)
+                .header("apns-topic", topic)
+                .header("apns-id", request.id.to_string());
+            if request.kind == PushKind::Alert {
+                builder = builder.header("apns-collapse-id", request.id.to_string());
+            }
+            let result = builder
                 .header(
                     "apns-expiration",
                     request.expires_at.timestamp().to_string(),

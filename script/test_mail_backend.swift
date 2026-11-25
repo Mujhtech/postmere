@@ -67,6 +67,15 @@ enum RegressionFailure: Error { case failed(String) }
             message.sentAt = Date(timeIntervalSince1970: 1_700_000_000 + Double(index))
             messages.append(message)
         }
+        messages[0].bodyHTML = "<p>Body number 0</p>"
+        messages[0].isUnread = false
+        messages[1].conversationID = messages[0].conversationID
+        messages[1].account = MailAccount.personal.rawValue
+        messages[1].bodyHTML = "<p>Body number 1</p>"
+        messages[2].mailbox = .drafts
+        messages[2].bodyRTF = Data("saved draft formatting".utf8)
+        let richIndices = 10..<(10 + MailStore.richBodyBudget)
+        for index in richIndices { messages[index].bodyHTML = "<p>Body number \(index)</p>" }
         let seed = MailStore(messages: messages, persistenceURL: file)
         try check(seed.flushPersistence(), "a large mailbox saves")
 
@@ -88,11 +97,28 @@ enum RegressionFailure: Error { case failed(String) }
         reopened.select(oldest)
         try check(reopened.messages.first { $0.id == oldest.id }?.paragraphs == ["Body number 0"],
                   "opening a message before the background fill reaches it loads its body")
+        try check(reopened.selectedConversation.first?.bodyHTML == messages[0].bodyHTML
+                  && reopened.messages[1].bodyHTML == nil,
+                  "the selected thread immediately reflects hydration and leaves a matching thread in another account unloaded")
         let filling = MailStore(messages: [], persistenceURL: file, openInBackground: true)
         await filling.openingTask?.value
         await filling.bodyFillTask?.value
         try check(filling.messages.allSatisfy { $0.paragraphs.first?.hasPrefix("Body number") == true },
                   "the background fill restores every body")
+        for index in 350..<650 { filling.selectedMessageID = messages[index].id }
+        try check(filling.richBodyUses.isEmpty && filling.messages[2].bodyRTF == messages[2].bodyRTF,
+                  "plain messages and pinned drafts consume no evictable rich-body slots")
+        filling.select(messages[0])
+        try check(Set(filling.richBodyUses.keys) == [messages[0].id]
+                  && filling.selectedConversation.first?.bodyHTML == messages[0].bodyHTML,
+                  "opening cold mail synchronously reloads its HTML and tracks it for eviction")
+        for index in richIndices { filling.selectedMessageID = messages[index].id }
+        try check(filling.richBodyUses.count == MailStore.richBodyBudget
+                  && filling.messages[0].bodyHTML == nil && filling.messages[2].bodyRTF == messages[2].bodyRTF,
+                  "reaching the rich-body limit releases the oldest read HTML while keeping draft formatting")
+        filling.select(messages[0])
+        try check(filling.selectedMessage?.bodyHTML == messages[0].bodyHTML,
+                  "an evicted message restores its original HTML on the next read")
     }
 
     /// Focusing the search field changes nothing; typing starts search and

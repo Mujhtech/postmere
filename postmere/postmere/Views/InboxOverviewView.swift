@@ -102,6 +102,26 @@ private struct OverviewContent: View {
 
     private var askBar: some View {
         HStack(spacing: 10) {
+            askField
+            Button {
+                runtime.pendingAIQuestion = MailAIAssist.briefingQuestion
+                runtime.showsAIQuestion = true
+            } label: {
+                Label("Brief Me", systemImage: "sun.horizon")
+                    .font(.system(size: 13.5, weight: .medium))
+                    .padding(.horizontal, 14)
+                    .frame(height: 44)
+                    .background(PostmereTheme.paper, in: .rect(cornerRadius: 22, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(PostmereTheme.rule))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(palette.accentInk)
+            .help("A summary of today’s mail: what needs you, deadlines and meetings, then the rest")
+        }
+    }
+
+    private var askField: some View {
+        HStack(spacing: 10) {
             PostmereIcon("postmere.ask", size: 16).foregroundStyle(palette.accentInk)
             TextField("Ask anything about your mail…", text: $question)
                 .textFieldStyle(.plain)

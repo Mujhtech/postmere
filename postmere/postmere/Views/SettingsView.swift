@@ -21,6 +21,7 @@ struct SettingsView: View {
     @AppStorage(MenuBarInboxHost.visibilityPreference) private var showsMenuBarInbox = true
     @AppStorage("loadRemoteMailImagesAutomatically") private var loadRemoteMailImagesAutomatically = true
     @AppStorage("blockSenderTrackingPixels") private var blockSenderTrackingPixels = true
+    @AppStorage(MailSpotlightIndexer.preferenceKey) private var spotlightIndexes = true
     @Environment(\.mailboxTheme) private var theme
     @AppStorage("defaultSendingAccount") private var defaultSendingAccount = ""
 
@@ -201,6 +202,15 @@ struct SettingsView: View {
                                subtitle: "Image hosts can see your IP address", isOn: $loadRemoteMailImagesAutomatically)
                 SettingsToggle("Block tracking pixels", symbol: "shield", tint: SettingsTint.green,
                                subtitle: "Stops senders seeing when you open mail", isOn: $blockSenderTrackingPixels)
+                SettingsToggle("Show mail in Spotlight", symbol: "magnifyingglass", tint: SettingsTint.indigo,
+                               subtitle: "Subjects, senders and previews of recent mail, on this Mac only", isOn: $spotlightIndexes)
+                    .onChange(of: spotlightIndexes) {
+                        if spotlightIndexes {
+                            runtime.spotlight.update(messages: runtime.store.messages, signedIn: runtime.backend.canAccessWorkspace)
+                        } else {
+                            runtime.spotlight.clear()
+                        }
+                    }
             }
             Section("Sender photos") {
                 SettingsRow("Contacts", symbol: "person.crop.circle", tint: SettingsTint.gray,

@@ -63,7 +63,13 @@ async fn request_deadline(request: Request, next: Next) -> Response {
     // Allow the model's 90s deadline plus time to load the authorized messages.
     // Once headers are sent, streaming bodies follow the provider's deadline.
     // Sender research runs several web searches: 155s plus loading.
-    let seconds = if researches_sender { 170 } else if generates_mail_assistance { 105 } else { 30 };
+    let seconds = if researches_sender {
+        170
+    } else if generates_mail_assistance {
+        105
+    } else {
+        30
+    };
     match tokio::time::timeout(Duration::from_secs(seconds), next.run(request)).await {
         Ok(response) => response,
         Err(_) if generates_mail_assistance => AppError {

@@ -204,4 +204,8 @@ async fn record_activity(state: &postmere_core::AppState, grant: uuid::Uuid, too
     if let Err(error) = result {
         tracing::warn!(event = "mcp_activity", reason = %error, "assistant activity not recorded");
     }
+    // Open apps refresh at once; iPhones get a Live Activity update over APNs.
+    if let Err(error) = postmere_push::record_assistant_activity(state, grant, tool).await {
+        tracing::warn!(event = "mcp_live_activity", reason = %error.code, "assistant live activity not queued");
+    }
 }

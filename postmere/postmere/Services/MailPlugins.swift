@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 import Foundation
 import Observation
 
@@ -88,13 +88,17 @@ final class MailPlugins {
     }
 
     func reset() {
+        // Views reload cards when the revision changes. Bumping it for a reset that
+        // cleared nothing made a card that loads while signed out reset again,
+        // forever: the reader froze when a message opened before the session did.
+        let hadState = !catalog.isEmpty || catalogScope != nil || !results.isEmpty || catalogState != .idle
         catalog = []
         catalogState = .idle
         catalogScope = nil
         results.removeAll()
         loading.removeAll()
         running.removeAll()
-        revision += 1
+        if hadState { revision += 1 }
     }
 
     // MARK: Messages
@@ -135,10 +139,8 @@ final class MailPlugins {
 
     func perform(_ action: PluginCardAction, plugin: String, message: MailMessage, session: BackendSession) {
         switch action.kind {
-        case .open(let url): NSWorkspace.shared.open(url)
-        case .copy(let text):
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
+        case .open(let url): MailPlatform.open(url)
+        case .copy(let text): MailPlatform.copy(text)
         case .tool(let name, let args):
             call(name, args: args, plugin: plugin, message: message, session: session)
         }
@@ -174,7 +176,7 @@ final class MailPlugins {
         var reminded = false
         for effect in result.effects {
             switch effect {
-            case .open(let url): NSWorkspace.shared.open(url)
+            case .open(let url): MailPlatform.open(url)
             case .remind(var components):
                 // The morning of the chosen day, in the user's time zone.
                 components.hour = 9

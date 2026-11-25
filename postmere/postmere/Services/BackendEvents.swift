@@ -5,6 +5,8 @@ nonisolated struct BackendEventChanges: OptionSet, Sendable {
     static let mail = Self(rawValue: 1 << 0)
     static let accounts = Self(rawValue: 1 << 1)
     static let outbox = Self(rawValue: 1 << 2)
+    /// A connected assistant used a tool. Not part of `all`: it carries no mail.
+    static let assistants = Self(rawValue: 1 << 3)
     static let all: Self = [.mail, .accounts, .outbox]
 }
 
@@ -28,6 +30,7 @@ nonisolated struct BackendServerEvent: Sendable, Equatable {
                 case "mail": result.insert(.mail)
                 case "accounts": result.insert(.accounts)
                 case "outbox": result.insert(.outbox)
+                case "assistants": result.insert(.assistants)
                 default: break
                 }
             }

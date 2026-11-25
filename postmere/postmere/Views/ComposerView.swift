@@ -20,6 +20,11 @@ struct ComposerView: View {
     @State private var isShowingAlert = false
     @State private var attachmentError: String?
     @State private var schedulePurpose: MailSchedulePurpose?
+    @State private var confirmsMissingAttachment = false
+    /// The quoted message under a reply or forward is folded away until asked for.
+    @State private var showsQuote = false
+    @State private var quoteFold = QuoteFold()
+    @State private var proofreads = false
     @State private var showsSnippets = false
     @State private var showsAvailability = false
     @State private var showsAIWriting = false
@@ -51,13 +56,14 @@ struct ComposerView: View {
             if !store.draftAccount.isConnected { accountConnectionNotice }
             if store.draftSendAt != nil || store.draftFollowUpAt != nil { schedulingSummary }
             if showsFormatting { formattingBar }
-            ComposeBodyEditor(text: $store.draftBody, rtfData: $store.draftBodyRTF, formatting: formatting,
+            ComposeBodyEditor(text: bodyText, rtfData: bodyRTF, formatting: formatting,
                               markdownEnabled: markdownEnabled,
                               onCaptureAttachments: { try store.addDraftAttachments(from: $0) },
                               onCaptureError: showAttachmentError)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(alignment: .bottom) { aiWriting }
                 .onChange(of: store.pendingWriterPrompt, initial: true) { openWriterIfAsked() }
+            if let quote = MailQuotedReply.split(store.draftBody)?.quote { quotedToggle(quote) }
             if !store.draftAttachments.isEmpty { attachmentList }
         }
         .background(canvas)
@@ -72,7 +78,7 @@ struct ComposerView: View {
                 .frame(width: 0, height: 0)
             Button("Attach Files…") { isChoosingAttachments = true }
                 .keyboardShortcut("a", modifiers: [.command, .shift]).hidden()
-            Button("Queue Message", action: store.sendDraft)
+            Button("Queue Message", action: attemptSend)
                 .keyboardShortcut(.return, modifiers: .command).disabled(!store.canSendDraft).hidden()
             Button("Write with AI", action: toggleAIWriting)
                 .keyboardShortcut("j", modifiers: .command).hidden()
@@ -88,6 +94,14 @@ struct ComposerView: View {
                                   if !store.draftCc.isEmpty { showsCc = true }
                                   if !store.draftBcc.isEmpty { showsBcc = true }
                               }, onImportAttachments: store.importTemplateAttachments)
+        }
+        .sheet(isPresented: $proofreads) { MailProofreadSheet(runtime: runtime) { attemptSend() } }
+        .confirmationDialog("Send without an attachment?", isPresented: $confirmsMissingAttachment) {
+            Button("Attach Files…") { isChoosingAttachments = true }
+            Button("Send Anyway") { store.sendDraft() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your message mentions an attachment, but nothing is attached.")
         }
         .sheet(item: $schedulePurpose) { purpose in
             MailScheduleSheet(purpose: purpose) { date, conditional in
@@ -140,17 +154,20 @@ struct ComposerView: View {
                 return false
             }
         }
-        .alert(attachmentError == nil ? "Save changes to this message?" : "Couldn’t add attachment", isPresented: $isShowingAlert) {
-            if attachmentError != nil {
-                Button("OK", role: .cancel) { attachmentError = nil }
-            } else {
-                Button("Save Draft", action: store.saveDraft)
-                    .keyboardShortcut(.defaultAction)
-                Button("Discard Changes", role: .destructive, action: store.discardDraftChanges)
-                Button("Keep Editing", role: .cancel) { }
-            }
+        .alert("Couldn’t add attachment", isPresented: Binding(get: { isShowingAlert && attachmentError != nil },
+                                                              set: { if !$0 { isShowingAlert = false; attachmentError = nil } })) {
+            Button("OK", role: .cancel) { attachmentError = nil }
         } message: {
-            Text(attachmentError ?? "Save a draft to keep your changes, or discard them.")
+            Text(attachmentError ?? "")
+        }
+        // Drawn by Postmere rather than as a system alert, so Save Draft takes the chosen accent.
+        .sheet(isPresented: Binding(get: { isShowingAlert && attachmentError == nil }, set: { if !$0 { isShowingAlert = false } })) {
+            PostmereDecisionSheet(
+                title: "Save changes to this message?",
+                message: "Save a draft to keep your changes, or discard them.",
+                primary: .init(title: "Save Draft") { store.saveDraft() },
+                destructive: .init(title: "Discard Changes", role: .destructive) { store.discardDraftChanges() },
+                cancel: .init(title: "Keep Editing", role: .cancel) {})
         }
     }
 
@@ -219,7 +236,10 @@ struct ComposerView: View {
         ToolbarSpacer(.flexible)
         ToolbarItem(placement: .automatic) {
             Menu {
-                Button("Send Now") { store.draftSendAt = nil; store.sendDraft() }.disabled(!store.canSendDraft)
+                Button("Send Now") { store.draftSendAt = nil; attemptSend() }.disabled(!store.canSendDraft)
+                if runtime.backend.canAccessWorkspace {
+                    Button("Proofread and Send…") { proofreads = true }.disabled(!store.canSendDraft)
+                }
                 Button("Send Later…") { schedulePurpose = .sendLater }
                 if store.draftSendAt != nil { Button("Clear Send Schedule") { store.draftSendAt = nil } }
                 Divider()
@@ -235,10 +255,81 @@ struct ComposerView: View {
                 PostmereLabel(store.draftSendAt != nil ? "Schedule" : "Send", symbol: "arrow.up", size: 17)
                     .foregroundStyle(store.canSendDraft ? palette.accentInk : .secondary)
             } primaryAction: {
-                store.sendDraft()
+                attemptSend()
             }
             .disabled(!store.draftAccount.isConnected)
             .help(store.draftValidationMessage ?? "Queue email for delivery · ⌘Return")
+        }
+    }
+
+    // MARK: Quoted message
+
+    /// While the quote is folded, the editor holds only what the person writes;
+    /// the quote, with its formatting, is joined back on every change.
+    private var bodyText: Binding<String> {
+        Binding(
+            get: {
+                guard !showsQuote, let split = MailQuotedReply.split(store.draftBody) else { return store.draftBody }
+                return split.head
+            },
+            set: { newValue in
+                if !showsQuote, let quote = MailQuotedReply.split(store.draftBody)?.quote {
+                    store.draftBody = MailQuotedReply.join(head: newValue, quote: quote)
+                } else {
+                    store.draftBody = newValue
+                }
+            })
+    }
+
+    private var bodyRTF: Binding<Data?> {
+        Binding(
+            get: {
+                guard !showsQuote, let split = MailQuotedReply.split(store.draftBody) else { return store.draftBodyRTF }
+                return quoteFold.head(of: store.draftBodyRTF, body: store.draftBody, quoteLength: split.quote.utf16.count)
+            },
+            set: { newValue in
+                guard !showsQuote, let quote = MailQuotedReply.split(store.draftBody)?.quote else {
+                    store.draftBodyRTF = newValue
+                    return
+                }
+                store.draftBodyRTF = quoteFold.join(head: newValue, previous: store.draftBodyRTF, body: store.draftBody,
+                                                    quoteLength: quote.utf16.count)
+            })
+    }
+
+    private func quotedToggle(_ quote: String) -> some View {
+        Button {
+            withAnimation(.snappy(duration: 0.2)) { showsQuote.toggle() }
+        } label: {
+            HStack(spacing: 10) {
+                PostmereIcon(showsQuote ? "chevron.up" : "ellipsis", size: 12)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 30, height: 18)
+                    .background(.quaternary, in: Capsule())
+                Text(showsQuote ? "Hide quoted text" : "Show quoted text")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(palette.accentInk)
+                Text(MailQuotedReply.title(of: quote))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("The quoted message is always sent with your reply")
+    }
+
+    /// Asks first when the message mentions an attachment and has none.
+    private func attemptSend() {
+        guard store.canSendDraft else { return }
+        if store.draftAttachments.isEmpty && MailAttachmentReminder.mentionsAttachment(store.draftBody) {
+            confirmsMissingAttachment = true
+        } else {
+            store.sendDraft()
         }
     }
 
@@ -544,5 +635,46 @@ struct ComposerView: View {
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
             .frame(width: 50, alignment: .leading)
+    }
+}
+
+/// Splits the rich copy of a reply between what the editor shows and the folded
+/// quote. Remembers its last answer so the editor's own formatting round-trips
+/// without being reapplied on every keystroke.
+private final class QuoteFold {
+    private var combined: Data?
+    private var head: Data?
+
+    func head(of rtf: Data?, body: String, quoteLength: Int) -> Data? {
+        guard let rtf else { return nil }
+        if rtf == combined { return head }
+        let rich = MailTemplate.richBody(text: body, rtf: rtf)
+        let headLength = max(0, rich.length - quoteLength)
+        let result = MailTemplate.encodeRTF(rich.attributedSubstring(from: NSRange(location: 0, length: headLength)))
+        combined = rtf
+        head = result
+        return result
+    }
+
+    /// The editor's new head joined to the quote's formatting from the previous rich copy.
+    /// `body` is already the new plain text, head and quote.
+    func join(head newHead: Data?, previous: Data?, body: String, quoteLength: Int) -> Data? {
+        let headLength = (body as NSString).length - quoteLength
+        let headText = (body as NSString).substring(to: max(0, headLength))
+        let rich = NSMutableAttributedString(attributedString: MailTemplate.richBody(text: headText, rtf: newHead))
+        let previousRich = previous.flatMap { data in
+            try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
+        }
+        let quoteText = (body as NSString).substring(from: max(0, headLength))
+        if let previousRich, previousRich.length >= quoteLength,
+           previousRich.attributedSubstring(from: NSRange(location: previousRich.length - quoteLength, length: quoteLength)).string == quoteText {
+            rich.append(previousRich.attributedSubstring(from: NSRange(location: previousRich.length - quoteLength, length: quoteLength)))
+        } else {
+            rich.append(MailTemplate.richBody(text: quoteText, rtf: nil))
+        }
+        let result = MailTemplate.encodeRTF(rich)
+        combined = result
+        head = newHead
+        return result
     }
 }

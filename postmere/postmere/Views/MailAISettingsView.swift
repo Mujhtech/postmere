@@ -61,6 +61,7 @@ struct MailAISettingsView: View {
                                 .disabled(busy)
                         }
                     }
+                    MailAIAssistSettings(runtime: runtime, settings: $settings)
                 }
             } else {
                 // Always draw something, so the load below has a view to run on.

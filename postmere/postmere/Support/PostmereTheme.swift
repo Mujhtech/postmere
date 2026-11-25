@@ -1,6 +1,8 @@
 import SwiftUI
-import AppKit
 import Combine
+#if os(macOS)
+import AppKit
+#endif
 
 enum PostmereTheme {
     static let paper = adaptive(light: 0xFDFCF8, dark: 0x1E211F)
@@ -19,12 +21,10 @@ enum PostmereTheme {
     static let cardRadius: CGFloat = 8
 
     private static func adaptive(light: UInt32, dark: UInt32) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
-            return NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
-                           green: CGFloat((hex >> 8) & 0xFF) / 255,
-                           blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
-        })
+        func rgb(_ hex: UInt32) -> SIMD3<Double> {
+            SIMD3(Double((hex >> 16) & 0xFF), Double((hex >> 8) & 0xFF), Double(hex & 0xFF)) / 255
+        }
+        return MailPlatform.adaptiveColor(light: rgb(light), dark: rgb(dark))
     }
 }
 
@@ -43,6 +43,7 @@ private struct MailboxWindowSurface: ViewModifier {
     @Environment(\.mailboxColors) private var colors
 
     func body(content: Content) -> some View {
+        #if os(macOS)
         content
             .background {
                 if theme != .native {
@@ -50,6 +51,9 @@ private struct MailboxWindowSurface: ViewModifier {
                 }
             }
             .toolbarBackgroundVisibility(theme == .native ? .automatic : .hidden, for: .windowToolbar)
+        #else
+        content.background { if theme != .native { colors.canvas.ignoresSafeArea() } }
+        #endif
     }
 }
 
@@ -120,6 +124,7 @@ enum MailAppearance: String, CaseIterable {
 
     // AppKit owns the override so every window, native toolbar, and presented
     // panel inherits it. Clearing the override resumes live system changes.
+    #if os(macOS)
     @MainActor
     static func observe(in defaults: UserDefaults, application: NSApplication) -> AnyCancellable {
         func applyPreference() {
@@ -137,10 +142,11 @@ enum MailAppearance: String, CaseIterable {
             .receive(on: DispatchQueue.main)
             .sink { _ in applyPreference() }
     }
+    #endif
 
     var title: String {
         switch self {
-        case .system: "Match Mac"
+        case .system: "Match \(MailPlatform.deviceName)"
         case .light: "Light"
         case .dark: "Dark"
         }

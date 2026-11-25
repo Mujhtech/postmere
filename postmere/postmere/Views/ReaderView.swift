@@ -66,9 +66,13 @@ struct ReaderView: View {
         case attachment(MailAttachment)
         case unsubscribe(MailMessage)
         case invitation(MailCalendarInvitation, MailAccount)
+        case tasks([MailMessage])
+        case summary(MailAttachment, MailMessage)
 
         var id: String {
             switch self {
+            case .tasks: "tasks"
+            case .summary(let attachment, _): "summary-\(attachment.id)"
             case .attachment(let attachment): "attachment-\(attachment.id)"
             case .unsubscribe(let message): "unsubscribe-\(message.id)"
             case .invitation(let invitation, _): "invitation-\(invitation.id)"
@@ -138,6 +142,11 @@ struct ReaderView: View {
 
     var body: some View {
         readerWithAsk
+        // Handoff: the same conversation opens on the iPhone or iPad.
+        .userActivity(MailContinuity.messageActivityType,
+                      isActive: store.selectedMessageIDs.count <= 1 && store.selectedMessage?.backendMessageID != nil) { activity in
+            if let message = store.selectedMessage { MailContinuity.configure(activity, for: message) }
+        }
         // Revealing the panel asks the split layout for enough room to retain
         // a readable message; it never becomes a modal inspector at small sizes.
         .frame(minWidth: showsSenderDetails ? 661 : nil, maxWidth: .infinity, maxHeight: .infinity)
@@ -161,6 +170,9 @@ struct ReaderView: View {
         }
         .sheet(item: $presentedSheet) { sheet in
             switch sheet {
+            case .tasks(let conversation): MailActionItemsSheet(conversation: conversation, runtime: runtime)
+            case .summary(let attachment, let message):
+                MailDocumentSummarySheet(attachment: attachment, message: message, runtime: runtime)
             case .attachment(let attachment): AttachmentPreviewSheet(attachment: attachment)
             case .invitation(let invitation, let account):
                 CalendarInvitationSheet(invitation: invitation, session: runtime.backend, account: account)
@@ -320,6 +332,17 @@ struct ReaderView: View {
                             }
                         }
                         .id(ThreadGroupAnchor(firstMessage: message.id))
+                    }
+                    // Suggested replies under the newest message, when it isn't the user's own.
+                    if message.backendMessageID != nil, message.mailbox != .outbox,
+                       let incoming = conversation.last(where: { !$0.isOutgoing && !$0.isDraft }),
+                       conversation.last(where: { !$0.isDraft })?.isOutgoing != true,
+                       MailAIAssist.suggestsReplies(to: incoming) {
+                        MailQuickReplyStrip(message: incoming, conversation: conversation, runtime: runtime) {
+                            openWindow(id: "compose")
+                        }
+                        .id(incoming.id.uuidString + "-replies")
+                        .padding(.top, 20)
                     }
                 }
                 .scrollTargetLayout()
@@ -487,6 +510,10 @@ struct ReaderView: View {
 
     @ViewBuilder
     private func workflowSummary(_ message: MailMessage, conversation: [MailMessage]) -> some View {
+        if let quiet = MailNudges.waiting(in: conversation).first {
+            MailNudgeBanner(message: quiet, store: store) { openWindow(id: "compose") }
+                .padding(.bottom, 16)
+        }
         if let item = store.outgoingQueue.first(where: { $0.id == message.id }) {
             OutgoingStatusView(store: store, item: item).padding(.bottom, 16)
         }
@@ -814,6 +841,14 @@ struct ReaderView: View {
             .buttonStyle(.plain)
             .disabled(!available || loadingAttachmentID == attachment.id)
             .help("Quick Look \(attachment.name)")
+            .contextMenu {
+                Button("Quick Look") { resolveAttachment(attachment, message: message, save: false) }
+                Button("Save…") { resolveAttachment(attachment, message: message, save: true) }
+                if available, MailDocumentText.canSummarize(attachment), message.backendMessageID != nil {
+                    Divider()
+                    Button("Summarize with AI") { presentedSheet = .summary(attachment, message) }
+                }
+            }
             .accessibilityLabel("Preview \(attachment.name)")
             if loadingAttachmentID == attachment.id { ProgressView().controlSize(.small) }
             else if available {
@@ -1058,6 +1093,10 @@ struct ReaderView: View {
                 }
             }
             Button("Message Details") { runtime.openReaderPanel(.details) }.disabled(store.selectedMessageIDs.count > 1)
+            Button("Find To-Dos…") { presentedSheet = .tasks(store.selectedConversation) }
+                .disabled(store.selectedMessageIDs.count > 1 || store.selectedMessage?.backendMessageID == nil)
+            Button("Print…") { if let message = store.selectedMessage { MailPrintDocument.present(message) } }
+                .disabled(store.selectedMessageIDs.count > 1)
         }
     }
 

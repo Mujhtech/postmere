@@ -233,3 +233,18 @@ extension MailStore {
         }
     }
 }
+
+extension MailStore {
+    /// Triage follows the chosen account and source, independently of the mail list's filters.
+    func triageRequest(mailbox: Mailbox, splitID: UUID? = nil) -> MailSearchRequest {
+        let splits = visibleInboxSplits
+        let index = mailbox == .inbox ? splits.firstIndex { $0.id == splitID } : nil
+        var earlier: [MailCriteriaMatcher] = []
+        if let index, inboxSplitOverlapPolicy == .firstMatch { earlier = splits[..<index].map { matcher($0.criteria) } }
+        let context = MailSearchContext(vipContacts: vipContacts, referenceDate: .now, labelIDsByName: labelIDsByName)
+        return MailSearchRequest(accounts: searchableAccounts, account: selectedAccount, mailbox: mailbox,
+                                 saved: nil, split: index.map { matcher(splits[$0].criteria) }, earlierSplits: earlier,
+                                 query: parsedQuery(""), context: context, unreadOnly: false, attachmentsOnly: false,
+                                 selectedID: nil)
+    }
+}

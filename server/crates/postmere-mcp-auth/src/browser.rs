@@ -177,7 +177,7 @@ pub(crate) async fn login(
             LoginRequest {
                 email: form.email,
                 password: form.password,
-                workspace_id: form.workspace_id,
+                workspace_id: Some(form.workspace_id),
             },
             &client,
         )

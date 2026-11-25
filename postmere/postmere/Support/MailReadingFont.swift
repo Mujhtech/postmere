@@ -1,4 +1,16 @@
+#if os(macOS)
 import AppKit
+private typealias ReadingFont = NSFont
+private typealias ReadingFontDescriptor = NSFontDescriptor
+private let monoTrait = NSFontDescriptor.SymbolicTraits.monoSpace
+private let styleTraits: NSFontDescriptor.SymbolicTraits = [.bold, .italic]
+#else
+import UIKit
+private typealias ReadingFont = UIFont
+private typealias ReadingFontDescriptor = UIFontDescriptor
+private let monoTrait = UIFontDescriptor.SymbolicTraits.traitMonoSpace
+private let styleTraits: UIFontDescriptor.SymbolicTraits = [.traitBold, .traitItalic]
+#endif
 import SwiftUI
 
 nonisolated enum MailReadingFont: String, CaseIterable, Sendable {
@@ -69,31 +81,35 @@ nonisolated enum MailReadingFont: String, CaseIterable, Sendable {
     func format(_ source: NSAttributedString, size: CGFloat) -> NSAttributedString {
         guard self != .original || size != 14 else { return source }
         let styled = NSMutableAttributedString(attributedString: source)
-        let bodyFont = NSFont.systemFont(ofSize: size)
+        let bodyFont = ReadingFont.systemFont(ofSize: size)
         source.enumerateAttribute(.font, in: NSRange(location: 0, length: source.length)) { value, range, _ in
-            guard let original = value as? NSFont else { return }
+            guard let original = value as? ReadingFont else { return }
             let traits = original.fontDescriptor.symbolicTraits
             let newSize = original.pointSize * size / 14
-            let descriptor: NSFontDescriptor
+            var descriptor: ReadingFontDescriptor
+            #if os(macOS)
             let sourceFamily = (original.familyName ?? original.fontName).lowercased()
+            #else
+            let sourceFamily = original.familyName.lowercased()
+            #endif
             let symbolFont = ["symbol", "dingbats", "wingdings", "webdings", "emoji", "font awesome", "material icons"]
                 .contains(where: sourceFamily.contains)
-            if self == .original || traits.contains(.monoSpace) || symbolFont {
+            if self == .original || traits.contains(monoTrait) || symbolFont {
                 descriptor = original.fontDescriptor
             } else {
-                let design: NSFontDescriptor.SystemDesign = switch self {
+                let design: ReadingFontDescriptor.SystemDesign = switch self {
                 case .serif: .serif
                 case .monospaced: .monospaced
                 case .rounded: .rounded
                 default: .default
                 }
-                let family = familyName.map { NSFontDescriptor(fontAttributes: [.family: $0]) }
+                let family = familyName.map { ReadingFontDescriptor(fontAttributes: [.family: $0]) }
                     ?? bodyFont.fontDescriptor.withDesign(design) ?? bodyFont.fontDescriptor
-                descriptor = family.withSymbolicTraits(family.symbolicTraits.union(traits.intersection([.bold, .italic])))
+                let styled: ReadingFontDescriptor? = family.withSymbolicTraits(family.symbolicTraits.union(traits.intersection(styleTraits)))
+                descriptor = styled ?? family
             }
-            if let font = NSFont(descriptor: descriptor, size: newSize) {
-                styled.addAttribute(.font, value: font, range: range)
-            }
+            let font: ReadingFont? = ReadingFont(descriptor: descriptor, size: newSize)
+            if let font { styled.addAttribute(.font, value: font, range: range) }
         }
         return styled
     }
@@ -129,6 +145,10 @@ extension MailReadingFont {
                 familyPriority: element.style.getPropertyPriority('font-family'),
                 size: element.style.getPropertyValue('font-size'),
                 sizePriority: element.style.getPropertyPriority('font-size'),
+                lineHeight: element.style.getPropertyValue('line-height'),
+                lineHeightPriority: element.style.getPropertyPriority('line-height'),
+                // A fixed line height must grow with the text, or larger text overlaps.
+                linePixels: style.lineHeight.endsWith('px') ? parseFloat(style.lineHeight) : NaN,
                 protectedFamily: protectedFace ? style.fontFamily : null, pixels: parseFloat(style.fontSize)
             });
         }
@@ -138,6 +158,7 @@ extension MailReadingFont {
         for (const run of entries) {
             restore(run.element, 'font-family', run.family, run.familyPriority);
             restore(run.element, 'font-size', run.size, run.sizePriority);
+            restore(run.element, 'line-height', run.lineHeight, run.lineHeightPriority);
         }
     }
     globalThis.postmereReadingType = (family, size) => {
@@ -151,6 +172,9 @@ extension MailReadingFont {
                 if (family) run.element.style.setProperty('font-family', run.protectedFamily || family, 'important');
                 if (size !== 14 && Number.isFinite(run.pixels)) {
                     run.element.style.setProperty('font-size', (run.pixels * size / 14) + 'px', 'important');
+                    if (Number.isFinite(run.linePixels)) {
+                        run.element.style.setProperty('line-height', (run.linePixels * size / 14) + 'px', 'important');
+                    }
                 }
             }
         }

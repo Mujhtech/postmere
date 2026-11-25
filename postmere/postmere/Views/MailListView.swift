@@ -63,6 +63,12 @@ struct MailListView: View {
                 MailSearchRefinements(store: store, canSearchOnline: runtime.backend.isConnected,
                                       onSaveView: { showsViewEditor = true },
                                       onSearchOnline: { showsProviderSearch = true })
+                if runtime.backend.canAccessWorkspace {
+                    MailAISearchButton(runtime: runtime)
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 Divider()
             } else if store.selectedMailbox == .inbox && store.selectedSavedView == nil {
                 InboxTabsView(store: store) { showsInboxManager = true }

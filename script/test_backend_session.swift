@@ -182,9 +182,107 @@ struct BackendSessionFixtures {
     }
     static func install(_ person: SessionPersona) { SessionFixtureProtocol.handler = { request, fixture in person.serve(request, fixture) } }
     static func login(_ session: BackendSession, _ person: SessionPersona) async {
-        await session.login(email: person.email, password: "fixture password only", workspaceID: person.workspace.uuidString)
+        await session.login(email: person.email, password: "fixture password only", workspaceID: person.workspace)
     }
     static func progress(_ text: String) { FileHandle.standardError.write(Data("\(text)\n".utf8)) }
+
+    /// Two workspaces for one person, served by a fake server that answers by request body.
+    @MainActor static func workspaceChoice() async {
+        let user = UUID(), first = UUID(), second = UUID(), email = "chooser@example.test"
+        let firstSession = UUID(), secondSession = UUID()
+        let firstToken = UUID().uuidString, secondToken = UUID().uuidString
+        func json(_ value: Any) -> Data { try! JSONSerialization.data(withJSONObject: value) }
+        func session(_ id: UUID, _ workspace: UUID, _ token: String, role: String) -> Data {
+            json(["token": token, "expires_at": NSNull(), "absolute_expires_at": NSNull(), "persistent": true,
+                  "session_id": id.uuidString, "user_id": user.uuidString, "workspace_id": workspace.uuidString, "role": role])
+        }
+        func me(_ id: UUID, _ workspace: UUID, role: String) -> Data {
+            json(["session_id": id.uuidString, "user_id": user.uuidString, "workspace_id": workspace.uuidString, "role": role,
+                  "email": email, "expires_at": NSNull(), "absolute_expires_at": NSNull(), "persistent": true])
+        }
+        let choices: [[String: Any]] = [["id": first.uuidString, "name": "Acme", "role": "owner"],
+                                        ["id": second.uuidString, "name": "Side project", "role": "member"]]
+        // Built up front: the fake server runs off the main actor.
+        let choose = json(["workspace_required": true, "workspaces": choices])
+        let firstLogin = session(firstSession, first, firstToken, role: "owner")
+        let secondLogin = session(secondSession, second, secondToken, role: "member")
+        let firstMe = me(firstSession, first, role: "owner"), secondMe = me(secondSession, second, role: "member")
+        let firstList = json(["current": first.uuidString, "workspaces": choices])
+        let secondList = json(["current": second.uuidString, "workspaces": choices])
+        let refused = json(["error": ["code": "unauthorized", "message": "Authentication required or credentials invalid."]])
+        let missing = json(["error": ["code": "not_found", "message": "Resource not found."]])
+        let none = json([])
+        let recorder = SessionRequestRecorder()
+        SessionFixtureProtocol.recorder = recorder
+        SessionFixtureProtocol.handler = { request, fixture in
+            let body = recorder.values.last.flatMap { try? JSONSerialization.jsonObject(with: $0.body) as? [String: Any] } ?? [:]
+            let bearer = request.value(forHTTPHeaderField: "Authorization") ?? ""
+            switch request.url!.path {
+            case "/v1/auth/login":
+                switch body["workspace_id"] as? String {
+                case nil: fixture.respond(200, choose)
+                case first.uuidString.lowercased(), first.uuidString: fixture.respond(200, firstLogin)
+                default: fixture.respond(401, refused)
+                }
+            case "/v1/auth/me":
+                if bearer.hasSuffix(secondToken) { fixture.respond(200, secondMe) }
+                else { fixture.respond(200, firstMe) }
+            case "/v1/auth/workspaces":
+                fixture.respond(200, bearer.hasSuffix(secondToken) ? secondList : firstList)
+            case "/v1/auth/switch":
+                if bearer.hasSuffix(firstToken), (body["workspace_id"] as? String)?.lowercased() == second.uuidString.lowercased() {
+                    fixture.respond(200, secondLogin)
+                } else { fixture.respond(404, missing) }
+            case "/v1/mail/accounts": fixture.respond(200, none)
+            case "/v1/auth/logout": fixture.respond(204)
+            default: fixture.respond(200, Data("{}".utf8))
+            }
+        }
+        let store = SessionMemoryStore()
+        let signIn = fixture(store)
+        await signIn.login(email: email, password: "fixture password only")
+        let firstBody = recorder.values.first { $0.path == "/v1/auth/login" }.flatMap { try? JSONSerialization.jsonObject(with: $0.body) as? [String: Any] }
+        check(firstBody != nil && firstBody?["workspace_id"] == nil, "Sign-in without a workspace sent a workspace ID")
+        check(!signIn.isConnected && signIn.workspaceChoices?.map(\.name) == ["Acme", "Side project"],
+              "Several workspaces didn't come back as a choice")
+        let unsaved = await store.value
+        check(unsaved == nil, "Choosing a workspace saved a credential before one was picked")
+
+        await signIn.login(email: email, password: "fixture password only", workspaceID: first)
+        let saved = await store.value
+        check(signIn.canAccessWorkspace && signIn.credential?.workspaceID == first && saved?.token == firstToken,
+              "Signing in to the chosen workspace failed")
+        check(signIn.workspaceChoices == nil, "The workspace choice stayed up after signing in")
+        await signIn.refreshWorkspaces()
+        check(signIn.workspaces.count == 2 && signIn.currentWorkspace?.name == "Acme", "The workspace list didn't load")
+        let scopeBefore = signIn.scope
+
+        let beforeSwitch = recorder.values.count
+        await signIn.switchWorkspace(to: second)
+        let switched = await store.value
+        check(signIn.canAccessWorkspace && signIn.credential?.workspaceID == second && switched?.token == secondToken,
+              "Switching didn't install and save the new workspace's sign-in")
+        check(signIn.scope != scopeBefore, "Switching kept the old workspace's scope")
+        check(signIn.currentWorkspace?.name == "Side project", "The switcher didn't follow the new workspace")
+        let afterSwitch = recorder.values.dropFirst(beforeSwitch).map(\.path)
+        check(afterSwitch.contains("/v1/auth/logout"), "Switching left the old session signed in")
+        let logout = recorder.values.dropFirst(beforeSwitch).first { $0.path == "/v1/auth/logout" }
+            .flatMap { try? JSONSerialization.jsonObject(with: $0.body) as? [String: Any] }
+        check(logout?["revoke_mcp"] as? Bool == false, "Switching disconnected the old workspace's assistants")
+
+        // A refused switch leaves everything as it was.
+        await signIn.switchWorkspace(to: UUID())
+        let unchanged = await store.value
+        check(signIn.credential?.workspaceID == second && unchanged?.token == secondToken && signIn.errorMessage != nil,
+              "A failed switch changed the saved sign-in")
+
+        // Cancelling the picker clears it.
+        let other = fixture(SessionMemoryStore())
+        await other.login(email: email, password: "fixture password only")
+        other.cancelWorkspaceChoice()
+        check(other.workspaceChoices == nil && !other.isConnected, "Cancelling the workspace choice didn't clear it")
+        SessionFixtureProtocol.recorder = SessionRequestRecorder()
+    }
 
     @MainActor static func main() async throws {
         defer {
@@ -194,6 +292,8 @@ struct BackendSessionFixtures {
         }
         progress("Checking login and restoration identities")
         await identities()
+        progress("Checking sign-in without a workspace ID, choosing and switching")
+        await workspaceChoice()
         progress("Checking mandatory workspace access and restore loading")
         await workspaceAccess()
         progress("Checking expired-session cleanup and offline logout")
@@ -354,7 +454,7 @@ struct BackendSessionFixtures {
         let store = SessionMemoryStore(); let session = fixture(store); install(person)
         session.baseURL = "https://previous-workspace.example.test"
         await session.login(email: person.email, password: "fixture password only",
-                            workspaceID: person.workspace.uuidString, serverURL: person.base)
+                            workspaceID: person.workspace, serverURL: person.base)
         let saved = await store.value
         check(saved?.baseURL == person.base && session.baseURL == person.base,
               "Login did not use the workspace address chosen in the active window")
@@ -367,9 +467,17 @@ struct BackendSessionFixtures {
         check(RemoteAccountRegistry.accounts.first?.localID.hasPrefix("remote:\(session.scope ?? "missing"):") == true, "Provider identity is not scoped to the active session")
 
         let restoredStore = SessionMemoryStore(person.credential); let restored = fixture(restoredStore); install(person)
+        SessionFixtureProtocol.recorder = SessionRequestRecorder()
         await restored.restore()
         check(restored.credential?.token == person.token && restored.accounts.count == 1 && restored.canAccessWorkspace && !restored.isRestoring,
               "Valid saved identity did not unlock the workspace after verification")
+        let automatic = try? await restored.refreshAccountsIfNeeded(force: false)
+        check(automatic == false && SessionFixtureProtocol.recorder.values.filter { $0.path == "/v1/mail/accounts" }.count == 1,
+              "The first automatic mail sync fetched the catalog again after restoration")
+        let manual = try? await restored.refreshAccountsIfNeeded(force: true)
+        let periodic = try? await restored.refreshAccountsIfNeeded(force: false, now: .now.addingTimeInterval(301))
+        check(manual == true && periodic == true && SessionFixtureProtocol.recorder.values.filter { $0.path == "/v1/mail/accounts" }.count == 3,
+              "Explicit refresh or the periodic fallback failed to refresh the catalog")
 
         let wrong = SessionPersona("other@example.test")
         let mismatchStore = SessionMemoryStore(person.credential); let mismatch = fixture(mismatchStore); install(wrong)

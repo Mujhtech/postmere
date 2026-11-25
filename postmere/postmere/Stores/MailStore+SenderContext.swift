@@ -1,8 +1,34 @@
 import Foundation
 
+/// One per open composer. Keystrokes and recipient fields share the same account's contact history.
+actor MailRecipientLookup {
+    nonisolated struct Source: Equatable, Sendable {
+        let revision: Int
+        let accountKey: String
+    }
+
+    private var directory: (source: Source, contacts: MailRecipientSuggestions)?
+
+    func matches(_ input: String, source: Source, messages: [MailMessage],
+                 ownAddresses: [String]) -> [MailRecipientSuggestion] {
+        guard !Task.isCancelled else { return [] }
+        if directory?.source != source {
+            directory = (source, MailRecipientSuggestions(messages: messages, accountKey: source.accountKey))
+        }
+        guard !Task.isCancelled, let directory else { return [] }
+        return directory.contacts.suggestions(for: input, excluding: MailRecipientSuggestions.completedAddresses(in: input),
+                                              ownAddresses: ownAddresses, limit: 4)
+    }
+}
+
 extension MailStore {
     var draftContactAccountKey: String {
         MailContactIdentity.accountKey(account: draftAccount.rawValue, providerAccountEmail: draftProviderAccountEmail)
+    }
+
+    var draftRecipientSource: MailRecipientLookup.Source? {
+        guard searchableAccounts.contains(draftAccount.rawValue) else { return nil }
+        return .init(revision: mailboxDataRevision, accountKey: draftContactAccountKey)
     }
 
     func senderContext(email: String, accountKey: String) -> MailSenderContext {
@@ -10,8 +36,8 @@ extension MailStore {
     }
 
     func recipientSuggestions(for input: String, excluding: [String] = [], accountKey: String? = nil) -> [MailRecipientSuggestion] {
-        MailRecipientSuggestions.suggestions(for: input, messages: messages.filter(isAccountVisible), accountKey: accountKey ?? draftContactAccountKey,
-            excluding: excluding, ownAddresses: MailAccount.allCases.map(\.email))
+        MailRecipientSuggestions(messages: messages.filter(isAccountVisible), accountKey: accountKey ?? draftContactAccountKey)
+            .suggestions(for: input, excluding: excluding, ownAddresses: MailAccount.allCases.map(\.email))
     }
 
     func hasSenderVIP(email: String, accountKey: String) -> Bool {

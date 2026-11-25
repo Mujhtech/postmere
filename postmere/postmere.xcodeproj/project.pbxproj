@@ -7,19 +7,144 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		107D0000000000000000000C /* PostmereWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 107D00000000000000000002 /* PostmereWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		5A11E0012F00000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 5A11E0022F00000000000002 /* Sparkle */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		107D0000000000000000000E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2D6415B030AC456800F25319 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 107D00000000000000000001;
+			remoteInfo = "Postmere Widgets";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		107D0000000000000000000B /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				107D0000000000000000000C /* PostmereWidgets.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		2D6415B830AC456800F25319 /* Postmere.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Postmere.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		107C00000000000000000002 /* Postmere.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Postmere.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		107D00000000000000000002 /* PostmereWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PostmereWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		107C00000000000000000004 /* Desktop files excluded from Postmere iOS */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				ContentView.swift,
+				postmereApp.swift,
+				postmere.entitlements,
+				Services/AppUpdater.swift,
+				Support/MailCommands.swift,
+				Views/AccountNamingSheet.swift,
+				Views/AssistantSettings.swift,
+				Views/AttachmentLibraryView.swift,
+				Views/BackendCalendarView.swift,
+				Views/BackendConnectionView.swift,
+				Views/CalendarInvitationSheet.swift,
+				Views/CalendarInvitationView.swift,
+				Views/CalendarViews.swift,
+				Views/ColorWheelButton.swift,
+				Views/CommandPaletteView.swift,
+				Views/ComposeAIWriter.swift,
+				Views/ComposerView.swift,
+				Views/GlassSegmentedControl.swift,
+				Views/InboxManagementView.swift,
+				Views/InboxOverviewView.swift,
+				Views/MailAIAssistantView.swift,
+				Views/MailAISettingsView.swift,
+				Views/MailAppearanceSettings.swift,
+				Views/MailAskView.swift,
+				Views/MailConversationSummaryView.swift,
+				Views/MailListView.swift,
+				Views/MailMessageInvitation.swift,
+				Views/MailParticipantAvatar.swift,
+				Views/MailSearchControls.swift,
+				Views/MailSearchRefinements.swift,
+				Views/MailStatusNotices.swift,
+				Views/MailSuggestionsView.swift,
+				Views/MailVerificationCodeView.swift,
+				Views/MenuBarInboxHost.swift,
+				Views/MenuBarInboxView.swift,
+				Views/MessageActivityView.swift,
+				Views/MessageEnvelopeDetailsView.swift,
+				Views/MessageLabelsView.swift,
+				Views/MessageTranslation.swift,
+				Views/MultiSelectionView.swift,
+				Views/NeedsReplyAnnotationView.swift,
+				Views/OnboardingDefaultMailStep.swift,
+				Views/OnboardingInboxPicker.swift,
+				Views/OnboardingNotificationStep.swift,
+				Views/OpenAtLoginRow.swift,
+				Views/PluginCardView.swift,
+				Views/PluginSettingsView.swift,
+				Views/ProviderSearchView.swift,
+				Views/ReaderActionPanel.swift,
+				Views/ReaderView.swift,
+				Views/RecipientSuggestionsView.swift,
+				Views/SenderContextView.swift,
+				Views/MailAIAssistViews.swift,
+				Views/PostmereDecisionSheet.swift,
+				Views/SenderDeliveryChoice.swift,
+				Views/SettingsComponents.swift,
+				Views/SettingsView.swift,
+				Views/ShareThreadView.swift,
+				Views/SharedTemplatesView.swift,
+				Views/SharedThreadView.swift,
+				Views/SidebarSyncIndicator.swift,
+				Views/SidebarView.swift,
+				Views/SignatureEditorView.swift,
+				Views/SnippetPickerView.swift,
+				Views/SpamCheckView.swift,
+				Views/TriageView.swift,
+				Views/UnsubscribeView.swift,
+				Views/WorkflowViews.swift,
+				Views/WorkspaceConnectionEmptyView.swift,
+				Views/WorkspaceOnboardingView.swift,
+				Views/WorkspaceView.swift,
+				Support/AboutPanel.swift,
+				Support/PostmereAppDelegate.swift,
+				Support/AttachmentPreviewSheet.swift,
+				Support/SettingsTabForeground.swift,
+				Support/ComposeWindowLifecycle.swift,
+				Support/PostmereScrollbars.swift,
+				Support/ComposeContinuityCamera.swift,
+				Support/MessageMenuAccent.swift,
+				Support/ComposeBodyEditor.swift,
+				Support/MailSelectionStyle.swift,
+				Support/PostmereIcon.swift,
+				Support/MarkdownSubstitutions.swift,
+				Support/AttachmentIconView.swift,
+				Support/ReaderMotion.swift,
+			);
+			target = 107C00000000000000000001 /* Postmere iOS */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		2D6415BA30AC456800F25319 /* postmere */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (107C00000000000000000004 /* Desktop files excluded from Postmere iOS */,);
 			path = postmere;
 			sourceTree = "<group>";
 		};
+		107C00000000000000000003 /* iOS */ = {isa = PBXFileSystemSynchronizedRootGroup; path = iOS; sourceTree = "<group>"; };
+		107D00000000000000000003 /* Widgets */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Widgets; sourceTree = "<group>"; };
+		107D00000000000000000010 /* Shared */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Shared; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -29,6 +154,8 @@
 				5A11E0012F00000000000001 /* Sparkle in Frameworks */,
 			);
 		};
+		107C00000000000000000006 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; files = (); };
+		107D00000000000000000006 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; files = (); };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -36,6 +163,9 @@
 			isa = PBXGroup;
 			children = (
 				2D6415BA30AC456800F25319 /* postmere */,
+				107C00000000000000000003 /* iOS */,
+				107D00000000000000000003 /* Widgets */,
+				107D00000000000000000010 /* Shared */,
 				2D6415B930AC456800F25319 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -44,6 +174,8 @@
 			isa = PBXGroup;
 			children = (
 				2D6415B830AC456800F25319 /* Postmere.app */,
+				107C00000000000000000002 /* Postmere.app */,
+				107D00000000000000000002 /* PostmereWidgets.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -71,6 +203,48 @@
 			productName = postmere;
 			productReference = 2D6415B830AC456800F25319 /* Postmere.app */;
 			productType = "com.apple.product-type.application";
+		};
+		107C00000000000000000001 /* Postmere iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 107C00000000000000000008 /* iOS configurations */;
+			buildPhases = (
+				107C00000000000000000005 /* Sources */,
+				107C00000000000000000006 /* Frameworks */,
+				107C00000000000000000007 /* Resources */,
+				107D0000000000000000000B /* Embed Foundation Extensions */,
+			);
+			buildRules = ();
+			dependencies = (
+				107D0000000000000000000D /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				2D6415BA30AC456800F25319 /* postmere */,
+				107C00000000000000000003 /* iOS */,
+				107D00000000000000000010 /* Shared */,
+			);
+			name = "Postmere iOS";
+			productName = Postmere;
+			productReference = 107C00000000000000000002 /* Postmere.app */;
+			productType = "com.apple.product-type.application";
+		};
+		107D00000000000000000001 /* Postmere Widgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 107D00000000000000000008 /* Widget configurations */;
+			buildPhases = (
+				107D00000000000000000005 /* Sources */,
+				107D00000000000000000006 /* Frameworks */,
+				107D00000000000000000007 /* Resources */,
+			);
+			buildRules = ();
+			dependencies = ();
+			fileSystemSynchronizedGroups = (
+				107D00000000000000000003 /* Widgets */,
+				107D00000000000000000010 /* Shared */,
+			);
+			name = "Postmere Widgets";
+			productName = PostmereWidgets;
+			productReference = 107D00000000000000000002 /* PostmereWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -104,6 +278,8 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				107C00000000000000000001 /* Postmere iOS */,
+				107D00000000000000000001 /* Postmere Widgets */,
 				2D6415B730AC456800F25319 /* postmere */,
 			);
 		};
@@ -115,6 +291,8 @@
 			files = (
 			);
 		};
+		107C00000000000000000007 /* Resources */ = {isa = PBXResourcesBuildPhase; files = (); };
+		107D00000000000000000007 /* Resources */ = {isa = PBXResourcesBuildPhase; files = (); };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -123,7 +301,17 @@
 			files = (
 			);
 		};
+		107C00000000000000000005 /* Sources */ = {isa = PBXSourcesBuildPhase; files = (); };
+		107D00000000000000000005 /* Sources */ = {isa = PBXSourcesBuildPhase; files = (); };
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		107D0000000000000000000D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 107D00000000000000000001 /* Postmere Widgets */;
+			targetProxy = 107D0000000000000000000E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		2D6415C330AC456A00F25319 /* Debug configuration for PBXProject "postmere" */ = {
@@ -330,6 +518,144 @@
 			};
 			name = Release;
 		};
+		107C00000000000000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = development;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = iOS.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6JR3ZGLPD6;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = iOS-Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Postmere;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Postmere shows your agenda and finds free times when you connect Calendar.";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "Postmere adds an event after you review and confirm its details.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Photograph an attachment or scan a document for your draft.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Postmere uses photos from Contacts to show senders and recipients in your mail.";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = mujhtech.postmere;
+				PRODUCT_NAME = Postmere;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		107C0000000000000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = production;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = iOS.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6JR3ZGLPD6;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = iOS-Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Postmere;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Postmere shows your agenda and finds free times when you connect Calendar.";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "Postmere adds an event after you review and confirm its details.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Photograph an attachment or scan a document for your draft.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Postmere uses photos from Contacts to show senders and recipients in your mail.";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = mujhtech.postmere;
+				PRODUCT_NAME = Postmere;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		107D00000000000000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Widgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6JR3ZGLPD6;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Widgets-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Postmere;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = mujhtech.postmere.widgets;
+				PRODUCT_NAME = PostmereWidgets;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		107D0000000000000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Widgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6JR3ZGLPD6;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Widgets-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Postmere;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = mujhtech.postmere.widgets;
+				PRODUCT_NAME = PostmereWidgets;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -347,6 +673,18 @@
 				2D6415C630AC456A00F25319 /* Debug configuration for PBXNativeTarget "postmere" */,
 				2D6415C730AC456A00F25319 /* Release configuration for PBXNativeTarget "postmere" */,
 			);
+			defaultConfigurationName = Release;
+		};
+		107C00000000000000000008 /* iOS configurations */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (107C00000000000000000009 /* Debug */, 107C0000000000000000000A /* Release */,);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		107D00000000000000000008 /* Widget configurations */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (107D00000000000000000009 /* Debug */, 107D0000000000000000000A /* Release */,);
+			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */

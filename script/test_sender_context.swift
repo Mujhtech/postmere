@@ -67,6 +67,26 @@ private struct SenderContextChecks {
         precondition(completion == "\"Doe, Ada\" <ada@example.com>, grace@example.com, ")
         print("PASS: scoped conversations/files, recent suggestions, screening/trash/Bcc exclusions, and quoted recipient completion")
 
+        let lookup = MailRecipientLookup()
+        let draftSource = store.draftRecipientSource!
+        precondition(draftSource.accountKey == scopeA)
+        let ownAddresses = [accountA.email]
+        let typed = await lookup.matches("ad", source: draftSource, messages: store.messages, ownAddresses: ownAddresses)
+        precondition(typed.map(\.email) == ["ada@example.com"])
+        let selected = await lookup.matches("\"Doe, Ada\" <ada@example.com>; ad", source: draftSource,
+                                            messages: store.messages, ownAddresses: ownAddresses)
+        precondition(selected.isEmpty)
+        store.draftAccount = MailAccount(rawValue: accountB.localID)!
+        let switched = await lookup.matches("sec", source: store.draftRecipientSource!, messages: store.messages,
+                                            ownAddresses: ownAddresses)
+        precondition(switched.map(\.email) == ["secret@example.com"])
+        store.messages.removeAll { $0.id == otherWorkspace.id }
+        let refreshed = await lookup.matches("sec", source: store.draftRecipientSource!, messages: store.messages,
+                                             ownAddresses: ownAddresses)
+        precondition(refreshed.isEmpty)
+        store.draftAccount = MailAccount(rawValue: accountA.localID)!
+        print("PASS: composer completions follow typed recipients, sender changes and mailbox edits")
+
         // History with one person: replies each way, waiting threads, usual hours.
         var utc = Calendar(identifier: .gregorian)
         utc.timeZone = TimeZone(identifier: "UTC")!
@@ -105,6 +125,7 @@ private struct SenderContextChecks {
         precondition(store.setSenderVIP(false, email: "ada@example.com", accountKey: scopeA))
         precondition(!store.hasSenderVIP(email: "ada@example.com", accountKey: scopeA))
         RemoteAccountRegistry.accounts = [accountB]
+        precondition(store.draftRecipientSource == nil)
         precondition(store.senderContext(email: "ada@example.com", accountKey: scopeA).messageCount == 0)
         precondition(store.recipientSuggestions(for: "", accountKey: scopeA).isEmpty, "Disconnected account data must never be suggested")
         print("PASS: account-scoped VIP changes and disconnected-workspace isolation")
