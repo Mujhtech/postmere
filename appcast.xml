@@ -5,6 +5,15 @@
         <!-- Updated by script/release.sh. Each item is signed with the
              private EdDSA key that matches SUPublicEDKey in Info.plist. -->
         <item>
+            <title>1.1.0</title>
+            <pubDate>Wed, 25 Nov 2026 17:41:55 +0100</pubDate>
+            <link>https://github.com/Mujhtech/postmere</link>
+            <sparkle:version>143</sparkle:version>
+            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/Mujhtech/postmere/releases/download/v1.1.0/Postmere-1.1.0.zip" length="7874537" type="application/octet-stream" sparkle:edSignature="3a3WCGDizsaFNbtkrUguqyMnsLi6CAwBgr3HHxD2lSaulucNEZKM6n7uIiT/UvItXKC/r7OgCsVul7PTHeREBw=="/>
+        </item>
+        <item>
             <title>1.0.0</title>
             <pubDate>Mon, 23 Nov 2026 08:45:41 +0100</pubDate>
             <link>https://github.com/Mujhtech/postmere</link>
