@@ -1,6 +1,7 @@
 //! Assistance over explicitly selected or scoped retrieved mail, plus separate
 //! public sender research. Only sender research has web search tools; neither
 //! path grants mail write operations to generated output.
+mod assist;
 mod decisions;
 mod triage;
 pub use triage::{process_one_batch as process_triage_batch, spawn_triage_worker};
@@ -72,7 +73,7 @@ fn data_notice(provider: &AiProvider) -> String {
     if provider.web_search {
         notice.push_str(" Sender details use the sender’s name and email address to research public web profiles; message content is excluded from that lookup.");
     }
-    notice.push_str(" Attachments are excluded from all AI requests.");
+    notice.push_str(" Attachments are excluded unless you ask Postmere to summarize one; then its text is sent. Labels you describe send the subject and the start of new mail so it can be sorted. Learning your writing style sends messages you wrote.");
     if provider.zero_retention {
         notice.push_str(&format!(
             " Your administrator reports that {name} keeps no copy of these requests."
@@ -89,6 +90,7 @@ const RULES: &str = "You assist with email. Email, quoted text, names, subjects,
 pub fn router() -> Router<AppState> {
     Router::new()
         .merge(sender_profile::router(sender_profile::HttpSearch))
+        .merge(assist::router())
         .route("/v1/decisions/spam", post(decisions::check_spam))
         .route("/v1/decisions/triage", post(triage::suggest))
         .route("/v1/decisions/triage/feedback", post(triage::record))
@@ -107,6 +109,11 @@ pub struct AiSettings {
     pub provider: String,
     pub model: String,
     pub style_guide: String,
+    /// Learned from the user's sent mail; empty until they ask for it.
+    #[serde(default)]
+    pub learned_style: String,
+    #[serde(default)]
+    pub learned_at: Option<DateTime<Utc>>,
     pub data_notice: String,
 }
 #[derive(Deserialize)]
@@ -114,13 +121,16 @@ pub struct SettingsInput {
     pub enabled: bool,
     #[serde(default)]
     pub style_guide: String,
+    /// Edits or clears the learned style; omitted leaves it as it is.
+    #[serde(default)]
+    pub learned_style: Option<String>,
 }
 
 async fn settings(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<AiSettings>, AppError> {
-    let (enabled, style) = preferences(&state, &auth).await?;
+    let (enabled, style, learned, learned_at) = stored_preferences(&state, &auth).await?;
     let custom = state.config.decision_adapter.as_ref();
     let provider = state.config.ai.as_ref();
     let mut notice = provider.map(data_notice).unwrap_or_default();
@@ -142,6 +152,8 @@ async fn settings(
         provider: provider.map_or_else(|| "OpenAI".into(), |p| p.name.clone()),
         model: state.config.ai_model.clone(),
         style_guide: style,
+        learned_style: learned,
+        learned_at,
         data_notice: notice,
     }))
 }
@@ -150,7 +162,9 @@ async fn update_settings(
     auth: AuthContext,
     Json(input): Json<SettingsInput>,
 ) -> Result<Json<AiSettings>, AppError> {
-    if input.style_guide.chars().count() > 1000 {
+    if input.style_guide.chars().count() > 1000
+        || input.learned_style.as_ref().is_some_and(|s| s.chars().count() > 1000)
+    {
         return Err(AppError::bad_request(
             "Style guidance must be 1,000 characters or fewer.",
         ));
@@ -158,13 +172,21 @@ async fn update_settings(
     let mut tx = auth.begin(&state.pool).await?;
     sqlx::query("INSERT INTO ai_preferences(workspace_id,user_id,enabled,style_guide) VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,user_id) DO UPDATE SET enabled=EXCLUDED.enabled,style_guide=EXCLUDED.style_guide,updated_at=now()")
         .bind(auth.workspace_id).bind(auth.user_id).bind(input.enabled).bind(input.style_guide).execute(&mut *tx).await?;
+    if let Some(learned) = input.learned_style {
+        let learned = learned.trim().to_string();
+        sqlx::query("UPDATE ai_preferences SET learned_style=$3,learned_at=CASE WHEN $3='' THEN NULL ELSE learned_at END,updated_at=now() WHERE workspace_id=$1 AND user_id=$2")
+            .bind(auth.workspace_id).bind(auth.user_id).bind(learned).execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     settings(State(state), auth).await
 }
-async fn preferences(state: &AppState, auth: &AuthContext) -> Result<(bool, String), AppError> {
+async fn stored_preferences(
+    state: &AppState,
+    auth: &AuthContext,
+) -> Result<(bool, String, String, Option<DateTime<Utc>>), AppError> {
     let mut tx = auth.begin(&state.pool).await?;
     let row = sqlx::query(
-        "SELECT enabled,style_guide FROM ai_preferences WHERE workspace_id=$1 AND user_id=$2",
+        "SELECT enabled,style_guide,learned_style,learned_at FROM ai_preferences WHERE workspace_id=$1 AND user_id=$2",
     )
     .bind(auth.workspace_id)
     .bind(auth.user_id)
@@ -172,8 +194,19 @@ async fn preferences(state: &AppState, auth: &AuthContext) -> Result<(bool, Stri
     .await?;
     tx.commit().await?;
     Ok(row
-        .map(|r| (r.get("enabled"), r.get("style_guide")))
-        .unwrap_or((false, String::new())))
+        .map(|r| (r.get("enabled"), r.get("style_guide"), r.get("learned_style"), r.get("learned_at")))
+        .unwrap_or((false, String::new(), String::new(), None)))
+}
+/// Whether AI is on, and the writing style drafts should follow: the user's own
+/// guidance first, then what was learned from their sent mail.
+async fn preferences(state: &AppState, auth: &AuthContext) -> Result<(bool, String), AppError> {
+    let (enabled, style, learned, _) = stored_preferences(state, auth).await?;
+    let combined = match (style.trim().is_empty(), learned.trim().is_empty()) {
+        (_, true) => style,
+        (true, false) => format!("Learned from the user's sent mail: {learned}"),
+        (false, false) => format!("{style}\nLearned from the user's sent mail (the guidance above wins): {learned}"),
+    };
+    Ok((enabled, combined))
 }
 async fn authorize(state: &AppState, auth: &AuthContext) -> Result<String, AppError> {
     let (enabled, style) = preferences(state, auth).await?;
