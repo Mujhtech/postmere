@@ -55,12 +55,7 @@ struct ComposeAIWriter: View {
 
     /// Messages from the conversation being answered, as the server knows them.
     private var sourceIDs: [UUID] {
-        let scope = runtime.backend.scope
-        let ids = store.messages
-            .filter { $0.conversationID == store.draftConversationID && $0.account == store.draftAccount.rawValue
-                && $0.mailAccount.remote?.scope == scope }
-            .compactMap(\.backendMessageID)
-        return Array(Set(ids).prefix(30))
+        MailAIAssist.writerSourceIDs(store: store, scope: runtime.backend.scope)
     }
 
     private var quickActions: [Instruction] {
@@ -276,7 +271,8 @@ struct ComposeAIWriter: View {
         running?.cancel()
         output.reset()
         phase = .writing
-        let input = MailAIDraftInput(messageIds: sourceIDs, draftText: store.draftBody, instruction: instruction.rawValue, notes: notes)
+        let input = MailAIDraftInput(messageIds: sourceIDs, draftText: MailQuotedReply.split(store.draftBody)?.head ?? store.draftBody,
+                                     instruction: instruction.rawValue, notes: notes)
         running = Task {
             do {
                 let result = try await runtime.backend.draft(input) { chunk in output.append(chunk) }

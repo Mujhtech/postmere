@@ -513,6 +513,7 @@ struct MobileUnsubscribeSheet: View {
                     }
                     .padding(.vertical, 4)
                 }
+                .mobileSheetRows()
                 if let url = oneClickURL {
                     Section {
                         Button {
@@ -529,6 +530,7 @@ struct MobileUnsubscribeSheet: View {
                     } footer: {
                         Text("Sends a removal request to \(url.host ?? "the sender").")
                     }
+                    .mobileSheetRows()
                 }
                 if !options.methods.isEmpty {
                     Section(oneClickURL == nil ? "Unsubscribe" : "Other options") {
@@ -549,14 +551,18 @@ struct MobileUnsubscribeSheet: View {
                             }
                         }
                     }
+                    .mobileSheetRows()
                 } else if oneClickURL == nil {
                     Section {
                         Text(remote?.reason ?? options.explanation ?? "This sender didn’t include a supported unsubscribe link.")
                             .foregroundStyle(.secondary)
                     }
+                    .mobileSheetRows()
                 }
-                if let status { Section { Text(status).foregroundStyle(.secondary) } }
-                if let error { Section { Text(error).foregroundStyle(PostmereTheme.destructiveInk) } }
+                if let status { Section { Text(status).foregroundStyle(.secondary) }
+                .mobileSheetRows() }
+                if let error { Section { Text(error).foregroundStyle(PostmereTheme.destructiveInk) }
+                .mobileSheetRows() }
                 Section {
                     Toggle("Archive this message", isOn: $archives)
                     Toggle("Send future mail to Trash", isOn: $blocks)
@@ -567,6 +573,7 @@ struct MobileUnsubscribeSheet: View {
                 } footer: {
                     Text("These organize your mail. They don’t remove you from the sender’s list.")
                 }
+                .mobileSheetRows()
             }
             .tint(palette.accent)
             .navigationTitle("Unsubscribe")
@@ -695,6 +702,7 @@ struct MobileSenderSheet: View {
         NavigationStack {
             List {
                 Section { identity }
+                .mobileSheetRows()
                 Section {
                     Toggle(isOn: Binding(get: { vip }, set: { vip = store.setSenderVIP($0, email: message.senderEmail, accountKey: accountKey) ? $0 : vip })) {
                         Label("VIP", systemImage: "star.circle.fill")
@@ -703,6 +711,7 @@ struct MobileSenderSheet: View {
                 } footer: {
                     Text("Mail from VIPs always notifies you and stands out in your inbox.")
                 }
+                .mobileSheetRows()
                 if !message.isOutgoing { researchSections }
                 historySection(context)
                 if !context.conversations.isEmpty {
@@ -726,6 +735,7 @@ struct MobileSenderSheet: View {
                             }
                         }
                     }
+                    .mobileSheetRows()
                 }
             }
             .animation(MobileMotion.reveal, value: isLoading)
@@ -855,6 +865,7 @@ struct MobileSenderSheet: View {
             } footer: {
                 Text("From your own mail on this iPhone.")
             }
+            .mobileSheetRows()
         } else {
             Section("History") {
                 LabeledContent("Messages", value: context.messageCount.formatted())
@@ -865,6 +876,7 @@ struct MobileSenderSheet: View {
                     LabeledContent("Attachments", value: context.attachments.count.formatted())
                 }
             }
+            .mobileSheetRows()
         }
     }
 
@@ -912,6 +924,7 @@ struct MobileSenderSheet: View {
                 note("Connect this message’s account to your workspace to look up public details about the sender.",
                      symbol: "person.crop.rectangle")
             }
+            .mobileSheetRows()
         } else if isLoading {
             Section {
                 VStack(alignment: .leading, spacing: 12) {
@@ -928,6 +941,7 @@ struct MobileSenderSheet: View {
             } footer: {
                 Text("Looking for professional information and public profiles.")
             }
+            .mobileSheetRows()
         } else if research.target == target {
             switch research.phase {
             case .failed(let error):
@@ -935,6 +949,7 @@ struct MobileSenderSheet: View {
                     note(error, symbol: "exclamationmark.circle")
                     Button("Try Again") { lookup = Lookup(refresh: true) }
                 }
+                .mobileSheetRows()
             case .loaded(let response):
                 loaded(response)
             case .idle, .loading:
@@ -952,6 +967,7 @@ struct MobileSenderSheet: View {
                 note("There isn’t enough public information to confidently connect this address to a professional profile.",
                      symbol: "person.crop.rectangle")
             } header: { Text("No clear public match") } footer: { checked(response.checkedAt) }
+            .mobileSheetRows()
         case .disabled:
             Section {
                 note("AI assistance researches public sources using the sender’s name and email address. Message content is not included.",
@@ -962,11 +978,13 @@ struct MobileSenderSheet: View {
                     Text(enableError).font(.footnote).foregroundStyle(PostmereTheme.destructiveInk)
                 }
             } header: { Text("Sender research") }
+            .mobileSheetRows()
         case .unconfigured:
             Section("Sender research") {
                 note("AI assistance needs to be configured for this workspace. Ask your workspace administrator to enable it.",
                      symbol: "sparkles")
             }
+            .mobileSheetRows()
         }
     }
 
@@ -988,6 +1006,7 @@ struct MobileSenderSheet: View {
             Label(profile.hasPerson ? "Public profile" : "Public details", systemImage: "sparkles")
                 .foregroundStyle(palette.accent)
         }
+        .mobileSheetRows()
         .transition(.opacity)
         if !profile.publicTalkingPoints.isEmpty {
             Section("Talking points") {
@@ -998,6 +1017,7 @@ struct MobileSenderSheet: View {
                     }
                 }
             }
+            .mobileSheetRows()
         }
         if !profile.publicActivity.isEmpty {
             Section("Recent activity") {
@@ -1016,6 +1036,7 @@ struct MobileSenderSheet: View {
                     }
                 }
             }
+            .mobileSheetRows()
         }
         if let company = profile.publicCompany { companySection(company, in: profile) }
         Section {
@@ -1035,6 +1056,7 @@ struct MobileSenderSheet: View {
                 checked(checkedAt)
             }
         }
+        .mobileSheetRows()
     }
 
     private func companySection(_ company: BackendSenderProfile.Company, in profile: BackendSenderProfile) -> some View {
@@ -1078,6 +1100,7 @@ struct MobileSenderSheet: View {
         } header: {
             Label("Company", systemImage: "building.2")
         }
+        .mobileSheetRows()
     }
 
     /// A researched fact, shown only with the source that supports it.
@@ -1211,8 +1234,9 @@ struct MobileSuggestionsSheet: View {
     init(runtime: MailRuntime, messages: [MailMessage]) {
         self.runtime = runtime
         let scope = runtime.backend.scope
-        let ids = Array(Set(messages.filter { $0.mailAccount.remote?.scope == scope }.compactMap(\.backendMessageID)))
-        _run = State(initialValue: MailSuggestionRun(sourceIDs: Array(ids.prefix(30))))
+        // Only messages the server can still read, the newest 30.
+        let ids = MailAIAssist.serverIDs(messages.filter { $0.mailAccount.remote?.scope == scope })
+        _run = State(initialValue: MailSuggestionRun(sourceIDs: ids))
     }
 
     var body: some View {
@@ -1242,8 +1266,10 @@ struct MobileSuggestionsSheet: View {
                                 .lineSpacing(2)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
-                        ForEach(run.items.indices.filter { !dismissed.contains($0) }, id: \.self) { index in
-                            card(index)
+                        // Each card carries its own item, so one leaving after Run again
+                        // has cleared the list never looks it up by index.
+                        ForEach(run.items.enumerated().filter { !dismissed.contains($0.offset) }, id: \.offset) { index, item in
+                            card(index, item)
                                 .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
                         if run.phase == .ready && !run.isRevealing {
@@ -1276,8 +1302,7 @@ struct MobileSuggestionsSheet: View {
         .mobileSheetDetents()
     }
 
-    private func card(_ index: Int) -> some View {
-        let item = run.items[index]
+    private func card(_ index: Int, _ item: MailAIItem) -> some View {
         let done = applied[index] != nil
         return HStack(alignment: .top, spacing: 12) {
             Image(systemName: done ? "checkmark" : symbol(item))
@@ -1348,6 +1373,7 @@ struct MobileSuggestionsSheet: View {
     }
 
     private func apply(_ index: Int) {
+        guard run.items.indices.contains(index) else { return }
         let item = run.items[index]
         guard applied[index] == nil, let message = localMessage(for: item) else { return }
         let store = runtime.store
@@ -1395,6 +1421,7 @@ struct MobileShareSheet: View {
                 } footer: {
                     Text("Members see a snapshot. Bcc recipients and attachment contents stay private. Share again to include later messages.")
                 }
+                .mobileSheetRows()
                 if let members {
                     if members.isEmpty {
                         Text("No other workspace members yet.").foregroundStyle(.secondary)
@@ -1415,6 +1442,7 @@ struct MobileShareSheet: View {
                                 .pickerStyle(.menu)
                             }
                         }
+                        .mobileSheetRows()
                     }
                 } else if error == nil {
                     HStack { Spacer(); ProgressView(); Spacer() }.listRowBackground(Color.clear)

@@ -63,6 +63,12 @@ struct MobileAskScreen: View {
             }
             .navigationBarTitleDisplayMode(.inline)
             .task { await loadSettings() }
+            // A question asked through Siri or Shortcuts, sent once Ask is ready.
+            .onChange(of: runtime.pendingAIQuestion != nil && isReady, initial: true) {
+                guard isReady, !isWorking, let question = runtime.pendingAIQuestion else { return }
+                runtime.pendingAIQuestion = nil
+                submit(question)
+            }
         }
         .tint(palette.accent)
     }
@@ -137,7 +143,8 @@ struct MobileAskScreen: View {
     }
 
     private var starterPrompts: [Starter] {
-        var result = [Starter(title: "Needs my reply", detail: "this week", question: "What needs my reply this week?")]
+        var result = [Starter(title: "Brief me", detail: "on today", question: MailAIAssist.briefingQuestion),
+                      Starter(title: "Needs my reply", detail: "this week", question: "What needs my reply this week?")]
         if let name = recentSender {
             result.append(Starter(title: "Latest from", detail: name, question: "What’s the latest from \(name)?"))
         }
@@ -478,27 +485,35 @@ private struct MobileAskTurnView: View {
 
 // MARK: - Visuals
 
-/// The assistant's mark: an accent orb that breathes while it works.
+/// The assistant's mark: a sphere of liquid metal, drawn by a Metal shader, whose
+/// surface slowly flows and quickens while it works.
 struct MobileAskOrb: View {
     let working: Bool
     let size: CGFloat
     @Environment(\.postmereAccent) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var start = Date.now
 
     var body: some View {
-        TimelineView(.animation(paused: !working || reduceMotion)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
+        TimelineView(.animation(minimumInterval: working ? nil : 1 / 30, paused: reduceMotion)) { context in
+            let t = context.date.timeIntervalSince(start)
             let pulse = working && !reduceMotion ? (sin(t * 3) + 1) / 2 : 0
             ZStack {
                 Circle()
-                    .fill(AngularGradient(colors: [palette.accent, palette.accent.opacity(0.55), palette.accent],
-                                          center: .center, angle: .degrees(working ? t * 120 : 0)))
+                    .fill(.white)
+                    .colorEffect(ShaderLibrary.askOrbMetal(
+                        .float2(size, size),
+                        .float(reduceMotion ? 0 : t),
+                        .color(palette.accent),
+                        .float(working ? 1 : 0)))
                 Image(systemName: "sparkles")
                     .font(.system(size: size * 0.46, weight: .semibold))
                     .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.28), radius: size * 0.04, y: size * 0.02)
+                    .symbolEffect(.pulse, options: .repeating, isActive: working && !reduceMotion)
             }
             .frame(width: size, height: size)
-            .shadow(color: palette.accent.opacity(0.25 + 0.3 * pulse), radius: size * 0.25 * (1 + pulse))
+            .shadow(color: palette.accent.opacity(0.3 + 0.3 * pulse), radius: size * 0.22 * (1 + pulse), y: size * 0.06)
             .scaleEffect(1 + 0.04 * pulse)
         }
         .accessibilityHidden(true)

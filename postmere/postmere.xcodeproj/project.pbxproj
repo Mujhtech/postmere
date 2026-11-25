@@ -97,6 +97,8 @@
 				Views/ReaderView.swift,
 				Views/RecipientSuggestionsView.swift,
 				Views/SenderContextView.swift,
+				Views/MailAIAssistViews.swift,
+				Views/PostmereDecisionSheet.swift,
 				Views/SenderDeliveryChoice.swift,
 				Views/SettingsComponents.swift,
 				Views/SettingsView.swift,

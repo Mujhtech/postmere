@@ -17,8 +17,9 @@ struct MailSuggestionsView: View {
         self.runtime = runtime
         self.messages = messages
         let scope = runtime.backend.scope
-        let ids = Array(Set(messages.filter { $0.mailAccount.remote?.scope == scope }.compactMap(\.backendMessageID)))
-        _run = State(initialValue: MailSuggestionRun(sourceIDs: Array(ids.prefix(30))))
+        // Only messages the server can still read, the newest 30.
+        let ids = MailAIAssist.serverIDs(messages.filter { $0.mailAccount.remote?.scope == scope })
+        _run = State(initialValue: MailSuggestionRun(sourceIDs: ids))
     }
 
     private var cardAnimation: Animation { reduceMotion ? .easeOut(duration: 0.2) : .snappy(duration: 0.35) }
@@ -74,13 +75,15 @@ struct MailSuggestionsView: View {
     // MARK: Suggestions
 
     @ViewBuilder private var cards: some View {
-        let visible = run.items.indices.filter { !dismissed.contains($0) }
+        // Each card carries its own item: a card leaving with an animation after Try Again
+        // has cleared the list must not look its item up by index.
+        let visible = run.items.enumerated().filter { !dismissed.contains($0.offset) }
         if !visible.isEmpty {
             VStack(spacing: 10) {
-                ForEach(visible, id: \.self) { index in
-                    SuggestionCard(item: run.items[index],
-                                   source: source(for: run.items[index]),
-                                   isReady: run.phase == .ready && canApply(run.items[index]),
+                ForEach(visible, id: \.offset) { index, item in
+                    SuggestionCard(item: item,
+                                   source: source(for: item),
+                                   isReady: run.phase == .ready && canApply(item),
                                    isApplied: applied[index] != nil,
                                    onApply: { withAnimation(cardAnimation) { apply(index) } },
                                    onUndo: { withAnimation(cardAnimation) { undo(index) } },
@@ -153,6 +156,7 @@ struct MailSuggestionsView: View {
     }
 
     private func apply(_ index: Int) {
+        guard run.items.indices.contains(index) else { return }
         let item = run.items[index]
         guard run.phase == .ready, applied[index] == nil, let message = localMessage(for: item) else { return }
         let store = runtime.store

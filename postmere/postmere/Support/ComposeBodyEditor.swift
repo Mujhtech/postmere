@@ -147,7 +147,9 @@ final class ComposeTextFormatting {
         guard let editor else { return }
         editor.window?.makeFirstResponder(editor)
         editor.breakUndoCoalescing()
-        editor.insertText(MailTemplate.richBody(text: text, rtf: nil), replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        // Replaces what the person wrote; a quoted message shown below it stays.
+        let length = MailQuotedReply.split(editor.string).map { ($0.head as NSString).length } ?? editor.string.utf16.count
+        editor.insertText(MailTemplate.richBody(text: text, rtf: nil), replacementRange: NSRange(location: 0, length: length))
         editor.undoManager?.setActionName("Use AI Draft")
         editor.breakUndoCoalescing()
         refreshSelection()

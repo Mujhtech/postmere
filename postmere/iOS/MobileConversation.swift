@@ -6,12 +6,14 @@ import Translation
 /// newest expanded, with a reply bar pinned under the thumb.
 struct MobileConversation: View {
     @Bindable var runtime: MailRuntime
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    /// The mailbox owns navigation, including which column is visible after a fold.
+    let onRemove: () -> Void
+    @Environment(\.mobileToolbarVerticalEdge) private var verticalBarEdge
     @State private var expanded: Set<UUID> = []
     @State private var summary: MailConversationSummary?
     @State private var sheet: ReaderSheet?
     @State private var translates = false
+    @State private var detectedDates: (source: MobileCalendarSuggestionSource, dates: [MailDateSuggestion])?
     /// From/To/Date for a single message, opened from the sender in the bar.
     @State private var showsDetails = false
     @State private var scrollTarget: UUID?
@@ -19,7 +21,7 @@ struct MobileConversation: View {
     private var store: MailStore { runtime.store }
 
     private enum ReaderSheet: Identifiable {
-        case unsubscribe(MailMessage), sender(MailMessage), suggestions, share(MailMessage)
+        case unsubscribe(MailMessage), sender(MailMessage), suggestions, share(MailMessage), tasks
         case details(MailMessage), activity(MailMessage), event(MailCalendarEventDraft)
         var id: String {
             switch self {
@@ -28,6 +30,7 @@ struct MobileConversation: View {
             case .activity(let message): "activity-\(message.id)"
             case .event(let draft): "event-\(draft.id)"
             case .suggestions: "suggestions"
+            case .tasks: "tasks"
             case .unsubscribe(let message): "unsubscribe-\(message.id)"
             case .sender(let message): "sender-\(message.id)"
             }
@@ -38,10 +41,11 @@ struct MobileConversation: View {
         let thread = store.selectedConversation
         Group {
             if let lead = store.selectedMessage, !thread.isEmpty {
+                let dateSource = MobileCalendarSuggestionSource(messageID: lead.id, subject: lead.subject, paragraphs: lead.paragraphs)
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
-                            header(lead, count: thread.count)
+                            header(lead, thread: thread)
                                 .id(Self.headerAnchor)
                             ForEach(thread) { message in
                                 MobileHairline()
@@ -69,8 +73,25 @@ struct MobileConversation: View {
                         scrollTarget = nil
                     }
                 }
-                .safeAreaInset(edge: .bottom) { if lead.mailbox != .outbox && !lead.isDraft { replyBar(lead) } }
-                .toolbar { actions(lead) }
+                .safeAreaInset(edge: .bottom) {
+                    if lead.mailbox != .outbox && !lead.isDraft {
+                        VStack(spacing: 8) {
+                            if canUseAI(lead), let incoming = thread.last(where: { !$0.isOutgoing && !$0.isDraft }),
+                               thread.last(where: { !$0.isDraft })?.isOutgoing != true,
+                               MailAIAssist.suggestsReplies(to: incoming) {
+                                MobileQuickReplyStrip(message: incoming, conversation: thread, runtime: runtime)
+                                    .id(incoming.id)
+                            }
+                            replyBar(lead)
+                        }
+                    }
+                }
+                .toolbar { actions(lead, dateSource: dateSource) }
+                .task(id: dateSource, priority: .utility) {
+                    let dates = await dateSource.suggestions()
+                    guard !Task.isCancelled else { return }
+                    detectedDates = (dateSource, dates)
+                }
                 .onChange(of: lead.id) { expanded = []; summary = nil; showsDetails = false }
                 .task(id: summary?.requestID) { if let summary { await summary.load(session: runtime.backend) } }
                 .translationPresentation(isPresented: $translates,
@@ -79,6 +100,7 @@ struct MobileConversation: View {
                     switch sheet {
                     case .unsubscribe(let message): MobileUnsubscribeSheet(message: message, runtime: runtime)
                     case .suggestions: MobileSuggestionsSheet(runtime: runtime, messages: store.selectedConversation)
+                    case .tasks: MobileActionItemsSheet(conversation: store.selectedConversation, runtime: runtime)
                     case .share(let message): MobileShareSheet(runtime: runtime, message: message)
                     case .details(let message): MobileMessageDetailsSheet(message: message, runtime: runtime)
                     case .activity(let message): MobileActivitySheet(message: message, runtime: runtime)
@@ -97,20 +119,26 @@ struct MobileConversation: View {
         }
         .background(Mobile.background)
         .navigationBarTitleDisplayMode(.inline)
+        // Handoff: the same conversation opens on the Mac or another iPhone or iPad.
+        .userActivity(MailContinuity.messageActivityType,
+                      isActive: store.selectedMessage?.backendMessageID != nil) { activity in
+            if let message = store.selectedMessage { MailContinuity.configure(activity, for: message) }
+        }
     }
 
-    private func header(_ message: MailMessage, count: Int) -> some View {
+    private func header(_ message: MailMessage, thread: [MailMessage]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
+            if verticalBarEdge != nil { threadTitle(message, thread: thread) }
             Text(message.subject.isEmpty ? "No subject" : message.displaySubject)
                 .font(.system(size: 24, weight: .bold))
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .accessibilityAddTraits(.isHeader)
             // Only what isn't obvious: a mailbox other than the inbox, a thread, another account.
-            if message.mailbox != .inbox || count > 1 || MailAccount.allCases.count > 1 {
+            if message.mailbox != .inbox || thread.count > 1 || MailAccount.allCases.count > 1 {
                 HStack(spacing: 6) {
                     if message.mailbox != .inbox { tag(message.mailbox.title, symbol: message.mailbox.mobileSymbol) }
-                    if count > 1 { tag("\(count) messages", symbol: "bubble.left.and.bubble.right") }
+                    if thread.count > 1 { tag("\(thread.count) messages", symbol: "bubble.left.and.bubble.right") }
                     if MailAccount.allCases.count > 1 { tag(message.mailAccount.title, symbol: "person.crop.circle") }
                 }
             }
@@ -118,7 +146,13 @@ struct MobileConversation: View {
                 MobileSummaryCard(summary: summary) { withAnimation(MobileMotion.reveal) { self.summary = nil } }
                     .transition(MobileMotion.card)
             }
-            let thread = store.selectedConversation
+            if let quiet = MailNudges.waiting(in: thread).first {
+                MobileNudgeCard(message: quiet, store: store)
+            }
+            if message.workflow.screeningState == .pending && message.mailbox != .junk && !message.isOutgoing {
+                MobileNewSenderCard(message: message, store: store, onRemove: onRemove)
+                    .transition(MobileMotion.card)
+            }
             if let annotation = NeedsReplyAnnotation(selected: message, conversation: thread) {
                 MobileNeedsReplyNote(annotation: annotation, inThread: thread.count > 1) {
                     withAnimation(.snappy) { _ = expanded.insert(annotation.messageID) }
@@ -209,18 +243,23 @@ struct MobileConversation: View {
         .accessibilityLabel(title)
     }
 
-    @ToolbarContentBuilder private func actions(_ message: MailMessage) -> some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
-            let thread = store.selectedConversation
-            MobileThreadTitle(message: message, thread: thread, showsDetails: showsDetails) { avatar in
-                if thread.count == 1 && !avatar {
-                    withAnimation(.snappy) { showsDetails.toggle() }
-                } else if let sender = thread.last(where: { !$0.isOutgoing }) ?? (message.isOutgoing ? nil : message) {
-                    sheet = .sender(sender)
-                }
+    private func threadTitle(_ message: MailMessage, thread: [MailMessage]) -> some View {
+        MobileThreadTitle(message: message, thread: thread, showsDetails: showsDetails) { avatar in
+            if thread.count == 1 && !avatar {
+                withAnimation(.snappy) { showsDetails.toggle() }
+            } else if let sender = thread.last(where: { !$0.isOutgoing }) ?? (message.isOutgoing ? nil : message) {
+                sheet = .sender(sender)
             }
         }
-        .sharedBackgroundVisibility(.hidden)
+    }
+
+    @ToolbarContentBuilder private func actions(_ message: MailMessage, dateSource: MobileCalendarSuggestionSource) -> some ToolbarContent {
+        if verticalBarEdge == nil {
+            ToolbarItem(placement: .topBarLeading) {
+                threadTitle(message, thread: store.selectedConversation)
+            }
+            .sharedBackgroundVisibility(.hidden)
+        }
         ToolbarItemGroup(placement: .topBarTrailing) {
             if canUseAI(message) {
                 Button { summarize(message) } label: {
@@ -245,15 +284,18 @@ struct MobileConversation: View {
                     if !message.isOutgoing {
                         Button("About Sender", systemImage: "person.crop.circle") { sheet = .sender(message) }
                     }
-                    let dates = message.calendarSuggestions
-                    if !dates.isEmpty {
+                    if let detectedDates, detectedDates.source == dateSource, !detectedDates.dates.isEmpty {
                         Menu("Add to Calendar", systemImage: "calendar.badge.plus") {
-                            ForEach(dates) { date in
+                            ForEach(detectedDates.dates) { date in
                                 Button(date.matchedText) { sheet = .event(date.eventDraft(title: message.displaySubject)) }
                             }
                         }
                     }
+                    if canUseAI(message) {
+                        Button("Find To-Dos", systemImage: "checklist") { sheet = .tasks }
+                    }
                     Button("Message Details", systemImage: "info.circle") { sheet = .details(message) }
+                    Button("Print", systemImage: "printer") { MailPrintDocument.present(message) }
                     if message.hasTrackedActivity {
                         Button("Activity", systemImage: "eye") { sheet = .activity(message) }
                     }
@@ -270,7 +312,7 @@ struct MobileConversation: View {
                         }
                     }
                 }
-                MobileMessageMenu(message: message, store: store, includesReply: false, onRemove: leave)
+                MobileMessageMenu(message: message, store: store, includesReply: false, onRemove: onRemove)
             } label: {
                 Image(systemName: "ellipsis").font(Self.toolbarGlyph)
             }
@@ -317,13 +359,7 @@ struct MobileConversation: View {
 
     private func move(_ message: MailMessage, to mailbox: Mailbox) {
         store.moveMessage(message.id, to: mailbox)
-        leave()
-    }
-
-    /// On iPhone an action that removes the message returns to the list.
-    private func leave() {
-        guard sizeClass == .compact else { return }
-        dismiss()
+        onRemove()
     }
 }
 
@@ -474,6 +510,7 @@ private struct MobileAttachmentList: View {
     @State private var loading: UUID?
     @State private var preview: URL?
     @State private var error: String?
+    @State private var summarizing: MailAttachment?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -502,10 +539,17 @@ private struct MobileAttachmentList: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(loading != nil)
+                .contextMenu {
+                    Button("Open", systemImage: "eye") { open(attachment) }
+                    if MailDocumentText.canSummarize(attachment), message.backendMessageID != nil {
+                        Button("Summarize with AI", systemImage: "sparkles") { summarizing = attachment }
+                    }
+                }
             }
             if let error { Text(error).font(.caption).foregroundStyle(PostmereTheme.destructiveInk) }
         }
         .quickLookPreview($preview)
+        .sheet(item: $summarizing) { MobileDocumentSummarySheet(attachment: $0, message: message, runtime: runtime) }
     }
 
     private func symbol(for name: String) -> String {

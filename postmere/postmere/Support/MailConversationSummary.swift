@@ -88,7 +88,9 @@ extension MailConversationSummary {
         var sourceIDs: [UUID] = []
         var seen: Set<UUID> = []
         for entry in conversation.reversed() {
-            guard entry.mailAccount.remote?.scope == scope,
+            // The server refuses a request naming any message it can no longer read.
+            guard entry.mailAccount.remote?.scope == scope, !entry.isDraft, !entry.isDeletedOnProvider,
+                  entry.mailbox != .outbox, entry.mailAccount.isConnected,
                   let id = entry.backendMessageID, seen.insert(id).inserted else { continue }
             sourceIDs.append(id)
             if sourceIDs.count == 30 { break }

@@ -251,6 +251,7 @@ struct MobileScheduleSheet: View {
                         .buttonStyle(.plain)
                     }
                 }
+                .mobileSheetRows()
                 Section {
                     Button {
                         withAnimation(.snappy) { picksDate.toggle() }
@@ -276,16 +277,19 @@ struct MobileScheduleSheet: View {
                             .tint(palette.accent)
                     }
                 }
+                .mobileSheetRows()
                 if purpose == .followUp {
                     Section {
                         Toggle("Only if nobody replies", isOn: $onlyIfNoReply).tint(palette.accent)
                     }
+                    .mobileSheetRows()
                 }
                 if purpose == .sendLater {
                     Section {
                     } footer: {
                         Text("Your server delivers the message at the scheduled time, even when your phone is off.")
                     }
+                    .mobileSheetRows()
                 }
             }
             .listSectionSpacing(14)
@@ -306,6 +310,7 @@ struct MobileScheduleSheet: View {
             }
         }
         .presentationDetents(picksDate ? [.large] : [.medium, .large])
+        .mobileSheetSurface()
     }
 
     private func save(_ date: Date) {
@@ -485,6 +490,7 @@ struct MobileLabelsSheet: View {
                             Button("Try Again") { refreshRevision += 1 }.disabled(editor.busy)
                         }
                     }
+                    .mobileSheetRows()
                 }
             }
             .searchable(text: $editor.search, placement: .navigationBarDrawer(displayMode: .always),

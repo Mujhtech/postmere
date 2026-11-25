@@ -9,7 +9,8 @@ final class MailStore {
         didSet {
             // Stored bodies change neither rows nor grouping, so filling them in
             // must not invalidate the mailbox list being built.
-            guard !updatingSenderArtwork, !applyingStoredBodies else { return }
+            if applyingStoredBodies { lastReaderThread = nil; return }
+            guard !updatingSenderArtwork else { return }
             mailboxDataRevision &+= 1
             guard !updatingReaderMessage else { return }
             schedulePersistence()
@@ -35,7 +36,7 @@ final class MailStore {
     var selectedMessageID: UUID? {
         didSet {
             if !isUpdatingSelection { selectedMessageIDs = selectedMessageID.map { [$0] } ?? [] }
-            if bodySource != nil, let selectedMessageID, selectedMessageID != oldValue { loadBodiesNow(forConversationOf: selectedMessageID) }
+            if selectedMessageID != nil, selectedMessageID != oldValue { loadSelectedConversationBodies() }
         }
     }
     var selectedMessageIDs: Set<UUID> = [] {
@@ -59,7 +60,9 @@ final class MailStore {
         didSet {
             var index: [String: Set<String>] = [:]
             for label in labelCatalogs.values.joined() { index[label.name.lowercased(), default: []].insert(label.id) }
+            guard index != labelIDsByName else { return }
             labelIDsByName = index
+            mailboxRulesRevision &+= 1
             if isSearchActive && searchText.hasPrefix("label:") { refreshSearch() }
         }
     }
@@ -678,6 +681,60 @@ final class MailStore {
         composeTitle = "Reply all"
         initialDraft = currentDraft
         isComposing = true
+    }
+
+    /// Opens a reply with suggested text above the signature and quoted message,
+    /// left in the composer for the person to edit and send.
+    func beginReply(to message: MailMessage, text: String) {
+        beginCompose(replyTo: message)
+        guard isComposing, draftInReplyTo == message.rfcMessageID else { return }
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        draftBody = text + "\n\n" + draftBody
+        draftBodyRTF = nil
+    }
+
+    /// Sends a reply typed into a notification: to the sender, quoting their message,
+    /// with no undo window since there is no composer to undo from. Leaves an open
+    /// draft alone; returns false when it could not queue the reply.
+    @discardableResult
+    func queueQuickReply(to message: MailMessage, text: String, now: Date = .now) -> Bool {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !isComposing, !draftRecoveryAvailable, !message.isDraft,
+              message.mailAccount.isConnected else { return false }
+        persistenceSuspended += 1
+        clearDraft()
+        draftInReplyTo = message.rfcMessageID
+        draftReferences = message.references + [message.rfcMessageID].compactMap { $0 }
+        draftProviderThreadID = message.providerThreadID
+        draftConversationID = message.conversationID
+        draftAccount = message.mailAccount
+        draftProviderAccountEmail = message.providerAccountEmail
+        let recipients = replyRecipients(for: message, includeAll: false)
+        draftTo = recipients.to.joined(separator: ", ")
+        draftCc = recipients.cc.joined(separator: ", ")
+        draftSubject = prefixedSubject(message.subject, prefix: "Re:")
+        draftBody = text + "\n\n" + initialBody(quoting: message, forwarded: false)
+        draftBodyRTF = nil
+        initialDraft = currentDraft
+        isComposing = true
+        persistenceSuspended -= 1
+        let queued = outgoingQueue.count
+        queueCurrentDraft(now: now, undoDelay: 0)
+        guard outgoingQueue.count > queued else {
+            persistenceSuspended += 1
+            clearDraft()
+            isComposing = false
+            persistenceSuspended -= 1
+            return false
+        }
+        lastAction = "Reply sent"
+        return true
+    }
+
+    /// Waits for the provider to save read, star and mailbox changes to these messages.
+    func waitForProviderChanges(_ ids: Set<UUID>) async {
+        for id in ids { await remoteMutationTasks[id]?.value }
     }
 
     func hasReplyAllRecipients(for message: MailMessage) -> Bool {

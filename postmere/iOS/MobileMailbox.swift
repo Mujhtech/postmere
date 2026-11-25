@@ -1,111 +1,77 @@
 import SwiftUI
 
-/// A stack on iPhone and a split view on iPad, over the same mailbox screen.
+/// One mailbox selection follows the reader between collapsed and side-by-side columns.
 struct MobileMailbox: View {
     @Bindable var runtime: MailRuntime
     @Environment(\.horizontalSizeClass) private var sizeClass
-    @State private var path: [UUID] = []
+    @Environment(\.mobileToolbarVerticalEdge) private var verticalBarEdge
+    @State private var compactColumn: NavigationSplitViewColumn = .sidebar
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showsSettings = false
     @State private var presenter = MobilePresenter()
     @State private var tab: MobileTab = .home
+    @State private var hasOpenedAsk = false
     @State private var selecting = false
     @State private var switchesAccount = false
     @State private var barHeight: CGFloat = 0
     private var store: MailStore { runtime.store }
     private var compact: Bool { sizeClass == .compact }
-    /// Hidden while reading (the reply bar is there) and while picking messages.
-    private var showsTabBar: Bool { compact && !(tab == .home && (!path.isEmpty || selecting)) }
-    /// Triage presents its own composer for replies while a pass is on screen.
-    private var triageHostsComposer: Bool { runtime.triage != nil && (!compact || tab == .triage) }
+    private var usesCustomTabs: Bool { compact && verticalBarEdge == nil }
+    /// Leave room for the reader’s reply bar and the batch selection toolbar.
+    private var showsCustomTabs: Bool { usesCustomTabs && !(tab == .home && (compactColumn == .detail || selecting)) }
 
     var body: some View {
-        Group {
-            if compact {
-                ZStack {
-                    NavigationStack(path: $path) {
-                        MailboxScreen(runtime: runtime, showsSettings: $showsSettings, isSelecting: $selecting,
-                                      onOpen: { path = [$0] })
-                            .navigationDestination(for: UUID.self) { _ in MobileConversation(runtime: runtime) }
-                    }
-                    .onChange(of: path) { if path.isEmpty { store.selectedMessageID = nil } }
-                    .tabLayer(tab == .home)
-                    MobileAskScreen(runtime: runtime, embedded: true) { message in
-                        store.selectAccount(message.account)
-                        store.selectedInboxSplitID = nil
-                        store.selectedMailbox = message.mailbox
-                        store.select(message)
-                        tab = .home
-                        path = [message.id]
-                    }
-                    .tabLayer(tab == .ai)
-                    MobileTriageTab(runtime: runtime, isActive: tab == .triage)
-                        .tabLayer(tab == .triage)
+        let widgetSource = MobileWidgetSync.Source(runtime: runtime)
+        tabs
+        .environment(\.mobileTabBarInset, showsCustomTabs ? barHeight : 0)
+        .overlay(alignment: .bottom) {
+            if showsCustomTabs {
+                VStack(spacing: 12) {
+                    if tab == .home && !MailAccount.allCases.isEmpty { MobileHomeAccessory(store: store) }
+                    MobileTabBar(selection: $tab) { switchesAccount = true }
                 }
-                .environment(\.mobileTabBarInset, showsTabBar ? barHeight : 0)
-                .overlay(alignment: .bottom) {
-                    if showsTabBar {
-                        VStack(spacing: 12) {
-                            if tab == .home && !MailAccount.allCases.isEmpty { MobileHomeAccessory(store: store) }
-                            MobileTabBar(selection: $tab) { switchesAccount = true }
-                        }
-                        .padding(.top, 10)
-                        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { barHeight = $0 }
-                        .background {
-                            LinearGradient(stops: [.init(color: Mobile.background.opacity(0), location: 0),
-                                                   .init(color: Mobile.background.opacity(0.96), location: 0.16),
-                                                   .init(color: Mobile.background, location: 0.45)],
-                                           startPoint: .top, endPoint: .bottom)
-                                .ignoresSafeArea()
-                                .allowsHitTesting(false)
-                        }
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
+                .padding(.top, 10)
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { barHeight = $0 }
+                .background {
+                    LinearGradient(stops: [.init(color: Mobile.background.opacity(0), location: 0),
+                                           .init(color: Mobile.background.opacity(0.96), location: 0.16),
+                                           .init(color: Mobile.background, location: 0.45)],
+                                   startPoint: .top, endPoint: .bottom)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
                 }
-                .animation(.snappy(duration: 0.3), value: showsTabBar)
-                .sheet(isPresented: $switchesAccount) { MobileAccountSwitcher(runtime: runtime) }
-                #if DEBUG
-                .task {
-                    let arguments = ProcessInfo.processInfo.arguments
-                    if arguments.contains("-PostmereOpenAsk") { tab = .ai }
-                    if arguments.contains("-PostmereOpenTriage") { tab = .triage }
-                    if arguments.contains("-PostmereOpenAccounts") { switchesAccount = true }
-                    if arguments.contains("-PostmereOpenCompose") { store.beginCompose() }
-                    if arguments.contains("-PostmereOpenSettings") { showsSettings = true }
-                    if arguments.contains("-PostmereCycleAppearance") {
-                        // Switches Dark then Light in-process, with Settings open, for screenshots.
-                        Task {
-                            try? await Task.sleep(for: .seconds(6))
-                            UserDefaults.standard.set(MailAppearance.dark.rawValue, forKey: MailAppearance.preferenceKey)
-                            try? await Task.sleep(for: .seconds(6))
-                            UserDefaults.standard.set(MailAppearance.light.rawValue, forKey: MailAppearance.preferenceKey)
-                        }
-                    }
-                }
-                #endif
-            } else {
-                NavigationSplitView {
-                    MailboxScreen(runtime: runtime, showsSettings: $showsSettings, isSelecting: $selecting, onOpen: { _ in })
-                        .navigationSplitViewColumnWidth(min: 340, ideal: 380)
-                } detail: {
-                    NavigationStack { MobileConversation(runtime: runtime) }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy(duration: 0.3), value: showsCustomTabs)
+        .modifier(MobileAccountSwitcherSheet(runtime: runtime, isPresented: $switchesAccount))
+        #if DEBUG
+        .task {
+            let arguments = ProcessInfo.processInfo.arguments
+            if arguments.contains("-PostmereOpenAsk") { tab = .ai }
+            if arguments.contains("-PostmereOpenTriage") { tab = .triage }
+            if arguments.contains("-PostmereOpenAccounts") { switchesAccount = true }
+            if arguments.contains("-PostmereOpenCompose") { store.beginCompose() }
+            if arguments.contains("-PostmereOpenSettings") { showsSettings = true }
+            if arguments.contains("-PostmereCycleAppearance") {
+                // Switches Dark then Light in-process, with Settings open, for screenshots.
+                Task {
+                    try? await Task.sleep(for: .seconds(6))
+                    UserDefaults.standard.set(MailAppearance.dark.rawValue, forKey: MailAppearance.preferenceKey)
+                    try? await Task.sleep(for: .seconds(6))
+                    UserDefaults.standard.set(MailAppearance.light.rawValue, forKey: MailAppearance.preferenceKey)
                 }
             }
         }
-        .overlay(alignment: .bottom) { MobileActionToast(store: store).padding(.bottom, showsTabBar ? barHeight + 12 : 74) }
+        #endif
+        .overlay(alignment: .bottom) { MobileActionToast(store: store).padding(.bottom, showsCustomTabs ? barHeight + 12 : 74) }
         .environment(presenter)
         .sheet(isPresented: $showsSettings) {
             MobileSettings(runtime: runtime).presentationBackground(MobileSettingsStyle.canvas)
         }
         .sheet(item: $presenter.task) { MobileTaskSheet(task: $0, runtime: runtime) }
-        .fullScreenCover(isPresented: Binding(get: { runtime.triage != nil && !compact },
-                                              set: { if !$0 { runtime.triage = nil } })) {
-            if let session = runtime.triage {
-                MobileTriageScreen(session: session, runtime: runtime)
-                    .environment(presenter)
-            }
-        }
         // While triage is open it presents its own composer for replies.
-        .fullScreenCover(isPresented: Binding(get: { store.isComposing && !triageHostsComposer }, set: { _ in })) {
+        .fullScreenCover(isPresented: Binding(get: { store.isComposing && (runtime.triage == nil || tab != .triage) }, set: { _ in })) {
             MobileComposer(runtime: runtime)
                 .environment(presenter)
                 .sheet(item: $presenter.task) { MobileTaskSheet(task: $0, runtime: runtime) }
@@ -117,17 +83,141 @@ struct MobileMailbox: View {
             Text(store.operationError ?? "")
         }
         // Widgets show what's in the mailbox; refresh them shortly after it settles.
-        .task(id: store.mailboxDataRevision) {
+        .task(id: widgetSource) {
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
-            MobileWidgetSync.publish(runtime: runtime)
+            await MobileWidgetSync.refresh(runtime: runtime, source: widgetSource)
         }
         .onChange(of: MobileRouter.shared.pending, initial: true) { openPendingLink() }
+        .onChange(of: MobileRouter.shared.command) { handleCommand() }
         .onAppear {
-            runtime.openMailWindow = { if let id = store.selectedMessageID { path = [id] } }
+            runtime.openMailWindow = {
+                if store.selectedMessageID != nil { showReader() }
+            }
             if runtime.backend.canAccessWorkspace {
                 runtime.mailLinks.openNext(in: store, verifiedScope: runtime.backend.scope)
             }
+        }
+    }
+
+    /// iPhone draws its own floating tab bar, so its tabs are plain layers with no
+    /// system tab bar underneath to show through. The system TabView is used where
+    /// its bar is shown: iPad, and the side bar on a device that places it vertically.
+    @ViewBuilder private var tabs: some View {
+        if usesCustomTabs {
+            ZStack {
+                home.tabLayer(tab == .home)
+                Group {
+                    if tab == .ai || hasOpenedAsk {
+                        MobileAskScreen(runtime: runtime, embedded: true, onOpen: openSource)
+                            .onAppear { hasOpenedAsk = true }
+                    }
+                }
+                .tabLayer(tab == .ai)
+                MobileTriageTab(runtime: runtime, isActive: tab == .triage)
+                    .tabLayer(tab == .triage)
+            }
+        } else {
+            TabView(selection: $tab) {
+                Tab("Home", systemImage: "house", value: MobileTab.home) {
+                    home
+                }
+                .contextMenu {
+                    Button("Switch Account", systemImage: "person.2") { switchesAccount = true }
+                }
+                Tab("Ask", systemImage: "sparkles", value: MobileTab.ai) {
+                    Group {
+                        if tab == .ai || hasOpenedAsk {
+                            MobileAskScreen(runtime: runtime, embedded: true, onOpen: openSource)
+                                .onAppear { hasOpenedAsk = true }
+                        }
+                    }
+                }
+                Tab("Triage", systemImage: "rectangle.stack", value: MobileTab.triage) {
+                    MobileTriageTab(runtime: runtime, isActive: tab == .triage)
+                }
+            }
+        }
+    }
+
+    private var home: some View {
+        NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $compactColumn) {
+            MailboxScreen(runtime: runtime, showsSettings: $showsSettings, isSelecting: $selecting,
+                          usesHomeAccessory: usesCustomTabs, onOpen: showReader,
+                          onAsk: { tab = .ai }, onStartTriage: { tab = .triage })
+                .navigationSplitViewColumnWidth(min: 260, ideal: 360, max: 400)
+        } detail: {
+            NavigationStack {
+                if !compact && store.selectedMessageID == nil {
+                    MobileMailboxOverview(runtime: runtime, onAsk: { tab = .ai }, onStartTriage: { tab = .triage })
+                } else {
+                    MobileConversation(runtime: runtime) {
+                        if compact {
+                            store.selectedMessageID = nil
+                            compactColumn = .sidebar
+                        }
+                    }
+                }
+            }
+        }
+        .navigationSplitViewStyle(.balanced)
+        .onChange(of: compactColumn) {
+            if compact && compactColumn == .sidebar { store.selectedMessageID = nil }
+        }
+        .onChange(of: store.selectedMessageID) {
+            if store.selectedMessageID == nil { compactColumn = .sidebar }
+        }
+    }
+
+    /// Menu commands and keyboard shortcuts that need this screen's tabs and sheets.
+    private func handleCommand() {
+        guard let command = MobileRouter.shared.command else { return }
+        switch command {
+        case .search:
+            tab = .home
+            compactColumn = .sidebar
+            // MailboxScreen presents search when it sees this request.
+            return
+        case .ask: tab = .ai
+        case .triage:
+            tab = .triage
+        case .settings: showsSettings = true
+        case .mailboxes:
+            tab = .home
+            compactColumn = .sidebar
+            return
+        case .closeMessage:
+            store.selectedMessageID = nil
+            compactColumn = .sidebar
+        case .nextMessage, .previousMessage:
+            let rows = store.mailboxViewData?.conversations.rows ?? []
+            guard !rows.isEmpty else { break }
+            let current = store.selectedMessageID.flatMap { id in
+                rows.firstIndex { $0.id == id || store.mailboxViewData?.conversations.members[$0.id]?.contains(id) == true }
+            }
+            let next = current.map { command == .nextMessage ? $0 + 1 : $0 - 1 } ?? 0
+            guard rows.indices.contains(next) else { break }
+            store.select(rows[next])
+            showReader()
+        }
+        MobileRouter.shared.command = nil
+    }
+
+    private func showReader() {
+        tab = .home
+        compactColumn = .detail
+    }
+
+    private func openSource(_ message: MailMessage) {
+        store.selectAccount(message.account)
+        store.selectedInboxSplitID = nil
+        store.selectedMailbox = message.mailbox
+        if message.isDraft {
+            tab = .home
+            store.beginEditingDraft(message)
+        } else {
+            store.select(message)
+            showReader()
         }
     }
 }
@@ -140,7 +230,7 @@ extension MobileMailbox {
         switch route {
         case .inbox, .needsReply:
             tab = .home
-            path = []
+            compactColumn = .sidebar
             store.selectMailbox(route == .inbox ? .inbox : .needsReply)
         case .compose:
             if !store.isComposing { store.beginCompose() }
@@ -156,10 +246,9 @@ extension MobileMailbox {
                 tab = .home
                 return
             }
-            tab = .home
             store.selectMailbox(message.mailbox)
             store.select(message)
-            path = [message.id]
+            showReader()
         }
     }
 }
@@ -171,11 +260,12 @@ private struct MailboxScreen: View {
     @Binding var showsSettings: Bool
     /// Reported up so the tab bar can step aside while picking messages.
     @Binding var isSelecting: Bool
-    let onOpen: (UUID) -> Void
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    let usesHomeAccessory: Bool
+    let onOpen: () -> Void
+    let onAsk: () -> Void
+    let onStartTriage: () -> Void
     @State private var showsMailboxes = false
     @State private var searchPresented = false
-    @State private var asks = false
     @State private var searchesOnline = false
     @State private var savesView = false
     @State private var editingView: SavedInboxView?
@@ -188,23 +278,18 @@ private struct MailboxScreen: View {
     @Environment(\.postmereAccent) private var palette
     @Environment(MobilePresenter.self) private var presenter
     private var selecting: Bool { editMode.isEditing }
-    /// On iPhone, search, compose, Ask and Triage live in the tab bar.
-    private var usesTabBar: Bool { sizeClass == .compact }
     private var store: MailStore { runtime.store }
     private var hasAccounts: Bool { !MailAccount.allCases.isEmpty }
 
     /// One row per conversation, as in Mail: the newest message stands for the thread,
     /// and opening it shows all of them. Search results stay one row per message.
-    private var conversations: ConversationRows? {
-        if store.isSearchActive { return ConversationRows(ungrouped: store.searchResults) }
-        return store.mailboxViewData.map { ConversationRows(Array($0.messages)) }
+    private var rows: [MailMessage]? {
+        store.isSearchActive ? store.activeSearchResults : store.mailboxViewData?.conversations.rows
     }
-
-    private var rows: [MailMessage]? { conversations?.rows }
 
     /// Every message a row stands for, so swipes and batch actions take the whole thread.
     private func members(_ ids: Set<UUID>) -> Set<UUID> {
-        guard let conversations else { return ids }
+        guard let conversations = store.mailboxViewData?.conversations else { return ids }
         return Set(ids.flatMap { conversations.members[$0] ?? [$0] })
     }
 
@@ -230,7 +315,7 @@ private struct MailboxScreen: View {
         .toolbar {
             if selecting {
                 batchToolbar
-            } else if hasAccounts && !usesTabBar {
+            } else if hasAccounts && !usesHomeAccessory {
                 DefaultToolbarItem(kind: .search, placement: .bottomBar)
                 ToolbarSpacer(.fixed, placement: .bottomBar)
                 ToolbarItem(placement: .bottomBar) {
@@ -241,8 +326,19 @@ private struct MailboxScreen: View {
                 }
             }
         }
-        .modifier(MailSearch(store: store, isPresented: $searchPresented, enabled: hasAccounts && !usesTabBar))
+        .modifier(MailSearch(store: store, isPresented: $searchPresented, enabled: hasAccounts && !usesHomeAccessory))
         .onChange(of: editMode.isEditing) { isSelecting = editMode.isEditing }
+        .onChange(of: MobileRouter.shared.command) {
+            switch MobileRouter.shared.command {
+            case .search where !usesHomeAccessory:
+                searchPresented = true
+                MobileRouter.shared.command = nil
+            case .mailboxes:
+                showsMailboxes = true
+                MobileRouter.shared.command = nil
+            default: break
+            }
+        }
         .task(id: store.isSearchActive ? nil : store.mailboxViewKey) { await store.loadMailboxView() }
         #if DEBUG
         .task(id: rows?.first?.id) {
@@ -275,26 +371,22 @@ private struct MailboxScreen: View {
                     }
             }
         }
-        .fullScreenCover(isPresented: $asks) {
-            MobileAskScreen(runtime: runtime) { message in
-                store.selectAccount(message.account)
-                store.selectedInboxSplitID = nil
-                store.selectedMailbox = message.mailbox
-                open(message)
-            }
-        }
     }
 
     private var list: some View {
-        List(selection: $picked) {
+        let rows = rows
+        return List(selection: $picked) {
             MailboxHeader(runtime: runtime, rows: rows, showsSettings: $showsSettings,
                           showsMailboxes: $showsMailboxes, showsSplits: !store.isSearchActive && !selecting,
                           selection: selecting ? picked.count : nil,
-                          onSelect: { toggleSelecting(rows: rows) },
+                          onSelect: toggleSelecting,
                           onSelectAll: { picked = Set(rows?.map(\.id) ?? []) },
-                          onAsk: runtime.backend.canAccessWorkspace && !usesTabBar ? { asks = true } : nil,
-                          onTriage: (rows?.isEmpty ?? true) || store.isSearchActive || usesTabBar ? nil
-                              : { runtime.startTriage(rows ?? [], store: store) },
+                          onAsk: runtime.backend.canAccessWorkspace && !usesHomeAccessory ? onAsk : nil,
+                          onTriage: (rows?.isEmpty ?? true) || store.isSearchActive || usesHomeAccessory ? nil
+                              : {
+                                  runtime.startTriage(MobileTriageQueue(rows: rows ?? []), store: store)
+                                  if runtime.triage != nil { onStartTriage() }
+                              },
                           onSaveView: { savesView = true },
                           onSearchOnline: runtime.backend.accounts.isEmpty ? nil : { searchesOnline = true },
                           onEditView: { editingView = $0 },
@@ -302,6 +394,11 @@ private struct MailboxScreen: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets())
+            if store.isSearchActive && runtime.backend.canAccessWorkspace {
+                MobileAISearchRow(runtime: runtime)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
             if let rows {
                 if rows.isEmpty {
                     emptyMailbox
@@ -356,7 +453,7 @@ private struct MailboxScreen: View {
         .listRowInsets(EdgeInsets(top: 14, leading: Mobile.gutter, bottom: 14, trailing: Mobile.gutter))
     }
 
-    private func toggleSelecting(rows: [MailMessage]?) {
+    private func toggleSelecting() {
         withAnimation(.snappy) {
             if selecting { endSelecting() } else { editMode = .active }
         }
@@ -440,7 +537,7 @@ private struct MailboxScreen: View {
     }
 
     private func messages(_ rows: [MailMessage]) -> some View {
-        let counts = store.conversationCounts(for: rows)
+        let counts = store.isSearchActive ? store.searchConversationCounts : store.mailboxViewData?.conversationCounts ?? [:]
         return ForEach(rows) { message in
             MobileMessageRow(message: message, conversationCount: counts[message.id] ?? 1,
                              showsMailbox: store.isSearchActive)
@@ -476,7 +573,7 @@ private struct MailboxScreen: View {
             return
         }
         store.select(message)
-        onOpen(message.id)
+        onOpen()
     }
 
     @ViewBuilder private func leadingActions(_ message: MailMessage) -> some View {
@@ -610,63 +707,93 @@ private struct MailboxHeader: View {
         return store.selectedMailbox.title
     }
 
+    @ScaledMetric(relativeTo: .title) private var titleSize = 30.0
+
+    @ViewBuilder private var titleControl: some View {
+        if let selection {
+            Text(selection == 0 ? "Select" : "\(selection) selected")
+                .font(.system(size: titleSize, weight: .bold))
+                .contentTransition(.numericText(value: Double(selection)))
+                .accessibilityAddTraits(.isHeader)
+        } else if store.isSearchActive {
+            Text("Search").font(.system(size: titleSize, weight: .bold)).accessibilityAddTraits(.isHeader)
+        } else {
+            Button { showsMailboxes = true } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(headerTitle).font(.system(size: titleSize, weight: .bold)).lineLimit(2)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .foregroundStyle(.primary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityHint("Shows mailboxes and accounts")
+        }
+    }
+
+    @ViewBuilder private var actionButtons: some View {
+        if selection != nil {
+            Button("All", action: onSelectAll).buttonStyle(.glass)
+        } else {
+            if let onTriage {
+                Button("Triage", systemImage: "rectangle.stack", action: onTriage)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.glass)
+                    .tint(.primary)
+            }
+            if let onAsk {
+                Button("Ask your mail", systemImage: "sparkles", action: onAsk)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.glass)
+                    .tint(.primary)
+            }
+        }
+        if selection == nil && !store.isSearchActive {
+            viewMenu
+        }
+        if selection != nil || rows?.isEmpty == false {
+            Button(selection == nil ? "Select" : "Done", action: onSelect)
+                .buttonStyle(.glass)
+                .tint(.primary)
+                .fontWeight(selection == nil ? .regular : .semibold)
+        }
+    }
+
+    private var settingsButton: some View {
+        Button { showsSettings = true } label: {
+            ParticipantPhoto(address: runtime.backend.accounts.first?.email ?? "",
+                             name: runtime.backend.accounts.first?.displayName ?? "", size: 34)
+                .overlay { Circle().strokeBorder(Mobile.hairline) }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Settings")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 12) {
-                if let selection {
-                    Text(selection == 0 ? "Select" : "\(selection) selected")
-                        .font(Mobile.screenTitle)
-                        .contentTransition(.numericText(value: Double(selection)))
-                        .accessibilityAddTraits(.isHeader)
-                } else if store.isSearchActive {
-                    Text("Search").font(Mobile.screenTitle).accessibilityAddTraits(.isHeader)
-                } else {
-                    Button { showsMailboxes = true } label: {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(headerTitle).font(Mobile.screenTitle).lineLimit(1)
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 15, weight: .bold))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .foregroundStyle(.primary)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    titleControl.fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: 8)
+                    HStack(spacing: 12) { actionButtons }
+                        .fixedSize(horizontal: true, vertical: false)
+                    settingsButton
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) {
+                        titleControl
+                        Spacer(minLength: 0)
+                        settingsButton
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(.isHeader)
-                    .accessibilityHint("Shows mailboxes and accounts")
-                }
-                Spacer(minLength: 8)
-                if selection != nil {
-                    Button("All", action: onSelectAll).buttonStyle(.glass)
-                } else {
-                    if let onTriage {
-                        Button("Triage", systemImage: "rectangle.stack", action: onTriage)
-                            .labelStyle(.iconOnly)
-                            .buttonStyle(.glass)
-                            .tint(.primary)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) { actionButtons }
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.vertical, 2)
                     }
-                    if let onAsk {
-                        Button("Ask your mail", systemImage: "sparkles", action: onAsk)
-                            .labelStyle(.iconOnly)
-                            .buttonStyle(.glass)
-                            .tint(.primary)
-                    }
+                    .scrollClipDisabled()
                 }
-                if selection == nil && !store.isSearchActive {
-                    viewMenu
-                }
-                if selection != nil || rows?.isEmpty == false {
-                    Button(selection == nil ? "Select" : "Done", action: onSelect)
-                        .buttonStyle(.glass)
-                        .tint(.primary)
-                        .fontWeight(selection == nil ? .regular : .semibold)
-                }
-                Button { showsSettings = true } label: {
-                    ParticipantPhoto(address: runtime.backend.accounts.first?.email ?? "",
-                                     name: runtime.backend.accounts.first?.displayName ?? "", size: 34)
-                        .overlay { Circle().strokeBorder(Mobile.hairline) }
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Settings")
             }
             .padding(.horizontal, Mobile.gutter)
 
@@ -679,7 +806,7 @@ private struct MailboxHeader: View {
                     GlassEffectContainer(spacing: 8) { HStack(spacing: 8) {
                         let inInbox = store.selectedMailbox == .inbox && store.selectedSavedViewID == nil
                         SplitChip(title: store.visibleInboxSplits.isEmpty ? "Inbox" : "All",
-                                  count: counts?.all ?? store.count(for: .inbox),
+                                  count: counts?.all ?? runtime.mailboxCounts.count(for: .inbox),
                                   selected: inInbox && store.selectedInboxSplitID == nil) {
                             withAnimation(.snappy(duration: 0.25)) { store.selectInboxSplit(nil) }
                         }
@@ -692,7 +819,7 @@ private struct MailboxHeader: View {
                         Rectangle().fill(Mobile.hairline).frame(width: 1, height: 20).padding(.horizontal, 2)
                         ForEach(quick) { mailbox in
                             SplitChip(title: mailbox.splitTitle,
-                                      count: mailbox == .needsReply ? store.count(for: mailbox) : 0,
+                                      count: mailbox == .needsReply ? runtime.mailboxCounts.count(for: mailbox) : 0,
                                       selected: store.selectedMailbox == mailbox && store.selectedSavedViewID == nil) {
                                 withAnimation(.snappy(duration: 0.25)) { store.selectMailbox(mailbox) }
                             }
@@ -1007,7 +1134,7 @@ private struct MobileMailboxSheet: View {
 
     private func row(_ mailbox: Mailbox) -> some View {
         let selected = store.selectedMailbox == mailbox && store.selectedSavedViewID == nil
-        let count = [.inbox, .needsReply, .drafts, .outbox].contains(mailbox) ? store.count(for: mailbox) : 0
+        let count = [.inbox, .needsReply, .drafts, .outbox].contains(mailbox) ? runtime.mailboxCounts.count(for: mailbox) : 0
         return Button {
             store.selectMailbox(mailbox)
             dismiss()
@@ -1200,15 +1327,6 @@ private struct MobileRowBadges: View {
     }
 }
 
-private extension View {
-    /// Keeps a tab's screen alive while another is shown.
-    func tabLayer(_ active: Bool) -> some View {
-        opacity(active ? 1 : 0)
-            .allowsHitTesting(active)
-            .accessibilityHidden(!active)
-    }
-}
-
 /// What a long-press on a row shows above its menu, as in Mail: who, to whom, when,
 /// the subject and the start of the message, without opening or marking it read.
 struct MobileMessagePreviewCard: View {
@@ -1280,7 +1398,7 @@ struct MobileMessagePreviewCard: View {
             }
         }
         .padding(20)
-        .frame(width: 380, alignment: .topLeading)
+        .frame(idealWidth: 380, maxWidth: 380, alignment: .topLeading)
         .frame(maxHeight: 560, alignment: .top)
         .clipped()
         .background(Mobile.background)
@@ -1302,30 +1420,11 @@ struct MobileMessagePreviewCard: View {
     }
 }
 
-/// A mailbox list folded into conversations: the newest message of each thread,
-/// shown unread or starred if any message in it is, and the IDs each row stands for.
-struct ConversationRows {
-    let rows: [MailMessage]
-    let members: [UUID: Set<UUID>]
-
-    init(_ messages: [MailMessage]) {
-        var groups: [String: [MailMessage]] = [:]
-        for message in messages { groups[message.searchConversationKey, default: []].append(message) }
-        var members: [UUID: Set<UUID>] = [:]
-        rows = MailSearchRequest.representatives(messages, preferred: nil).map { lead in
-            let thread = groups[lead.searchConversationKey] ?? [lead]
-            members[lead.id] = Set(thread.map(\.id))
-            guard thread.count > 1 else { return lead }
-            var shown = lead
-            shown.isUnread = thread.contains(where: \.isUnread)
-            shown.isStarred = thread.contains(where: \.isStarred)
-            return shown
-        }
-        self.members = members
-    }
-
-    init(ungrouped messages: [MailMessage]) {
-        rows = messages
-        members = [:]
+private extension View {
+    /// Keeps a tab's screen alive while another is shown.
+    func tabLayer(_ active: Bool) -> some View {
+        opacity(active ? 1 : 0)
+            .allowsHitTesting(active)
+            .accessibilityHidden(!active)
     }
 }

@@ -59,6 +59,77 @@ struct MobileNeedsReplyNote: View {
     }
 }
 
+// MARK: - New sender
+
+/// A first-time sender waits in New Senders until you decide, as on the Mac:
+/// let them into the Inbox (or straight to Needs Reply or Archive), let everyone
+/// at their company in, or block them.
+struct MobileNewSenderCard: View {
+    let message: MailMessage
+    let store: MailStore
+    let onRemove: () -> Void
+    @Environment(\.postmereAccent) private var palette
+
+    var body: some View {
+        let organization = WebsiteIconDomains.shared.organization(for: message.senderEmail)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label("New sender", systemImage: "person.crop.circle.badge.questionmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(palette.accent)
+                Spacer(minLength: 0)
+            }
+            Text("This is the first mail from \(message.senderEmail). Allow it to choose where their mail goes from now on.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Menu {
+                    Button("Allow in Inbox", systemImage: "tray") { decide { store.acceptSender(of: message, route: .inbox) } }
+                    Button("Route to Needs Reply", systemImage: "arrowshape.turn.up.left") {
+                        decide { store.acceptSender(of: message, route: .needsReply) }
+                    }
+                    Button("Route to Archive", systemImage: "archivebox") { decide { store.acceptSender(of: message, route: .archive) } }
+                    if let organization {
+                        Divider()
+                        Button("Allow Everyone at \(organization)", systemImage: "building.2") {
+                            decide { store.acceptDomain(organization, of: message) }
+                        }
+                    }
+                } label: {
+                    Label("Allow", systemImage: "tray.and.arrow.down")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                } primaryAction: {
+                    decide { store.acceptSender(of: message, route: .inbox) }
+                }
+                .buttonStyle(.glassProminent)
+                .tint(palette.accent)
+                .accessibilityHint("Delivers mail from this address to your Inbox. Touch and hold for other places.")
+                Button(role: .destructive) {
+                    decide { store.blockSender(of: message) }
+                    onRemove()
+                } label: {
+                    Label("Block", systemImage: "hand.raised")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                }
+                .buttonStyle(.glass)
+                .tint(PostmereTheme.destructiveInk)
+                .accessibilityHint("Moves mail from this address to Trash, now and in future.")
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(palette.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .sensoryFeedback(.success, trigger: message.workflow.screeningState)
+    }
+
+    private func decide(_ action: () -> Void) {
+        withAnimation(MobileMotion.reveal) { action() }
+    }
+}
+
 // MARK: - Message details
 
 /// Every address, the date, and how the message was delivered.
@@ -90,6 +161,7 @@ struct MobileMessageDetailsSheet: View {
                     if message.mailAccount != .unassigned { row("Account", message.accountLabel) }
                     row("Subject", message.displaySubject)
                 }
+                .mobileSheetRows()
                 if !message.isDraft && message.mailbox != .outbox {
                     Section {
                         if let details {
@@ -114,6 +186,7 @@ struct MobileMessageDetailsSheet: View {
                             Text("Transport is what the last server reported. Earlier hops may differ.")
                         }
                     }
+                    .mobileSheetRows()
                 }
             }
             .textSelection(.enabled)
@@ -205,6 +278,7 @@ struct MobileActivitySheet: View {
                         .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
                     }
+                    .mobileSheetRows()
                     if activity.firstOpenAt != nil || activity.lastOpenAt != nil {
                         Section {
                             if let first = activity.firstOpenAt {
@@ -214,6 +288,7 @@ struct MobileActivitySheet: View {
                                 LabeledContent("Latest open", value: last.formatted(date: .abbreviated, time: .shortened))
                             }
                         }
+                        .mobileSheetRows()
                     }
                     Section {
                         if activity.events.isEmpty {
@@ -225,11 +300,13 @@ struct MobileActivitySheet: View {
                     } footer: {
                         if let notice = response?.attributionNotice, !notice.isEmpty { Text(notice) }
                     }
+                    .mobileSheetRows()
                 } else if let error {
                     Section {
                         Text(error).foregroundStyle(.secondary)
                         Button("Try Again") { attempt += 1 }
                     }
+                    .mobileSheetRows()
                 } else if loading {
                     HStack { Spacer(); ProgressView(); Spacer() }.listRowBackground(Color.clear)
                 } else {

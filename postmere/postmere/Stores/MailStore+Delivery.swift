@@ -6,12 +6,12 @@ extension MailStore {
     }
     var canUndoSend: Bool { latestUndoableSend != nil }
 
-    func queueCurrentDraft(now: Date = .now) {
+    func queueCurrentDraft(now: Date = .now, undoDelay: TimeInterval? = nil) {
         guard canSendDraft else { return }
         let oldMessages = messages
         let oldQueue = outgoingQueue
         let oldComposing = isComposing
-        let delay = max(5, min(60, UserDefaults.standard.object(forKey: "undoSendDelay") as? Double ?? 10))
+        let delay = undoDelay ?? max(5, min(60, UserDefaults.standard.object(forKey: "undoSendDelay") as? Double ?? 10))
         let deadline = now.addingTimeInterval(delay)
         var queued = composedMessage(in: .outbox)
         if draftAccount.isRemote {

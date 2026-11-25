@@ -11,6 +11,7 @@ struct MobileSettings: View {
     @AppStorage("readingFontSize") private var fontSize = 14.0
     @AppStorage("loadRemoteMailImagesAutomatically") private var automaticImages = true
     @AppStorage("blockSenderTrackingPixels") private var blocksTrackers = true
+    @AppStorage(MailSpotlightIndexer.preferenceKey) private var spotlightIndexes = true
     @AppStorage("undoSendDelay") private var undoSendDelay = 10.0
     @State private var connection = MailAccountConnection()
     @State private var addsAccount = false
@@ -115,10 +116,19 @@ struct MobileSettings: View {
                             }
                         }
                     }
-                    group("Privacy", footer: "Messages never run scripts. Remote images can tell senders when you read their mail.") {
+                    group("Privacy", footer: "Messages never run scripts. Remote images can tell senders when you read their mail. Spotlight keeps the subject, sender and a preview of recent mail on this iPhone only.") {
                         toggleRow(symbol: "photo.fill", tint: .teal, title: "Load Remote Images", isOn: $automaticImages)
                         divider
                         toggleRow(symbol: "eye.slash.fill", tint: .gray, title: "Block Tracking Pixels", isOn: $blocksTrackers)
+                        divider
+                        toggleRow(symbol: "magnifyingglass", tint: .indigo, title: "Show Mail in Spotlight", isOn: $spotlightIndexes)
+                            .onChange(of: spotlightIndexes) {
+                                if spotlightIndexes {
+                                    runtime.spotlight.update(messages: runtime.store.messages, signedIn: runtime.backend.canAccessWorkspace)
+                                } else {
+                                    runtime.spotlight.clear()
+                                }
+                            }
                         divider
                         NavigationLink { MobileSenderPhotoSettings() } label: {
                             SettingsRow(symbol: "person.crop.circle.fill", tint: .blue, title: "Sender Photos")
@@ -575,6 +585,7 @@ struct MobileSignatureEditor: View {
                 .fontWeight(.semibold)
             }
         }
+        .mobileSettingsCanvas()
     }
 }
 
@@ -616,6 +627,7 @@ private struct MobileAISettings: View {
     @State private var style = ""
     @State private var error: String?
     @State private var saving = false
+    @State private var learning = false
 
     var body: some View {
         Form {
@@ -637,6 +649,32 @@ private struct MobileAISettings: View {
                         Text("Writing style")
                     } footer: {
                         Text("How drafts should sound, for example “Warm, brief, no exclamation marks.”")
+                    }
+                    if settings.enabled {
+                        Section {
+                            if let learned = settings.learnedStyle, !learned.isEmpty {
+                                Text(learned).font(.subheadline).foregroundStyle(.secondary)
+                                Button(learning ? "Learning…" : "Learn Again", systemImage: "arrow.clockwise") { Task { await learn() } }
+                                    .disabled(learning)
+                                Button("Forget Learned Style", role: .destructive) { Task { await save(enabled: true, learned: "") } }
+                            } else {
+                                Button(learning ? "Reading your sent mail…" : "Learn From My Sent Mail", systemImage: "wand.and.stars") {
+                                    Task { await learn() }
+                                }
+                                .disabled(learning)
+                            }
+                        } header: {
+                            Text("Your voice")
+                        } footer: {
+                            Text("Reads up to 25 messages you’ve sent, only your own words, and notes how you write so replies and drafts sound like you. What you type above takes priority.")
+                        }
+                        Section {
+                            NavigationLink { MobileDescribedLabelsSettings(runtime: runtime) } label: {
+                                LabeledContent("Labels You Describe", value: runtime.describedLabels.labels.filter(\.enabled).count.formatted())
+                            }
+                        } footer: {
+                            Text("Describe a label, like “Receipts and invoices”, and new mail that fits is labelled for you.")
+                        }
                     }
                     if settings.enabled && settings.decisionAvailable == true {
                         Section {
@@ -668,15 +706,129 @@ private struct MobileAISettings: View {
         }
     }
 
-    private func save(enabled: Bool) async {
+    private func learn() async {
+        learning = true
+        defer { learning = false }
+        do {
+            let learned = try await MailAIAssist.learnStyle(session: runtime.backend)
+            settings?.learnedStyle = learned.learnedStyle
+            settings?.learnedAt = learned.learnedAt
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func save(enabled: Bool, learned: String? = nil) async {
         saving = true
         defer { saving = false }
         do {
             let updated: MailAISettings = try await runtime.backend.request(
-                "PUT", "/v1/ai/settings", body: MailAISettingsInput(enabled: enabled, styleGuide: style))
+                "PUT", "/v1/ai/settings", body: MailAISettingsInput(enabled: enabled, styleGuide: style, learnedStyle: learned))
             settings = updated
             style = updated.styleGuide
             error = nil
         } catch { self.error = error.localizedDescription }
+    }
+}
+
+// MARK: - Labels you describe
+
+/// Labels defined in words; new mail that fits is given the label in the account.
+private struct MobileDescribedLabelsSettings: View {
+    let runtime: MailRuntime
+    @State private var editing: MailDescribedLabel?
+    @Environment(\.postmereAccent) private var palette
+
+    private var model: MailDescribedLabels { runtime.describedLabels }
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(model.labels) { label in
+                    Button { editing = label } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "tag.fill").foregroundStyle(label.enabled ? palette.accent : .secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(label.labelName).font(.body.weight(.semibold)).foregroundStyle(.primary)
+                                Text(label.description).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                            Spacer()
+                            if !label.enabled { Text("Off").font(.footnote).foregroundStyle(.secondary) }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+                .onDelete { offsets in
+                    var labels = model.labels
+                    labels.remove(atOffsets: offsets)
+                    model.save(labels)
+                }
+                Button("Add Label", systemImage: "plus") {
+                    editing = MailDescribedLabel(id: UUID().uuidString, labelName: "", description: "")
+                }
+            } footer: {
+                Text("Postmere sends the subject and the start of each new message to your workspace’s AI to decide. Only mail that arrives after you add a label is sorted. Labels are kept on this device.")
+            }
+            .mobileSettingsRows()
+            if let problem = model.problem {
+                Text(problem).foregroundStyle(PostmereTheme.destructiveInk).listRowBackground(Color.clear)
+            } else if model.lastSortedCount > 0 {
+                Text("\(model.lastSortedCount) messages labelled so far.").font(.footnote).foregroundStyle(.secondary)
+                    .listRowBackground(Color.clear)
+            }
+        }
+        .mobileSettingsCanvas()
+        .navigationTitle("Labels You Describe")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $editing) { label in
+            MobileDescribedLabelEditor(label: label) { saved in
+                var labels = model.labels
+                if let index = labels.firstIndex(where: { $0.id == saved.id }) { labels[index] = saved } else { labels.append(saved) }
+                model.save(labels)
+            }
+        }
+    }
+}
+
+private struct MobileDescribedLabelEditor: View {
+    @State var label: MailDescribedLabel
+    let onSave: (MailDescribedLabel) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Label") {
+                    TextField("Receipts", text: $label.labelName)
+                        .textInputAutocapitalization(.words)
+                }
+                .mobileSheetRows()
+                Section {
+                    TextField("Receipts, invoices and payment confirmations from shops and services", text: $label.description, axis: .vertical)
+                        .lineLimit(3...6)
+                } header: {
+                    Text("What goes in it")
+                } footer: {
+                    Text("Describe it as you would to a person. Be specific about what to leave out, too.")
+                }
+                .mobileSheetRows()
+                Section { Toggle("Sort New Mail", isOn: $label.enabled) }.mobileSheetRows()
+            }
+            .navigationTitle(label.labelName.isEmpty ? "New Label" : label.labelName)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel", systemImage: "xmark") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save", systemImage: "checkmark") {
+                        label.labelName = label.labelName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        label.description = label.description.trimmingCharacters(in: .whitespacesAndNewlines)
+                        onSave(label)
+                        dismiss()
+                    }
+                    .disabled(label.labelName.trimmingCharacters(in: .whitespaces).isEmpty
+                              || label.description.trimmingCharacters(in: .whitespaces).count < 8)
+                }
+            }
+        }
+        .mobileSheetDetents()
     }
 }

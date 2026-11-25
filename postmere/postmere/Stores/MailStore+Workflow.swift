@@ -316,7 +316,9 @@ nonisolated struct InboxOverview: Sendable {
         var groups: [Section] = []
         if !waiting.isEmpty { groups.append(Section(title: "Needs reply", messages: waiting, mailbox: .needsReply)) }
         if !reminders.isEmpty { groups.append(Section(title: "Follow-ups", messages: reminders, mailbox: .followUps)) }
-        let alreadyListed = Set((waiting + reminders).map(\.searchConversationKey))
+        let quiet = MailNudges.waiting(in: scoped, excluding: Set((waiting + reminders).map(\.searchConversationKey)))
+        if !quiet.isEmpty { groups.append(Section(title: "No reply yet", messages: quiet, mailbox: nil)) }
+        let alreadyListed = Set((waiting + reminders + quiet).map(\.searchConversationKey))
         let otherUnread = unread.filter { !alreadyListed.contains($0.searchConversationKey) }
         if !otherUnread.isEmpty {
             groups.append(Section(title: otherUnread.count < unread.count ? "Other unread" : "Unread",
@@ -330,6 +332,48 @@ nonisolated struct InboxOverview: Sendable {
 
     private static func count(_ n: Int, singular: String, plural: String) -> String {
         "\(n.formatted()) \(n == 1 ? singular : plural)"
+    }
+}
+
+/// Conversations where the user asked something and nobody has answered: the
+/// newest message is theirs, a few days old, and reads like it expects a reply.
+/// Found on the device; nothing is sent anywhere to decide this.
+nonisolated enum MailNudges {
+    static let minimumAge: TimeInterval = 3 * 86_400
+    static let maximumAge: TimeInterval = 30 * 86_400
+
+    nonisolated static func waiting(in messages: [MailMessage], excluding: Set<String> = [], now: Date = .now) -> [MailMessage] {
+        var newest: [String: MailMessage] = [:]
+        for message in messages where !message.isDraft && message.mailbox != .outbox && message.mailbox != .trash
+            && message.mailbox != .junk && !message.isDeletedOnProvider {
+            let key = message.searchConversationKey
+            if let current = newest[key], current.sentAt >= message.sentAt { continue }
+            newest[key] = message
+        }
+        return newest.values
+            .filter { message in
+                let age = now.timeIntervalSince(message.sentAt)
+                return message.isOutgoing && age >= minimumAge && age <= maximumAge
+                    && !excluding.contains(message.searchConversationKey)
+                    && message.workflow.followUpAt == nil && expectsReply(message)
+            }
+            .sorted { $0.sentAt > $1.sentAt }
+    }
+
+    /// A question or a request in what the user wrote, not in the quoted history below it.
+    nonisolated static func expectsReply(_ message: MailMessage) -> Bool {
+        var own: [String] = []
+        for line in message.paragraphs.joined(separator: "\n").split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix(">") || (trimmed.hasPrefix("On ") && trimmed.hasSuffix("wrote:")) { break }
+            own.append(trimmed)
+        }
+        let text = own.joined(separator: " ").lowercased()
+        guard !text.isEmpty else { return false }
+        if text.contains("?") { return true }
+        return ["let me know", "please confirm", "could you", "can you", "would you", "please send", "please share",
+                "get back to me", "look forward to hearing", "awaiting your", "your thoughts", "please advise"]
+            .contains { text.contains($0) }
     }
 }
 

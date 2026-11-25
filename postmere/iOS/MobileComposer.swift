@@ -12,6 +12,10 @@ struct MobileComposer: View {
     @State private var showsCopies = false
     @State private var confirmsClose = false
     @State private var importsFiles = false
+    @State private var confirmsMissingAttachment = false
+    /// The quoted message under a reply or forward is folded away until asked for.
+    @State private var showsQuote = false
+    @State private var proofreads = false
     @State private var picksPhotos = false
     @State private var photos: [PhotosPickerItem] = []
     @State private var attachmentError: String?
@@ -19,11 +23,20 @@ struct MobileComposer: View {
     @State private var addsLink = false
     @State private var linkURL = ""
     @State private var selection: TextSelection?
+    @State private var recipientLookup = MailRecipientLookup()
+    @State private var recipientResults: (request: RecipientRequest, matches: [MailRecipientSuggestion])?
     /// Set while sending so the formatted copy made for sending isn't cleared.
     @State private var sending = false
     @FocusState private var field: Field?
 
     private enum Field: Hashable { case to, cc, bcc, subject, body }
+
+    private struct RecipientRequest: Equatable {
+        let source: MailRecipientLookup.Source
+        let field: Field
+        let input: String
+        let ownAddresses: [String]
+    }
 
     private enum Tool: String, Identifiable {
         case snippets, writer, availability, booking
@@ -84,7 +97,7 @@ struct MobileComposer: View {
                             .padding(.horizontal, Mobile.gutter)
                             .padding(.top, 12)
                     }
-                    TextEditor(text: $store.draftBody, selection: $selection)
+                    TextEditor(text: bodyText, selection: $selection)
                         .font(.system(size: 17))
                         .lineSpacing(4)
                         .focused($field, equals: .body)
@@ -102,6 +115,9 @@ struct MobileComposer: View {
                                     .allowsHitTesting(false)
                             }
                         }
+                    if let quote = MailQuotedReply.split(store.draftBody)?.quote {
+                        quotedToggle(quote)
+                    }
                 }
             }
             .scrollDismissesKeyboard(.interactively)
@@ -135,6 +151,14 @@ struct MobileComposer: View {
                 attach { try store.addDraftAttachments(from: result.get()) }
             }
             .photosPicker(isPresented: $picksPhotos, selection: $photos, matching: .any(of: [.images, .videos]))
+            .confirmationDialog("Send without an attachment?", isPresented: $confirmsMissingAttachment, titleVisibility: .visible) {
+                Button("Add a File") { importsFiles = true }
+                Button("Add a Photo") { picksPhotos = true }
+                Button("Send Anyway") { send() }
+            } message: {
+                Text("Your message mentions an attachment, but nothing is attached.")
+            }
+            .sheet(isPresented: $proofreads) { MobileProofreadSheet(runtime: runtime) { attemptSend() } }
             .onChange(of: photos) { importPhotos() }
             // The phone edits plain text. A rich copy from a signature or quote would
             // otherwise be sent as the HTML part without what was typed here.
@@ -172,15 +196,67 @@ struct MobileComposer: View {
         MobileHairline(leading: Mobile.gutter)
     }
 
+    // MARK: Quoted message
+
+    /// While the quote is folded, the editor holds only what the person writes;
+    /// the quote is joined back on every change, so it is always sent.
+    private var bodyText: Binding<String> {
+        Binding(
+            get: {
+                guard !showsQuote, let split = MailQuotedReply.split(store.draftBody) else { return store.draftBody }
+                return split.head
+            },
+            set: { newValue in
+                if !showsQuote, let quote = MailQuotedReply.split(store.draftBody)?.quote {
+                    store.draftBody = MailQuotedReply.join(head: newValue, quote: quote)
+                } else {
+                    store.draftBody = newValue
+                }
+            })
+    }
+
+    private func quotedToggle(_ quote: String) -> some View {
+        Button {
+            selection = nil
+            withAnimation(.snappy(duration: 0.25)) { showsQuote.toggle() }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: showsQuote ? "chevron.up" : "ellipsis")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 34, height: 24)
+                    .background(Mobile.raised, in: Capsule())
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(showsQuote ? "Hide quoted text" : "Show quoted text")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(palette.accent)
+                    Text(MailQuotedReply.title(of: quote))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Mobile.gutter)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("The quoted message is always sent with your reply")
+    }
+
     // MARK: Send
 
     private var sendButton: some View {
         Menu {
+            if runtime.backend.canAccessWorkspace {
+                Button("Proofread and Send…", systemImage: "text.badge.checkmark") { proofreads = true }
+            }
             Button("Send Later…", systemImage: "clock") { presenter.task = .sendLater }
             if store.draftSendAt != nil {
                 Button("Send Now", systemImage: "paperplane") {
                     store.draftSendAt = nil
-                    send()
+                    attemptSend()
                 }
             }
         } label: {
@@ -188,12 +264,21 @@ struct MobileComposer: View {
                   systemImage: store.draftSendAt == nil ? "arrow.up" : "clock")
                 .fontWeight(.bold)
         } primaryAction: {
-            send()
+            attemptSend()
         }
         .buttonStyle(.glassProminent)
         .tint(palette.accent)
         .disabled(!canSend)
         .accessibilityHint("Touch and hold to send later")
+    }
+
+    /// Asks first when the message mentions an attachment and has none.
+    private func attemptSend() {
+        if store.draftAttachments.isEmpty && MailAttachmentReminder.mentionsAttachment(store.draftBody) {
+            confirmsMissingAttachment = true
+        } else {
+            send()
+        }
     }
 
     /// Sends with any **bold**, *italic* and lists turned into real formatting.
@@ -209,7 +294,7 @@ struct MobileComposer: View {
 
     /// Wraps the selection in a Markdown marker, or inserts an empty pair at the cursor.
     private func wrap(_ marker: String) {
-        var text = store.draftBody
+        var text = bodyText.wrappedValue
         if case .selection(let range)? = selection?.indices, range.lowerBound >= text.startIndex,
            range.upperBound <= text.endIndex {
             let selected = text[range]
@@ -218,7 +303,7 @@ struct MobileComposer: View {
             text += marker + marker
         }
         selection = nil
-        store.draftBody = text
+        bodyText.wrappedValue = text
     }
 
     /// Turns the selected words into a link, or adds the address itself.
@@ -226,7 +311,7 @@ struct MobileComposer: View {
         let url = linkURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let parsed = URL(string: url), ["http", "https"].contains(parsed.scheme?.lowercased() ?? ""),
               parsed.host != nil else { return }
-        var text = store.draftBody
+        var text = bodyText.wrappedValue
         if case .selection(let range)? = selection?.indices, range.lowerBound >= text.startIndex,
            range.upperBound <= text.endIndex, !text[range].isEmpty {
             text.replaceSubrange(range, with: "[\(text[range])](\(url))")
@@ -234,12 +319,12 @@ struct MobileComposer: View {
             text += (text.isEmpty || text.hasSuffix(" ") || text.hasSuffix("\n") ? "" : " ") + "[\(parsed.host ?? url)](\(url))"
         }
         selection = nil
-        store.draftBody = text
+        bodyText.wrappedValue = text
     }
 
     /// Starts the current line as a list item.
     private func bullet() {
-        var text = store.draftBody
+        var text = bodyText.wrappedValue
         var position = text.endIndex
         if case .selection(let range)? = selection?.indices, range.lowerBound <= text.endIndex { position = range.lowerBound }
         let lineStart = text[..<position].lastIndex(of: "\n").map { text.index(after: $0) } ?? text.startIndex
@@ -249,7 +334,7 @@ struct MobileComposer: View {
             text.insert(contentsOf: "- ", at: lineStart)
         }
         selection = nil
-        store.draftBody = text
+        bodyText.wrappedValue = text
     }
 
     /// Scheduled send and follow-up, each removable.
@@ -334,10 +419,13 @@ struct MobileComposer: View {
             .accessibilityLabel("Scheduling and tracking")
             if field == .body {
                 Rectangle().fill(Mobile.hairline).frame(width: 1, height: 22).padding(.horizontal, 2)
-                Button { wrap("**") } label: { tool("bold") }.accessibilityLabel("Bold")
-                Button { wrap("*") } label: { tool("italic") }.accessibilityLabel("Italic")
-                Button { bullet() } label: { tool("list.bullet") }.accessibilityLabel("List")
-                Button { linkURL = "https://"; addsLink = true } label: { tool("link") }.accessibilityLabel("Insert Link")
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 4) { formattingActions }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(ComposerToolButtonStyle())
+                    Menu { formattingActions } label: { tool("textformat") }
+                        .accessibilityLabel("Formatting")
+                }
             }
         }
         .buttonStyle(.plain)
@@ -350,10 +438,31 @@ struct MobileComposer: View {
         .padding(.bottom, 6)
     }
 
+    @ViewBuilder private var formattingActions: some View {
+        Button("Bold", systemImage: "bold") { wrap("**") }
+        Button("Italic", systemImage: "italic") { wrap("*") }
+        Button("List", systemImage: "list.bullet") { bullet() }
+        Button("Insert Link", systemImage: "link") { linkURL = "https://"; addsLink = true }
+    }
+
+    private struct ComposerToolButtonStyle: ButtonStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.primary)
+                .frame(width: 40, height: 40)
+                .contentShape(Rectangle())
+                .opacity(configuration.isPressed ? 0.6 : 1)
+        }
+    }
+
     /// Adds a paragraph at the end of the message body.
     private func insertBlock(_ text: String) {
-        let body = store.draftBody.trimmingCharacters(in: .whitespacesAndNewlines)
-        store.draftBody = body.isEmpty ? text : body + "\n\n" + text
+        // Above the quoted message, which stays at the end.
+        let split = MailQuotedReply.split(store.draftBody)
+        let body = (split?.head ?? store.draftBody).trimmingCharacters(in: .whitespacesAndNewlines)
+        let head = body.isEmpty ? text : body + "\n\n" + text
+        store.draftBody = split.map { MailQuotedReply.join(head: head, quote: $0.quote) } ?? head
         store.draftBodyRTF = nil
     }
 
@@ -406,39 +515,41 @@ struct MobileComposer: View {
 
     /// People you've written to before, matching the address being typed.
     @ViewBuilder private func suggestions(for target: Field, text: Binding<String>) -> some View {
-        if field == target {
-            let parts = text.wrappedValue.components(separatedBy: ",")
-            let current = (parts.last ?? "").trimmingCharacters(in: .whitespaces)
-            let chosen = parts.dropLast().map { $0.trimmingCharacters(in: .whitespaces) }
-            let matches = current.count < 1 ? [] : Array(store.recipientSuggestions(
-                for: current, excluding: chosen,
-                accountKey: store.draftAccount.isConnected ? store.draftAccount.rawValue : nil).prefix(4))
-            if !matches.isEmpty {
-                VStack(spacing: 0) {
-                    ForEach(matches) { suggestion in
-                        Button {
-                            text.wrappedValue = (chosen + [suggestion.email]).joined(separator: ", ") + ", "
-                        } label: {
-                            HStack(spacing: 12) {
-                                ParticipantPhoto(address: suggestion.email, name: suggestion.name, size: 30)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(suggestion.name.isEmpty ? suggestion.email : suggestion.name)
-                                        .font(.subheadline.weight(.semibold)).lineLimit(1)
-                                    if !suggestion.name.isEmpty {
-                                        Text(suggestion.email).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                    }
+        if field == target, let source = store.draftRecipientSource,
+           !MailRecipientSuggestions.currentToken(in: text.wrappedValue).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let request = RecipientRequest(source: source, field: target, input: text.wrappedValue,
+                                           ownAddresses: MailAccount.allCases.map(\.email))
+            let matches = recipientResults?.request == request ? recipientResults?.matches ?? [] : []
+            VStack(spacing: 0) {
+                ForEach(matches) { suggestion in
+                    Button {
+                        text.wrappedValue = MailRecipientSuggestions.replacingCurrentToken(in: text.wrappedValue, with: suggestion)
+                    } label: {
+                        HStack(spacing: 12) {
+                            ParticipantPhoto(address: suggestion.email, name: suggestion.name, size: 30)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(suggestion.name.isEmpty ? suggestion.email : suggestion.name)
+                                    .font(.subheadline.weight(.semibold)).lineLimit(1)
+                                if !suggestion.name.isEmpty {
+                                    Text(suggestion.email).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                 }
-                                Spacer()
                             }
-                            .padding(.horizontal, Mobile.gutter)
-                            .padding(.vertical, 8)
-                            .contentShape(Rectangle())
+                            Spacer()
                         }
-                        .buttonStyle(.plain)
+                        .padding(.horizontal, Mobile.gutter)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                 }
-                .padding(.bottom, 6)
-                .transition(.opacity)
+            }
+            .padding(.bottom, matches.isEmpty ? 0 : 6)
+            .transition(.opacity)
+            .task(id: request) {
+                let matches = await recipientLookup.matches(request.input, source: source, messages: store.messages,
+                                                            ownAddresses: request.ownAddresses)
+                guard !Task.isCancelled, source == store.draftRecipientSource else { return }
+                recipientResults = (request, matches)
             }
         }
     }

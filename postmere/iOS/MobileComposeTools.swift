@@ -16,6 +16,8 @@ struct MobileSnippetSheet: View {
     @State private var showsTeam = false
     @State private var team: [SharedSnippetSummary]?
     @State private var loadingTeam: UUID?
+    @State private var publishing: MailSnippet?
+    @State private var isPublishing = false
     @Environment(MailRuntime.self) private var runtime
 
     private var matches: [MailSnippet] {
@@ -52,6 +54,14 @@ struct MobileSnippetSheet: View {
                 }
             }
             .sheet(isPresented: $creates) { MobileSnippetEditor(store: store, body: store.draftBody) }
+            .confirmationDialog("Share “\(publishing?.title ?? "")” with your team?",
+                                isPresented: Binding(get: { publishing != nil }, set: { if !$0 { publishing = nil } }),
+                                titleVisibility: .visible) {
+                Button("Share with Team") { if let publishing { Task { await publish(publishing) } } }
+            } message: {
+                Text("Everyone in this workspace can read and copy it, including its recipients and files.")
+            }
+            .overlay { if isPublishing { ProgressView().controlSize(.large) } }
         }
         .mobileSheetDetents()
     }
@@ -98,7 +108,7 @@ struct MobileSnippetSheet: View {
             }
             if team.isEmpty {
                 ContentUnavailableView("No team templates", systemImage: "person.2",
-                    description: Text("Templates your workspace publishes from the Mac appear here."))
+                    description: Text("Touch and hold one of your snippets and choose Share with Team, or publish from the Mac."))
                     .listRowBackground(Color.clear)
             }
         } else {
@@ -111,6 +121,29 @@ struct MobileSnippetSheet: View {
             let list: SharedSnippetList = try await runtime.backend.request("GET", "/v1/shared/snippets")
             team = list.snippets
         } catch { self.error = error.localizedDescription; team = [] }
+    }
+
+    /// Publishes one of your snippets to the workspace, or a new version if you already shared one by that name.
+    private func publish(_ snippet: MailSnippet) async {
+        isPublishing = true
+        defer { isPublishing = false; publishing = nil }
+        do {
+            let template = try WorkspaceTemplates.export(snippet)
+            if team == nil { await loadTeam() }
+            let mine = runtime.backend.credential?.userID
+            if let existing = team?.first(where: { $0.title == snippet.title && $0.ownerId == mine }) {
+                let current: SharedSnippetDetail = try await runtime.backend.request("GET", "/v1/shared/snippets/\(existing.id.uuidString)")
+                let _: SharedSnippetDetail = try await runtime.backend.request(
+                    "PUT", "/v1/shared/snippets/\(existing.id.uuidString)",
+                    body: SharedTemplateUpdate(template: template, expectedVersion: current.version))
+            } else {
+                let _: SharedSnippetDetail = try await runtime.backend.request("POST", "/v1/shared/snippets",
+                                                                               body: SharedTemplateInput(template: template))
+            }
+            error = nil
+            team = nil
+            withAnimation { showsTeam = true }
+        } catch { self.error = error.localizedDescription }
     }
 
     private func useTeam(_ summary: SharedSnippetSummary) async {
@@ -143,6 +176,12 @@ struct MobileSnippetSheet: View {
                 .swipeActions {
                     Button("Delete", systemImage: "trash", role: .destructive) { store.deleteSnippet(snippet.id) }
                 }
+                .contextMenu {
+                    if runtime.backend.canAccessWorkspace {
+                        Button("Share with Team", systemImage: "person.2") { publishing = snippet }
+                    }
+                    Button("Delete", systemImage: "trash", role: .destructive) { store.deleteSnippet(snippet.id) }
+                }
             }
             if store.snippets.isEmpty {
                 ContentUnavailableView("No snippets yet", systemImage: "text.badge.plus",
@@ -160,6 +199,7 @@ struct MobileSnippetSheet: View {
             } footer: {
                 Text("These fill the {placeholders} in “\(snippet.title)”.")
             }
+            .mobileSheetRows()
             if let error {
                 Text(error).foregroundStyle(PostmereTheme.destructiveInk)
             }
@@ -168,6 +208,7 @@ struct MobileSnippetSheet: View {
                     .frame(maxWidth: .infinity)
                     .fontWeight(.semibold)
             }
+            .mobileSheetRows()
         }
     }
 
@@ -217,6 +258,7 @@ private struct MobileSnippetEditor: View {
                 } footer: {
                     Text("Use {name} for a value you fill in each time.")
                 }
+                .mobileSheetRows()
             }
             .navigationTitle("New Snippet")
             .navigationBarTitleDisplayMode(.inline)
@@ -231,6 +273,7 @@ private struct MobileSnippetEditor: View {
                 }
             }
         }
+        .mobileSheetSurface()
     }
 }
 
@@ -281,15 +324,12 @@ struct MobileAIWriterSheet: View {
         }
     }
 
-    private var draft: String { store.draftBody.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// What the person wrote, without the quoted message under a reply.
+    private var ownText: String { MailQuotedReply.split(store.draftBody)?.head ?? store.draftBody }
+    private var draft: String { ownText.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var sourceIDs: [UUID] {
-        let scope = runtime.backend.scope
-        let ids = store.messages
-            .filter { $0.conversationID == store.draftConversationID && $0.account == store.draftAccount.rawValue
-                && $0.mailAccount.remote?.scope == scope }
-            .compactMap(\.backendMessageID)
-        return Array(Set(ids).prefix(30))
+        MailAIAssist.writerSourceIDs(store: store, scope: runtime.backend.scope)
     }
 
     private var quickActions: [Instruction] {
@@ -418,7 +458,7 @@ struct MobileAIWriterSheet: View {
         output = ""
         phase = .writing
         promptFocused = false
-        let input = MailAIDraftInput(messageIds: sourceIDs, draftText: store.draftBody, instruction: instruction.rawValue,
+        let input = MailAIDraftInput(messageIds: sourceIDs, draftText: ownText, instruction: instruction.rawValue,
                                      notes: notes.trimmingCharacters(in: .whitespacesAndNewlines))
         running = Task {
             do {
@@ -438,7 +478,10 @@ struct MobileAIWriterSheet: View {
     private func use(replacing: Bool) {
         let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        store.draftBody = replacing || draft.isEmpty ? text : store.draftBody + "\n\n" + text
+        // The quoted message stays under the new text.
+        let quote = MailQuotedReply.split(store.draftBody)?.quote
+        let head = replacing || draft.isEmpty ? text : ownText.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + text
+        store.draftBody = quote.map { MailQuotedReply.join(head: head, quote: $0) } ?? head
         store.draftBodyRTF = nil
         dismiss()
     }
